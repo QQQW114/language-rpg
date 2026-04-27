@@ -21,6 +21,8 @@ interface GameStoreState {
   updateStateOf: (id: string, patch: Partial<GameState>) => void;
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
   appendMessage: (id: string, msg: Message) => void;
+  updateAssistantMessage: (id: string, historyIndex: number, content: string) => void;
+  regenerateAssistantMessage: (id: string, historyIndex: number) => void;
   setPhase: (id: string, phase: GamePhase) => void;
   setChoices: (id: string, choices?: Choice[]) => void;
   setLastPlayerInput: (id: string, text?: string) => void;
@@ -62,6 +64,52 @@ function touch(save: GameSave, patch: Partial<GameSave>): GameSave {
   return { ...save, ...patch, updatedAt: nowMs() };
 }
 
+function latestAssistantIndex(history: Message[]): number {
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') return i;
+  }
+  return -1;
+}
+
+function clearPendingDecisionItems(
+  state: GameState,
+  capacity: number,
+): Pick<GameState, 'backpack' | 'selectedItemIds' | 'needsDiscard'> {
+  const backpack = (state.backpack ?? [])
+    .filter((it) => !it.pendingGrantKey)
+    .map((it) => (it.pendingDestroy ? { ...it, pendingDestroy: undefined, destroyReason: undefined } : it));
+  const validIds = new Set(backpack.map((it) => it.id));
+  const selectedItemIds = (state.selectedItemIds ?? []).filter((id) => validIds.has(id));
+  const needsDiscard = Math.max(0, backpack.length - capacity);
+  return { backpack, selectedItemIds, needsDiscard };
+}
+
+function normalizeScene(sc: SceneRef): SceneRef | undefined {
+  const name = sc.name?.trim();
+  if (!name) return undefined;
+  const description = sc.description?.trim();
+  return { name, description: description || undefined };
+}
+
+function mergeScenes(history: SceneRef[], scenes: Array<SceneRef | undefined>): SceneRef[] {
+  const byName = new Map<string, SceneRef>();
+  for (const item of history ?? []) {
+    const sc = normalizeScene(item);
+    if (sc) byName.set(sc.name, sc);
+  }
+  for (const item of scenes) {
+    if (!item) continue;
+    const sc = normalizeScene(item);
+    if (!sc) continue;
+    const prev = byName.get(sc.name);
+    byName.set(sc.name, {
+      name: sc.name,
+      description: sc.description || prev?.description,
+    });
+  }
+  return Array.from(byName.values()).slice(-40);
+}
+
 export const useGameStore = create<GameStoreState>()(
   persist(
     (set, get) => ({
@@ -96,6 +144,7 @@ export const useGameStore = create<GameStoreState>()(
             needsDiscard: 0,
             npcs: [],
             anchors: [],
+            sceneHistory: [],
             availableScenes: [],
           },
         };
@@ -147,6 +196,69 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           const state = { ...save.state, history: [...save.state.history, msg] };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      updateAssistantMessage: (id, historyIndex, content) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const msg = save.state.history[historyIndex];
+          const nextContent = content.trim();
+          if (!msg || msg.role !== 'assistant' || !nextContent) return s;
+
+          const history = save.state.history.map((m, i) =>
+            i === historyIndex ? { ...m, content: nextContent } : m,
+          );
+          const latest = latestAssistantIndex(save.state.history);
+          const isLatest = historyIndex === latest;
+          const pendingClean = isLatest && save.state.phase === 'choices'
+            ? clearPendingDecisionItems(save.state, save.config.itemCapacity ?? 8)
+            : {};
+          const summaryInvalid = historyIndex < (save.state.summarizedUntilIndex ?? 0);
+
+          const state: GameState = {
+            ...save.state,
+            ...pendingClean,
+            history,
+            error: undefined,
+            ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
+            ...(isLatest && save.state.phase === 'choices' ? { lastChoices: undefined } : {}),
+            ...(isLatest && save.state.phase === 'ended' ? { ending: nextContent, review: undefined } : {}),
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      regenerateAssistantMessage: (id, historyIndex) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const msg = save.state.history[historyIndex];
+          if (!msg || msg.role !== 'assistant') return s;
+
+          const history = save.state.history.slice(0, historyIndex);
+          const lastUser = [...history].reverse().find((m) => m.role === 'user');
+          const pendingClean = clearPendingDecisionItems(save.state, save.config.itemCapacity ?? 8);
+          const summaryInvalid =
+            historyIndex <= (save.state.summarizedUntilIndex ?? 0) ||
+            history.length < (save.state.summarizedUntilIndex ?? 0);
+
+          const state: GameState = {
+            ...save.state,
+            ...pendingClean,
+            history,
+            currentRound: msg.round,
+            lastPlayerInput: lastUser?.content,
+            phase: 'story',
+            lastChoices: undefined,
+            ending: undefined,
+            review: undefined,
+            error: undefined,
+            triggeredEvents: (save.state.triggeredEvents ?? []).filter((ev) => ev.round < msg.round),
+            anchors: (save.state.anchors ?? []).filter((a) => a.round < msg.round),
+            availableScenes: [],
+            ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
+          };
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
 
@@ -408,10 +520,21 @@ export const useGameStore = create<GameStoreState>()(
           if (!save) return s;
           // 若模型没返回 currentScene 就保留上一回合的 current，避免抖动
           const nextCurrent = current ?? save.state.currentScene;
+          const sceneHistory = mergeScenes(save.state.sceneHistory ?? [], [
+            nextCurrent,
+            ...(available ?? []),
+          ]);
           return {
             saves: {
               ...s.saves,
-              [id]: touch(save, { state: { ...save.state, currentScene: nextCurrent, availableScenes: available ?? [] } }),
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  currentScene: nextCurrent,
+                  availableScenes: available ?? [],
+                  sceneHistory,
+                },
+              }),
             },
           };
         }),
@@ -478,6 +601,7 @@ export const useGameStore = create<GameStoreState>()(
               needsDiscard: (sv.state as any)?.needsDiscard ?? 0,
               npcs: Array.isArray((sv.state as any)?.npcs) ? (sv.state as any).npcs : [],
               anchors: Array.isArray((sv.state as any)?.anchors) ? (sv.state as any).anchors : [],
+              sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],
               availableScenes: Array.isArray((sv.state as any)?.availableScenes) ? (sv.state as any).availableScenes : [],
             },
           };

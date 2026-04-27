@@ -9,6 +9,11 @@ export interface StreamOptions {
   format?: 'chat' | 'responses';
 }
 
+export interface StreamResult {
+  text: string;
+  finishReason?: string;
+}
+
 type RawFrame = Record<string, unknown>;
 
 function extractChatDelta(frame: RawFrame): string | undefined {
@@ -32,15 +37,47 @@ function extractResponsesDelta(frame: RawFrame): string | undefined {
   return undefined;
 }
 
-export async function readSSE(
+function detectFinishReason(frame: RawFrame): string | undefined {
+  const anyFrame = frame as any;
+
+  // Chat Completions：最终 chunk 通常携带 choices[0].finish_reason。
+  const choices = anyFrame.choices;
+  if (Array.isArray(choices) && choices.length > 0) {
+    const reason = choices[0]?.finish_reason;
+    if (typeof reason === 'string' && reason) return reason;
+  }
+
+  // Responses API / 常见代理：达到 max_output_tokens 会以 incomplete 结束。
+  const response = anyFrame.response;
+  const incompleteReason =
+    anyFrame.incomplete_details?.reason ??
+    anyFrame.incomplete_details?.code ??
+    response?.incomplete_details?.reason ??
+    response?.incomplete_details?.code;
+  if (typeof incompleteReason === 'string' && incompleteReason) {
+    return incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason;
+  }
+
+  if (anyFrame.type === 'response.incomplete' || response?.status === 'incomplete') {
+    return 'length';
+  }
+
+  const directReason = anyFrame.finish_reason ?? anyFrame.finishReason;
+  if (typeof directReason === 'string' && directReason) return directReason;
+
+  return undefined;
+}
+
+export async function readSSEDetailed(
   response: Response,
   opts: StreamOptions,
-): Promise<string> {
+): Promise<StreamResult> {
   if (!response.body) throw new Error('响应体为空');
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let full = '';
+  let finishReason: string | undefined;
 
   const extractor = opts.format === 'responses' ? extractResponsesDelta : extractChatDelta;
 
@@ -61,7 +98,7 @@ export async function readSSE(
 
         const payload = line.slice(5).trim();
         if (!payload) continue;
-        if (payload === '[DONE]') return full;
+        if (payload === '[DONE]') return { text: full, finishReason };
 
         let frame: RawFrame;
         try {
@@ -70,6 +107,7 @@ export async function readSSE(
           continue;
         }
 
+        finishReason = detectFinishReason(frame) ?? finishReason;
         const delta = extractor(frame);
         if (delta) {
           full += delta;
@@ -80,5 +118,13 @@ export async function readSSE(
   } finally {
     try { reader.releaseLock(); } catch { /* noop */ }
   }
-  return full;
+  return { text: full, finishReason };
+}
+
+export async function readSSE(
+  response: Response,
+  opts: StreamOptions,
+): Promise<string> {
+  const result = await readSSEDetailed(response, opts);
+  return result.text;
 }

@@ -9,6 +9,7 @@ export interface AppSettings {
   decisionModel: string;
   temperatureStory: number;
   temperatureDecision: number;
+  storyMaxTokens: number;              // 故事单次最大输出 token；0 表示不传，由服务端决定
   maxHistoryRounds: number;
   summaryModel?: string;
   randomModel?: string;
@@ -24,6 +25,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   decisionModel: 'deepseek-chat',
   temperatureStory: 0.9,
   temperatureDecision: 0.5,
+  storyMaxTokens: 4096,
   maxHistoryRounds: 22,
   summaryModel: '',
   randomModel: '',

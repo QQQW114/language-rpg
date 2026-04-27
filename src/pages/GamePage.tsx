@@ -54,6 +54,13 @@ export default function GamePage() {
     () => save ? flattenWorldBookEntries(worldBooks, save.content.worldBookIds).length : 0,
     [save?.content.worldBookIds, worldBooks],
   );
+  const latestAssistantIndex = useMemo(() => {
+    if (!save) return -1;
+    for (let i = save.state.history.length - 1; i >= 0; i--) {
+      if (save.state.history[i].role === 'assistant') return i;
+    }
+    return -1;
+  }, [save?.state.history]);
 
   useEffect(() => {
     if (!save) nav('/');
@@ -314,6 +321,31 @@ export default function GamePage() {
     useGameStore.getState().removeAnchor(save.id, anchorId);
   }
 
+  function canModifyAssistant(historyIndex: number, msg: Message) {
+    return (
+      !!save &&
+      msg.role === 'assistant' &&
+      historyIndex === latestAssistantIndex &&
+      !busy &&
+      !streaming &&
+      save.state.phase !== 'story'
+    );
+  }
+
+  function onEditAssistant(historyIndex: number, msg: Message, content: string) {
+    if (!save || !canModifyAssistant(historyIndex, msg)) return;
+    useGameStore.getState().updateAssistantMessage(save.id, historyIndex, content);
+  }
+
+  function onRegenerateAssistant(historyIndex: number, msg: Message) {
+    if (!save || !canModifyAssistant(historyIndex, msg)) return;
+    if (!confirm('重新请求这次模型回复？当前回复与后续选项会被丢弃，并从本回合重新生成。')) return;
+    setStreaming('');
+    setErrorMsg(undefined);
+    busyRef.current = false;
+    useGameStore.getState().regenerateAssistantMessage(save.id, historyIndex);
+  }
+
   function onTravel(scene: SceneRef) {
     if (!save || busy || (save.state.needsDiscard ?? 0) > 0) return;
     const actions = useGameStore.getState();
@@ -394,6 +426,10 @@ export default function GamePage() {
             anchors={save.state.anchors}
             onPinAnchor={onPinAnchor}
             onUnpinAnchor={onUnpinAnchor}
+            onEditAssistant={onEditAssistant}
+            onRegenerateAssistant={onRegenerateAssistant}
+            canEditAssistant={canModifyAssistant}
+            canRegenerateAssistant={canModifyAssistant}
           />
 
           {save.state.phase === 'ended' && (
@@ -522,6 +558,7 @@ export default function GamePage() {
             <SceneMap
               current={save.state.currentScene}
               available={save.state.availableScenes ?? []}
+              history={save.state.sceneHistory ?? []}
               onTravel={onTravel}
               disabled={busy || needsDiscard > 0 || save.state.phase === 'ended'}
             />

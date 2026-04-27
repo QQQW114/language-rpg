@@ -138,6 +138,15 @@ export default function SettingsPage() {
           onChange={(e) => set('maxHistoryRounds', Number(e.target.value) || 22)}
           hint="历史消息超过此数后，早期消息会被自动压缩为摘要；建议 20~30，过小会频繁压缩导致模型遗忘细节"
         />
+        <Input
+          label="故事最大输出 tokens"
+          type="number"
+          min={0}
+          step={256}
+          value={draft.storyMaxTokens}
+          onChange={(e) => set('storyMaxTokens', Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+          hint="默认 4096。若模型因长度被截断，会自动续写并拼接；填 0 表示不传该参数，由服务端决定。"
+        />
 
         <OrnateDivider>故事风格</OrnateDivider>
         <Field label="篇幅偏好" hint="每回合故事的大致字数区间">

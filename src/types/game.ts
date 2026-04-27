@@ -101,6 +101,7 @@ export interface GameState {
   anchors: MemoryAnchor[];
   currentScene?: SceneRef;                  // 玩家所在的场景
   availableScenes: SceneRef[];              // 可前往的场景（由决策模型每轮更新）
+  sceneHistory: SceneRef[];                 // 历史见过/去过的场景，用于快速回访
   finalizeRequested?: boolean;              // 无尽模式下玩家主动触发"下一回合即最终回合"
 }
 

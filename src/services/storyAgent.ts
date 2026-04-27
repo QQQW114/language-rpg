@@ -3,7 +3,7 @@
 import type { Message, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
 import type { AppSettings } from '@/types/settings';
-import { chatStream, type ChatMessage } from './llmClient';
+import { chatStreamDetailed, type ChatMessage } from './llmClient';
 import { buildStorySystem } from '@/prompts/storySystem';
 
 export interface StoryRequest {
@@ -30,6 +30,7 @@ export interface StoryRequest {
 }
 
 const MAX_CONTEXT_MESSAGES = 40;
+const MAX_AUTO_CONTINUES = 2;
 
 export async function requestStory(p: StoryRequest): Promise<string> {
   const systemPrompt = buildStorySystem({
@@ -79,16 +80,41 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     messages.push({ role: 'user', content: '（请推进剧情。）' });
   }
 
-  const full = await chatStream(
-    { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
-    {
-      messages,
-      model: p.settings.storyModel,
-      temperature: p.settings.temperatureStory,
-      onDelta: p.onDelta,
-      signal: p.signal,
-    },
-  );
+  const maxTokens =
+    Number.isFinite(p.settings.storyMaxTokens) && p.settings.storyMaxTokens > 0
+      ? Math.floor(p.settings.storyMaxTokens)
+      : undefined;
+
+  let full = '';
+  let requestMessages = messages;
+  let continueCount = 0;
+
+  while (true) {
+    const result = await chatStreamDetailed(
+      { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
+      {
+        messages: requestMessages,
+        model: p.settings.storyModel,
+        temperature: p.settings.temperatureStory,
+        maxTokens,
+        onDelta: p.onDelta,
+        signal: p.signal,
+      },
+    );
+    full += result.text;
+
+    if (result.finishReason !== 'length' || continueCount >= MAX_AUTO_CONTINUES) break;
+
+    continueCount++;
+    requestMessages = [
+      ...messages,
+      { role: 'assistant', content: full },
+      {
+        role: 'user',
+        content: '（上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。）',
+      },
+    ];
+  }
 
   return full.trim();
 }

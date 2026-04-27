@@ -1,6 +1,6 @@
 // OpenAI 兼容的 LLM 客户端：支持 Chat Completions 与 Responses 两种请求格式
 
-import { readSSE } from '@/lib/sse';
+import { readSSEDetailed, type StreamResult } from '@/lib/sse';
 import type { ApiFormat } from '@/types/settings';
 
 export interface ChatMessage {
@@ -96,6 +96,14 @@ export async function chatStream(
   cfg: ChatClientConfig,
   p: ChatStreamParams,
 ): Promise<string> {
+  const result = await chatStreamDetailed(cfg, p);
+  return result.text;
+}
+
+export async function chatStreamDetailed(
+  cfg: ChatClientConfig,
+  p: ChatStreamParams,
+): Promise<StreamResult> {
   if (!cfg.apiKey) throw new Error('未配置 API Key，请先在设置中填写');
   if (!cfg.baseUrl) throw new Error('未配置 API Base URL');
   if (!p.model) throw new Error('未选择模型');
@@ -119,7 +127,7 @@ export async function chatStream(
     throw new Error(`模型请求失败（${res.status}）：${msg}`);
   }
 
-  return readSSE(res, { onDelta: p.onDelta, signal: p.signal, format: cfg.format });
+  return readSSEDetailed(res, { onDelta: p.onDelta, signal: p.signal, format: cfg.format });
 }
 
 export async function chatJSON(
