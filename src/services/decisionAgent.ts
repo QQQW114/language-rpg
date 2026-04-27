@@ -7,7 +7,7 @@ import { chatJSON } from './llmClient';
 import { DECISION_SYSTEM, buildDecisionUser } from '@/prompts/decisionSystem';
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
-import { buildStrictCustomDecisionBlock } from '@/lib/strictCustom';
+import { buildStrictCustomDecisionBlock, buildStrictDecisionSystemPromptAppend } from '@/lib/strictCustom';
 import type { RawGrant, RawDestroy } from '@/lib/items';
 
 export interface DecisionRequest {
@@ -168,6 +168,10 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
   const strictCustomDecisionBlock = buildStrictCustomDecisionBlock(p.strictCustom);
+  const decisionSystemPrompt = [
+    DECISION_SYSTEM,
+    buildStrictDecisionSystemPromptAppend(p.strictCustom),
+  ].filter(Boolean).join('\n\n');
 
   const msgs = recent ?? [];
   const lastA = [...msgs].reverse().find((m) => m.role === 'assistant');
@@ -183,7 +187,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
         model: settings.decisionModel,
         temperature,
         messages: [
-          { role: 'system', content: DECISION_SYSTEM },
+          { role: 'system', content: decisionSystemPrompt },
           { role: 'user', content: buildDecisionUser({ latestStory, backpackSummary, summary, recentText, npcSummary, currentSceneName, strictCustomDecisionBlock }) },
         ],
         signal,

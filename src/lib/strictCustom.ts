@@ -10,6 +10,10 @@ export const DEFAULT_STRICT_CUSTOM_CONFIG: StrictCustomConfig = {
     '隐藏能力、身份秘密、幕后真相、世界机制只作为幕后设定保持一致；除非玩家明确尝试、调查、触发，或详细大纲指定揭示，否则不要写进正文。',
   choicePrompt:
     '选项应围绕当前压力点给出 3~4 个差异明确的行动，不要提前替玩家解决危机，也不要把隐藏设定作为选项前提。',
+  storySystemPrompt: '',
+  storyUserPrompt: '',
+  decisionSystemPrompt: '',
+  decisionUserPrompt: '',
   detailedOutline: [],
 };
 
@@ -43,8 +47,19 @@ export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>)
     pacingPrompt: (input?.pacingPrompt ?? base.pacingPrompt).trim().slice(0, 2000),
     revealPrompt: (input?.revealPrompt ?? base.revealPrompt).trim().slice(0, 2000),
     choicePrompt: (input?.choicePrompt ?? base.choicePrompt).trim().slice(0, 2000),
+    storySystemPrompt: (input?.storySystemPrompt ?? base.storySystemPrompt).trim().slice(0, 3000),
+    storyUserPrompt: (input?.storyUserPrompt ?? base.storyUserPrompt).trim().slice(0, 3000),
+    decisionSystemPrompt: (input?.decisionSystemPrompt ?? base.decisionSystemPrompt).trim().slice(0, 3000),
+    decisionUserPrompt: (input?.decisionUserPrompt ?? base.decisionUserPrompt).trim().slice(0, 3000),
     detailedOutline,
   };
+}
+
+function applyPromptVars(text: string, vars: Record<string, string | number | undefined>): string {
+  return text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+    const value = vars[key];
+    return value === undefined || value === null ? '' : String(value);
+  });
 }
 
 export function getActiveRoundDirectives(
@@ -87,10 +102,50 @@ export function buildStrictCustomStoryBlock(
 export function buildStrictCustomDecisionBlock(config: StrictCustomConfig | undefined): string {
   if (!config?.enabled) return '';
   const normalized = normalizeStrictCustomConfig(config);
-  if (!normalized.choicePrompt) return '';
+  const lines: string[] = [];
+  if (normalized.choicePrompt) {
+    lines.push('【严格自定义模式 · 选项规则】', normalized.choicePrompt);
+  }
+  if (normalized.decisionUserPrompt) {
+    if (lines.length) lines.push('');
+    lines.push('【严格自定义模式 · 决策模型 User 链路追加】', normalized.decisionUserPrompt);
+  }
+  return lines.join('\n');
+}
+
+export function buildStrictStorySystemPromptAppend(
+  config: StrictCustomConfig | undefined,
+  round: number,
+): string {
+  if (!config?.enabled) return '';
+  const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.storySystemPrompt) return '';
   return [
-    '【严格自定义模式 · 选项规则】',
-    normalized.choicePrompt,
+    '【严格自定义模式 · 故事模型 System 链路追加】',
+    applyPromptVars(normalized.storySystemPrompt, { round }),
   ].join('\n');
 }
 
+export function buildStrictStoryUserPromptAppend(
+  config: StrictCustomConfig | undefined,
+  round: number,
+  playerInput?: string,
+): string {
+  if (!config?.enabled) return '';
+  const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.storyUserPrompt) return '';
+  return [
+    '【严格自定义模式 · 故事模型 User 链路追加】',
+    applyPromptVars(normalized.storyUserPrompt, { round, input: playerInput ?? '' }),
+  ].join('\n');
+}
+
+export function buildStrictDecisionSystemPromptAppend(config: StrictCustomConfig | undefined): string {
+  if (!config?.enabled) return '';
+  const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.decisionSystemPrompt) return '';
+  return [
+    '【严格自定义模式 · 决策模型 System 链路追加】',
+    normalized.decisionSystemPrompt,
+  ].join('\n');
+}

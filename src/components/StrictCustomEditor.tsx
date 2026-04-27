@@ -71,6 +71,47 @@ export function StrictCustomEditor() {
         />
       </div>
 
+      <OrnateDivider>提示词链路</OrnateDivider>
+      <div className="text-sm text-parchment-200/70 leading-relaxed mb-3">
+        这些内容会注入到具体模型请求链路中，优先级高于普通规则。留空则使用项目默认链路。
+        可使用 <code className="text-gold/80">{'{{round}}'}</code> 表示当前回合，
+        故事模型 User 链路还可使用 <code className="text-gold/80">{'{{input}}'}</code> 表示玩家输入。
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <Textarea
+          label="故事模型 · System 链路追加"
+          value={config.storySystemPrompt}
+          onChange={(e) => update({ storySystemPrompt: e.target.value })}
+          rows={5}
+          placeholder="例如：你必须把本回合收束在一个新压力点，不得揭示主角真正能力。"
+          hint="注入到故事模型 system prompt 末尾，适合控制整体写作协议。"
+        />
+        <Textarea
+          label="故事模型 · User 链路追加"
+          value={config.storyUserPrompt}
+          onChange={(e) => update({ storyUserPrompt: e.target.value })}
+          rows={5}
+          placeholder="例如：本回合第 {{round}} 回合。玩家输入是：{{input}}。请只写它的即时后果。"
+          hint="注入到每回合故事请求的 user 消息末尾，适合给单回合执行约束。"
+        />
+        <Textarea
+          label="决策模型 · System 链路追加"
+          value={config.decisionSystemPrompt}
+          onChange={(e) => update({ decisionSystemPrompt: e.target.value })}
+          rows={5}
+          placeholder="例如：无论如何都必须保持 JSON 协议；选项只能围绕当前压力点。"
+          hint="注入到决策模型 system prompt 末尾。不要破坏 JSON 输出协议。"
+        />
+        <Textarea
+          label="决策模型 · User 链路追加"
+          value={config.decisionUserPrompt}
+          onChange={(e) => update({ decisionUserPrompt: e.target.value })}
+          rows={5}
+          placeholder="例如：不要生成会直接解决危机的选项；至少一个选项应是继续等待或掩饰。"
+          hint="注入到决策模型 user prompt 中，适合控制当前选项倾向。"
+        />
+      </div>
+
       <OrnateDivider>详细大纲</OrnateDivider>
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="text-sm text-parchment-200/70 leading-relaxed">
@@ -140,4 +181,3 @@ export function StrictCustomEditor() {
     </div>
   );
 }
-

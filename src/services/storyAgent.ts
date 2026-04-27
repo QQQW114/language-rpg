@@ -6,6 +6,7 @@ import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
 import { chatStreamDetailed, type ChatMessage } from './llmClient';
 import { buildStorySystem } from '@/prompts/storySystem';
+import { buildStrictStorySystemPromptAppend, buildStrictStoryUserPromptAppend } from '@/lib/strictCustom';
 
 export interface StoryRequest {
   settings: AppSettings;
@@ -36,7 +37,7 @@ const MAX_CONTEXT_MESSAGES = 40;
 const MAX_AUTO_CONTINUES = 2;
 
 export async function requestStory(p: StoryRequest): Promise<string> {
-  const systemPrompt = buildStorySystem({
+  const baseSystemPrompt = buildStorySystem({
     outline: p.outline,
     background: p.background,
     characterName: p.characterName,
@@ -55,6 +56,10 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     lengthHint: p.settings.storyLength,
     styleAddendum: p.settings.storyStyleAddendum,
   });
+  const systemPrompt = [
+    baseSystemPrompt,
+    buildStrictStorySystemPromptAppend(p.strictCustom, p.currentRound),
+  ].filter(Boolean).join('\n\n');
 
   // 以 summarizedUntilIndex 为起点，从 history 中切出未被摘要的部分（再做一层 MAX_CONTEXT_MESSAGES 兜底）
   const startIdx = Math.max(
@@ -84,6 +89,17 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     userMessage = userMessage
       ? `${userMessage}${hintBlock}`
       : `（请重新生成本回合。）${hintBlock}`;
+  }
+
+  const chainUserPrompt = buildStrictStoryUserPromptAppend(
+    p.strictCustom,
+    p.currentRound,
+    p.playerInput,
+  );
+  if (chainUserPrompt) {
+    userMessage = userMessage
+      ? `${userMessage}\n\n${chainUserPrompt}`
+      : chainUserPrompt;
   }
 
   if (userMessage) {
