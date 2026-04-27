@@ -1,18 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, Dices, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  ChevronRight,
+  Dices,
+  Pencil,
+  Save,
+  SlidersHorizontal,
+  Sparkles,
+  Trash2,
+  Wand2,
+  X,
+} from 'lucide-react';
 import { useContentStore, selectAllOutlines, selectAllBackgrounds, selectAllWorldBooks, selectAllEvents, flattenWorldBookEntries } from '@/store/useContentStore';
 import { useGameStore } from '@/store/useGameStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { Input, Textarea } from '@/components/ui/Input';
 import { OrnateDivider } from '@/components/ui/Ornaments';
 import { itemsFromStartStrings } from '@/lib/items';
 import { requestRandomOutline, requestRandomBackground, requestRandomScene, requestRandomEvents, requestRandomWorldBook } from '@/services/randomizers';
 import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
+import type { RandomEvent } from '@/types/content';
+import { PRESET_EVENTS } from '@/presets/events';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
 
@@ -47,11 +60,15 @@ export default function SetupPage() {
   const [sceneHint, setSceneHint] = useState('');
   const [eventsHint, setEventsHint] = useState('');
   const [worldBookHint, setWorldBookHint] = useState('');
+  const [hiddenEventIds, setHiddenEventIds] = useState<string[]>([]);
+  const [editingEvent, setEditingEvent] = useState<RandomEvent | null>(null);
 
   const addOutline = useContentStore((s) => s.addOutline);
   const addBackground = useContentStore((s) => s.addBackground);
   const addEvent = useContentStore((s) => s.addEvent);
   const addWorldBook = useContentStore((s) => s.addWorldBook);
+  const updateEvent = useContentStore((s) => s.updateEvent);
+  const removeEvent = useContentStore((s) => s.removeEvent);
 
   const selectedOutline = useMemo(
     () => outlines.find((o) => o.id === outlineId),
@@ -60,6 +77,10 @@ export default function SetupPage() {
   const selectedBackground = useMemo(
     () => backgrounds.find((b) => b.id === backgroundId),
     [backgrounds, backgroundId],
+  );
+  const visibleEvents = useMemo(
+    () => events.filter((e) => !hiddenEventIds.includes(e.id)),
+    [events, hiddenEventIds],
   );
   const strictDetailCount = strictCustomDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
 
@@ -210,6 +231,30 @@ export default function SetupPage() {
 
   const toggle = (list: string[], id: string): string[] =>
     list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+
+  const startEventEdit = (event: RandomEvent) => {
+    setEditingEvent({ ...event });
+  };
+
+  const saveEventEdit = () => {
+    if (!editingEvent) return;
+    const normalized = normalizeSetupEvent(editingEvent);
+    updateEvent(normalized);
+    setHiddenEventIds((prev) => prev.filter((id) => id !== normalized.id));
+    setEditingEvent(null);
+  };
+
+  const deleteEventFromSetup = (event: RandomEvent) => {
+    const isGeneratedOrImported = !PRESET_EVENTS.some((item) => item.id === event.id);
+    const msg = isGeneratedOrImported
+      ? '确定删除这个随机事件？自定义/随机生成的事件会从书库中移除。'
+      : '确定从本次启程中移除这个预设随机事件？';
+    if (!confirm(msg)) return;
+    setEventIds((prev) => prev.filter((id) => id !== event.id));
+    setHiddenEventIds((prev) => Array.from(new Set([...prev, event.id])));
+    if (isGeneratedOrImported) removeEvent(event.id);
+    if (editingEvent?.id === event.id) setEditingEvent(null);
+  };
 
   const start = () => {
     if (!settings.apiKey) {
@@ -539,30 +584,61 @@ export default function SetupPage() {
               </Button>
             </div>
             <div className="grid gap-2 md:grid-cols-2">
-              {events.map((e) => (
-                <label
-                  key={e.id}
-                  className="flex items-start gap-2 bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 cursor-pointer hover:border-gold/60"
-                >
-                  <input
-                    type="checkbox"
-                    checked={eventIds.includes(e.id)}
-                    onChange={() => setEventIds(toggle(eventIds, e.id))}
-                    className="mt-1 accent-gold"
-                  />
-                  <div>
-                    <div className="text-parchment-100 text-sm flex items-center gap-2">
-                      <Dices size={12} className="text-gold/70" /> {e.name}
-                      {e.id.startsWith('gen_ev') && <span className="text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
-                    </div>
-                    <div className="text-xs text-parchment-200/60">
-                      概率 {Math.round(e.probability * 100)}%
-                      {e.minRound ? ` · 第 ${e.minRound} 回合起` : ''}
-                      {e.once ? ' · 仅触发一次' : ''}
-                    </div>
+              {visibleEvents.map((e) => {
+                const isEditing = editingEvent?.id === e.id;
+                return (
+                  <div
+                    key={e.id}
+                    className="bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 hover:border-gold/60"
+                  >
+                    {isEditing && editingEvent ? (
+                      <SetupEventEditForm
+                        value={editingEvent}
+                        onChange={setEditingEvent}
+                        onCancel={() => setEditingEvent(null)}
+                        onSave={saveEventEdit}
+                      />
+                    ) : (
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={eventIds.includes(e.id)}
+                          onChange={() => setEventIds(toggle(eventIds, e.id))}
+                          className="mt-1 accent-gold"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-parchment-100 text-sm flex items-center gap-2">
+                            <Dices size={12} className="text-gold/70" /> {e.name}
+                            {e.id.startsWith('gen_ev') && <span className="text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
+                          </div>
+                          <div className="text-xs text-parchment-200/60">
+                            概率 {Math.round(e.probability * 100)}%
+                            {e.minRound ? ` · 第 ${e.minRound} 回合起` : ''}
+                            {e.cooldown ? ` · 冷却 ${e.cooldown}` : ''}
+                            {e.once ? ' · 仅触发一次' : ''}
+                          </div>
+                          <div className="text-xs text-parchment-200/50 mt-1 line-clamp-2">
+                            {e.directive}
+                          </div>
+                        </div>
+                        <div className="shrink-0 flex flex-col gap-1">
+                          <Button size="sm" variant="outline" onClick={() => startEventEdit(e)} title="编辑事件">
+                            <Pencil size={12} />
+                          </Button>
+                          <Button size="sm" variant="danger" onClick={() => deleteEventFromSetup(e)} title="删除事件">
+                            <Trash2 size={12} />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </label>
-              ))}
+                );
+              })}
+              {visibleEvents.length === 0 && (
+                <div className="text-sm text-parchment-200/60">
+                  当前没有随机事件。可以用上方按钮生成一批新事件。
+                </div>
+              )}
             </div>
           </div>
 
@@ -660,4 +736,100 @@ function StepDot({ active, done, children }: { active?: boolean; done?: boolean;
       {children}
     </span>
   );
+}
+
+function SetupEventEditForm({
+  value,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  value: RandomEvent;
+  onChange: (value: RandomEvent) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div>
+      <Input
+        label="事件名"
+        value={value.name}
+        onChange={(e) => onChange({ ...value, name: e.target.value })}
+      />
+      <Textarea
+        label="事件指令"
+        value={value.directive}
+        onChange={(e) => onChange({ ...value, directive: e.target.value })}
+        rows={4}
+      />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Input
+          label="概率（%）"
+          type="number"
+          min={0}
+          max={100}
+          value={Math.round((value.probability ?? 0) * 100)}
+          onChange={(e) => onChange({ ...value, probability: clampSetup01((Number(e.target.value) || 0) / 100) })}
+        />
+        <Input
+          label="触发回合"
+          type="number"
+          min={1}
+          value={value.minRound ?? ''}
+          onChange={(e) => onChange({ ...value, minRound: optionalSetupInt(e.target.value) })}
+        />
+        <Input
+          label="冷却回合"
+          type="number"
+          min={0}
+          value={value.cooldown ?? ''}
+          onChange={(e) => onChange({ ...value, cooldown: optionalSetupInt(e.target.value, true) })}
+        />
+      </div>
+      <label className="mb-3 flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={!!value.once}
+          onChange={(e) => onChange({ ...value, once: e.target.checked })}
+          className="accent-gold"
+        />
+        只触发一次
+      </label>
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          <X size={14} /> 取消
+        </Button>
+        <Button size="sm" onClick={onSave}>
+          <Save size={14} /> 保存
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function normalizeSetupEvent(event: RandomEvent): RandomEvent {
+  return {
+    ...event,
+    name: event.name.trim() || '未命名事件',
+    directive: event.directive.trim(),
+    probability: clampSetup01(Number(event.probability) || 0),
+    minRound: setupPositiveOrUndefined(event.minRound),
+    cooldown: setupPositiveOrUndefined(event.cooldown, true),
+    once: !!event.once,
+  };
+}
+
+function optionalSetupInt(text: string, allowZero = false): number | undefined {
+  if (text.trim() === '') return undefined;
+  return setupPositiveOrUndefined(Number(text), allowZero);
+}
+
+function setupPositiveOrUndefined(value: unknown, allowZero = false): number | undefined {
+  const num = Math.floor(Number(value));
+  if (!Number.isFinite(num)) return undefined;
+  return Math.max(allowZero ? 0 : 1, num);
+}
+
+function clampSetup01(n: number): number {
+  return Math.max(0, Math.min(1, n));
 }

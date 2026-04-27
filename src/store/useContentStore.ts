@@ -19,6 +19,10 @@ interface ContentState {
   addBackground: (b: Background) => void;
   addWorldBook: (w: WorldBook) => void;
   addEvent: (e: RandomEvent) => void;
+  updateOutline: (o: StoryOutline) => void;
+  updateBackground: (b: Background) => void;
+  updateWorldBook: (w: WorldBook) => void;
+  updateEvent: (e: RandomEvent) => void;
   removeOutline: (id: string) => void;
   removeBackground: (id: string) => void;
   removeWorldBook: (id: string) => void;
@@ -86,6 +90,15 @@ export const useContentStore = create<ContentState>()(
             : [...s.customEvents, e],
         })),
 
+      updateOutline: (o) =>
+        set((s) => ({ customOutlines: upsertById(s.customOutlines, o) })),
+      updateBackground: (b) =>
+        set((s) => ({ customBackgrounds: upsertById(s.customBackgrounds, b) })),
+      updateWorldBook: (w) =>
+        set((s) => ({ customWorldBooks: upsertById(s.customWorldBooks, w) })),
+      updateEvent: (e) =>
+        set((s) => ({ customEvents: upsertById(s.customEvents, e) })),
+
       removeOutline: (id) =>
         set((s) => ({ customOutlines: s.customOutlines.filter((x) => x.id !== id) })),
       removeBackground: (id) =>
@@ -107,18 +120,33 @@ export const useContentStore = create<ContentState>()(
   ),
 );
 
+function upsertById<T extends { id: string }>(arr: T[], item: T): T[] {
+  return arr.some((x) => x.id === item.id)
+    ? arr.map((x) => (x.id === item.id ? item : x))
+    : [...arr, item];
+}
+
+function mergePresetAndCustom<T extends { id: string }>(presets: T[], custom: T[]): T[] {
+  const customById = new Map(custom.map((item) => [item.id, item]));
+  const presetIds = new Set(presets.map((item) => item.id));
+  return [
+    ...presets.map((item) => customById.get(item.id) ?? item),
+    ...custom.filter((item) => !presetIds.has(item.id)),
+  ];
+}
+
 // 选择器：预设 + 自定义合并
 export function selectAllOutlines(s: ContentState): StoryOutline[] {
-  return [...PRESET_OUTLINES, ...s.customOutlines];
+  return mergePresetAndCustom(PRESET_OUTLINES, s.customOutlines);
 }
 export function selectAllBackgrounds(s: ContentState): Background[] {
-  return [...PRESET_BACKGROUNDS, ...s.customBackgrounds];
+  return mergePresetAndCustom(PRESET_BACKGROUNDS, s.customBackgrounds);
 }
 export function selectAllWorldBooks(s: ContentState): WorldBook[] {
-  return [...PRESET_WORLDBOOKS, ...s.customWorldBooks];
+  return mergePresetAndCustom(PRESET_WORLDBOOKS, s.customWorldBooks);
 }
 export function selectAllEvents(s: ContentState): RandomEvent[] {
-  return [...PRESET_EVENTS, ...s.customEvents];
+  return mergePresetAndCustom(PRESET_EVENTS, s.customEvents);
 }
 
 export function flattenWorldBookEntries(books: WorldBook[], ids: string[]): WorldBookEntry[] {
