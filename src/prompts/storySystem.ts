@@ -161,8 +161,11 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const currentSceneBlock = currentScene
     ? [
       `【当前所在场景】${currentScene.name}${currentScene.description ? ` —— ${currentScene.description}` : ''}`,
+      currentScene.time ? `时间：${currentScene.time}` : '',
+      currentScene.weather ? `天气：${currentScene.weather}` : '',
+      '写作时请把场景、时间、天气作为同一组连续环境条件处理：时间影响光线、人流与作息；天气影响感官细节、行动阻力与氛围，但不要为天气硬造无关危机。',
       '若玩家本回合输入显式表达了"前往 XXX"的意图，请在本回合完成场景切换，用感官细节描写抵达过程与新环境；否则继续在当前场景内推进。',
-    ].join('\n')
+    ].filter(Boolean).join('\n')
     : '';
 
   const usedItemsBlock = usedItems && usedItems.length

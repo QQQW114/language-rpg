@@ -81,6 +81,8 @@ export interface Npc {
 export interface SceneRef {
   name: string;
   description?: string;
+  time?: string;                 // 当前场景时间，如"黄昏""深夜""次日清晨"
+  weather?: string;              // 当前场景天气/环境状态，如"小雨""阴冷无风"
 }
 
 export interface GameState {

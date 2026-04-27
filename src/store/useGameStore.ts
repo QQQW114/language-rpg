@@ -88,7 +88,14 @@ function normalizeScene(sc: SceneRef): SceneRef | undefined {
   const name = sc.name?.trim();
   if (!name) return undefined;
   const description = sc.description?.trim();
-  return { name, description: description || undefined };
+  const time = sc.time?.trim();
+  const weather = sc.weather?.trim();
+  return {
+    name,
+    description: description || undefined,
+    time: time || undefined,
+    weather: weather || undefined,
+  };
 }
 
 function mergeScenes(history: SceneRef[], scenes: Array<SceneRef | undefined>): SceneRef[] {
@@ -105,6 +112,8 @@ function mergeScenes(history: SceneRef[], scenes: Array<SceneRef | undefined>): 
     byName.set(sc.name, {
       name: sc.name,
       description: sc.description || prev?.description,
+      time: sc.time || prev?.time,
+      weather: sc.weather || prev?.weather,
     });
   }
   return Array.from(byName.values()).slice(-40);
@@ -522,7 +531,15 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           // 若模型没返回 currentScene 就保留上一回合的 current，避免抖动
-          const nextCurrent = current ?? save.state.currentScene;
+          const normalizedCurrent = current ? normalizeScene(current) : undefined;
+          const prevCurrent = save.state.currentScene ? normalizeScene(save.state.currentScene) : undefined;
+          const nextCurrent = normalizedCurrent
+            ? {
+              ...normalizedCurrent,
+              time: normalizedCurrent.time || (normalizedCurrent.name === prevCurrent?.name ? prevCurrent.time : undefined),
+              weather: normalizedCurrent.weather || (normalizedCurrent.name === prevCurrent?.name ? prevCurrent.weather : undefined),
+            }
+            : prevCurrent;
           const sceneHistory = mergeScenes(save.state.sceneHistory ?? [], [
             nextCurrent,
             ...(available ?? []),

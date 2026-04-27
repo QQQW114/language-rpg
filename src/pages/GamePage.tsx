@@ -166,6 +166,7 @@ export default function GamePage() {
       summary: current.state.summary,
       recent: current.state.history.slice(-8),
       currentSceneName: current.state.currentScene?.name,
+      currentScene: current.state.currentScene,
       strictCustom: current.content.strictCustom,
       includeChoices,
       signal,

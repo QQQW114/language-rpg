@@ -23,6 +23,7 @@ export interface DecisionRequest {
   summary?: string;
   recent?: Message[];
   currentSceneName?: string;
+  currentScene?: SceneRef;
   strictCustom?: StrictCustomConfig;
   includeChoices?: boolean;
   signal?: AbortSignal;
@@ -129,7 +130,14 @@ function sanitizeScenes(raw: unknown): { currentScene?: SceneRef; availableScene
     const name = String(cur.name ?? '').trim().slice(0, 20);
     if (name) {
       const description = String(cur.description ?? '').trim().slice(0, 60);
-      currentScene = { name, description: description || undefined };
+      const time = String(cur.time ?? cur.timeOfDay ?? obj.time ?? '').trim().slice(0, 20);
+      const weather = String(cur.weather ?? obj.weather ?? '').trim().slice(0, 30);
+      currentScene = {
+        name,
+        description: description || undefined,
+        time: time || undefined,
+        weather: weather || undefined,
+      };
     }
   }
   const arr = Array.isArray(obj.availableScenes) ? obj.availableScenes : [];
@@ -143,6 +151,16 @@ function sanitizeScenes(raw: unknown): { currentScene?: SceneRef; availableScene
     availableScenes.push({ name, description: description || undefined });
   }
   return { currentScene, availableScenes };
+}
+
+function formatSceneContext(scene?: SceneRef, fallbackName?: string): string {
+  const name = scene?.name?.trim() || fallbackName?.trim();
+  if (!name) return '';
+  const lines = [`场景：${name}`];
+  if (scene?.description?.trim()) lines.push(`描述：${scene.description.trim()}`);
+  if (scene?.time?.trim()) lines.push(`时间：${scene.time.trim()}`);
+  if (scene?.weather?.trim()) lines.push(`天气：${scene.weather.trim()}`);
+  return lines.join('\n');
 }
 
 function formatRecent(msgs: Message[]): string {
@@ -170,10 +188,11 @@ function formatNpcs(npcs: Npc[]): string {
 const RECENT_MESSAGES = 6;
 
 export async function requestChoices(p: DecisionRequest): Promise<DecisionResult> {
-  const { settings, latestStory, backpack, npcs, summary, recent, currentSceneName, signal } = p;
+  const { settings, latestStory, backpack, npcs, summary, recent, currentSceneName, currentScene, signal } = p;
   const includeChoices = p.includeChoices ?? true;
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
+  const currentSceneContextText = formatSceneContext(currentScene, currentSceneName);
   const strictCustomDecisionBlock = includeChoices ? buildStrictCustomDecisionBlock(p.strictCustom) : '';
   const decisionSystemPrompt = includeChoices
     ? renderPromptTemplate(getDecisionSystemTemplate(p.strictCustom), {})
@@ -194,8 +213,8 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const npcBlock = npcSummary.trim()
     ? ['【当前已知 NPC】', npcSummary.trim()].join('\n')
     : '';
-  const currentSceneBlock = currentSceneName
-    ? `【上一回合所在场景】${currentSceneName}`
+  const currentSceneBlock = currentSceneContextText
+    ? ['【上一回合所在场景】', currentSceneContextText].join('\n')
     : '';
   const defaultDecisionUserPrompt = includeChoices ? buildDecisionUser({
     latestStory,
@@ -204,6 +223,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     recentText,
     npcSummary,
     currentSceneName,
+    currentSceneContext: currentSceneContextText,
     strictCustomDecisionBlock,
   }) : buildDecisionTrackingUser({
     latestStory,
@@ -212,6 +232,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     recentText,
     npcSummary,
     currentSceneName,
+    currentSceneContext: currentSceneContextText,
   });
   const decisionUserPrompt = includeChoices
     ? renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {

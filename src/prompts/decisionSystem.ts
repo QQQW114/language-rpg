@@ -15,7 +15,7 @@ export const DECISION_SYSTEM = `你是一个严格遵守输出协议的文字冒
      "grants":[{"name":"...","description":"...","type":"consumable"}],
      "destroys":[{"name":"与背包中某件道具的 name 完全一致","reason":"..."}],
      "npcs":[{"name":"人物名","role":"...","description":"...","affinityDelta":-20~20,"note":"..."}],
-     "currentScene":{"name":"场景名（4~10 字）","description":"一句话描述，≤25 字"},
+     "currentScene":{"name":"场景名（4~10 字）","description":"一句话描述，≤25 字","time":"当前时间","weather":"当前天气"},
      "availableScenes":[{"name":"可前往场景名","description":"≤20 字一句话"}]
    }
 
@@ -33,6 +33,8 @@ currentScene：
 - name 必填，4~10 字的中文场景名（如"林小雨家的客厅""便利店收银台""校门口"）；
 - 必须根据最新故事推断，【不要】臆造；如果场景没有变化，name 与上次保持一致；
 - description ≤25 字的一句话感官/氛围描述。
+- time 必填，写主角当前可感知的时间段或具体时间（如"清晨""午后""深夜""雨夜三点"）；若故事没有推进时间，沿用上一回合。
+- weather 必填，写当前天气或环境气候（如"晴朗微风""阴雨""室内闷热""地下潮冷"）；室内也要写可感知的环境状态；若无法判断，沿用上一回合或写"不明"。
 
 availableScenes：
 - 2~4 个当前能直接前往的相邻场景（开车/步行/瞬移都算，只要故事世界观合理）；
@@ -42,7 +44,7 @@ availableScenes：
 - 每个场景 name ≤10 字，description ≤20 字一句话。
 
 例：
-{"choices":[{"id":"a","label":"打开冰箱翻找昨晚剩的苹果派","hint":"温和"}],"grants":[],"destroys":[],"npcs":[],"currentScene":{"name":"自家厨房","description":"晨光斜切过料理台，冰箱嗡嗡作响"},"availableScenes":[{"name":"自己卧室","description":"未叠的被褥还留着温度"},{"name":"客厅","description":"电视默默亮着早间新闻"},{"name":"屋外小院","description":"蝉鸣与晾衣绳在风里"}]}`;
+{"choices":[{"id":"a","label":"打开冰箱翻找昨晚剩的苹果派","hint":"温和"}],"grants":[],"destroys":[],"npcs":[],"currentScene":{"name":"自家厨房","description":"晨光斜切过料理台，冰箱嗡嗡作响","time":"清晨","weather":"晴朗微风"},"availableScenes":[{"name":"自己卧室","description":"未叠的被褥还留着温度"},{"name":"客厅","description":"电视默默亮着早间新闻"},{"name":"屋外小院","description":"蝉鸣与晾衣绳在风里"}]}`;
 
 export const DECISION_TRACKING_SYSTEM = `你是一个严格遵守输出协议的文字冒险状态追踪助手。根据故事摘要、最近回合与最新故事片段，只提取本回合造成的状态变化，用于维护背包、NPC 与场景。
 
@@ -61,7 +63,7 @@ export const DECISION_TRACKING_SYSTEM = `你是一个严格遵守输出协议的
      "grants":[{"name":"...","description":"...","type":"consumable"}],
      "destroys":[{"name":"与背包中某件道具的 name 完全一致","reason":"..."}],
      "npcs":[{"name":"人物名","role":"...","description":"...","affinityDelta":-20~20,"note":"..."}],
-     "currentScene":{"name":"场景名（4~10 字）","description":"一句话描述，≤25 字"},
+     "currentScene":{"name":"场景名（4~10 字）","description":"一句话描述，≤25 字","time":"当前时间","weather":"当前天气"},
      "availableScenes":[{"name":"可前往场景名","description":"≤20 字一句话"}]
    }
 
@@ -77,6 +79,8 @@ currentScene：
 - name 必填，4~10 字的中文场景名；
 - 必须根据最新故事推断，【不要】臆造；如果场景没有变化，name 与上次保持一致；
 - description ≤25 字的一句话感官/氛围描述。
+- time 必填，写主角当前可感知的时间段或具体时间；若故事没有推进时间，沿用上一回合。
+- weather 必填，写当前天气或环境气候；室内也要写可感知的环境状态；若无法判断，沿用上一回合或写"不明"。
 
 availableScenes：
 - 2~4 个当前能直接前往的相邻场景；
@@ -91,6 +95,7 @@ export interface BuildDecisionUserParams {
   recentText?: string;
   npcSummary?: string;
   currentSceneName?: string;
+  currentSceneContext?: string;
   strictCustomDecisionBlock?: string;
 }
 
@@ -107,8 +112,8 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
   if (p.npcSummary?.trim()) {
     parts.push('【当前已知 NPC】', p.npcSummary.trim(), '');
   }
-  if (p.currentSceneName) {
-    parts.push(`【上一回合所在场景】${p.currentSceneName}`, '');
+  if (p.currentSceneContext || p.currentSceneName) {
+    parts.push('【上一回合所在场景】', p.currentSceneContext || p.currentSceneName || '', '');
   }
   if (p.strictCustomDecisionBlock?.trim()) {
     parts.push(p.strictCustomDecisionBlock.trim(), '');
@@ -118,7 +123,7 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
   parts.push('- destroys 的 name 必须与背包中某件道具 name 完全一致；');
   parts.push('- npcs 的 name 必须与已知 NPC 完全一致以便合并；');
   parts.push('- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；');
-  parts.push('- currentScene 必须贴合最新故事叙述；availableScenes 只列直接相邻可达处。');
+  parts.push('- currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。');
   parts.push('- 没有就是空数组或缺省。');
   return parts.join('\n');
 }
@@ -136,8 +141,8 @@ export function buildDecisionTrackingUser(p: BuildDecisionUserParams): string {
   if (p.npcSummary?.trim()) {
     parts.push('【当前已知 NPC】', p.npcSummary.trim(), '');
   }
-  if (p.currentSceneName) {
-    parts.push(`【上一回合所在场景】${p.currentSceneName}`, '');
+  if (p.currentSceneContext || p.currentSceneName) {
+    parts.push('【上一回合所在场景】', p.currentSceneContext || p.currentSceneName || '', '');
   }
   parts.push('请只做状态追踪，按协议输出 JSON。注意：');
   parts.push('- 本次不要生成玩家选项，不要输出行动建议；');
@@ -145,7 +150,7 @@ export function buildDecisionTrackingUser(p: BuildDecisionUserParams): string {
   parts.push('- destroys 的 name 必须与背包中某件道具 name 完全一致；');
   parts.push('- npcs 的 name 必须与已知 NPC 完全一致以便合并；');
   parts.push('- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；');
-  parts.push('- currentScene 必须贴合最新故事叙述；availableScenes 只列直接相邻可达处。');
+  parts.push('- currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。');
   parts.push('- 没有就是空数组或缺省。');
   return parts.join('\n');
 }

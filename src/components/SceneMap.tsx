@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { SceneRef } from '@/types/game';
-import { Compass, CornerDownRight, MapPin } from 'lucide-react';
+import { Clock, CloudSun, Compass, CornerDownRight, MapPin } from 'lucide-react';
 import { clsx } from '@/lib/utils';
 
 interface SceneMapProps {
@@ -62,6 +62,20 @@ export function SceneMap({ current, available, history, onTravel, disabled }: Sc
           {current.description && (
             <div className="text-[11px] text-parchment-200/70 italic mt-0.5 leading-relaxed line-clamp-2">
               {current.description}
+            </div>
+          )}
+          {(current.time || current.weather) && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {current.time && (
+                <span className="inline-flex items-center gap-1 rounded border border-gold/30 bg-gold/10 px-1.5 py-0.5 text-[10px] text-parchment-100">
+                  <Clock size={10} /> {current.time}
+                </span>
+              )}
+              {current.weather && (
+                <span className="inline-flex items-center gap-1 rounded border border-parchment-500/40 bg-parchment-800/60 px-1.5 py-0.5 text-[10px] text-parchment-100">
+                  <CloudSun size={10} /> {current.weather}
+                </span>
+              )}
             </div>
           )}
         </div>
