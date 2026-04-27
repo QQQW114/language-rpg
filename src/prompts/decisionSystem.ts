@@ -49,6 +49,7 @@ export interface BuildDecisionUserParams {
   recentText?: string;
   npcSummary?: string;
   currentSceneName?: string;
+  strictCustomDecisionBlock?: string;
 }
 
 export function buildDecisionUser(p: BuildDecisionUserParams): string {
@@ -66,6 +67,9 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
   }
   if (p.currentSceneName) {
     parts.push(`【上一回合所在场景】${p.currentSceneName}`, '');
+  }
+  if (p.strictCustomDecisionBlock?.trim()) {
+    parts.push(p.strictCustomDecisionBlock.trim(), '');
   }
   parts.push('请按协议输出 JSON。注意：');
   parts.push('- grants 不要与背包重名；');

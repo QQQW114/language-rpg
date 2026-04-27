@@ -1,3 +1,5 @@
+import type { StrictCustomConfig } from './custom';
+
 export type MessageRole = 'system' | 'user' | 'assistant';
 
 export interface Message {
@@ -48,6 +50,7 @@ export interface GameContent {
   worldBookIds: string[];     // 激活的世界书 id
   eventIds: string[];         // 启用的随机事件 id
   characterName?: string;     // 玩家为角色起的名字
+  strictCustom?: StrictCustomConfig; // 严格自定义模式配置（创建存档时固化）
 }
 
 export interface TriggeredEventRecord {

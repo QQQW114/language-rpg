@@ -3,6 +3,7 @@
 import type { Message, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
 import type { AppSettings } from '@/types/settings';
+import type { StrictCustomConfig } from '@/types/custom';
 import { chatStreamDetailed, type ChatMessage } from './llmClient';
 import { buildStorySystem } from '@/prompts/storySystem';
 
@@ -24,6 +25,7 @@ export interface StoryRequest {
   npcs?: Npc[];
   anchors?: MemoryAnchor[];
   currentScene?: SceneRef;
+  strictCustom?: StrictCustomConfig;
   summarizedUntilIndex?: number;
   finalizeRequested?: boolean;
   onDelta: (text: string) => void;
@@ -48,6 +50,7 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     npcs: p.npcs,
     anchors: p.anchors,
     currentScene: p.currentScene,
+    strictCustom: p.strictCustom,
     finalizeRequested: p.finalizeRequested,
     lengthHint: p.settings.storyLength,
     styleAddendum: p.settings.storyStyleAddendum,

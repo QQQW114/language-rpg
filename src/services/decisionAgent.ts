@@ -1,11 +1,13 @@
 // 决策 Agent：根据最新故事片段 + 最近上下文 + 背包 + NPC + 当前场景，请求选项 / grants / destroys / npcs / scenes
 
 import type { AppSettings } from '@/types/settings';
+import type { StrictCustomConfig } from '@/types/custom';
 import type { Choice, Item, ItemType, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import { chatJSON } from './llmClient';
 import { DECISION_SYSTEM, buildDecisionUser } from '@/prompts/decisionSystem';
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
+import { buildStrictCustomDecisionBlock } from '@/lib/strictCustom';
 import type { RawGrant, RawDestroy } from '@/lib/items';
 
 export interface DecisionRequest {
@@ -16,6 +18,7 @@ export interface DecisionRequest {
   summary?: string;
   recent?: Message[];
   currentSceneName?: string;
+  strictCustom?: StrictCustomConfig;
   signal?: AbortSignal;
 }
 
@@ -164,6 +167,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const { settings, latestStory, backpack, npcs, summary, recent, currentSceneName, signal } = p;
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
+  const strictCustomDecisionBlock = buildStrictCustomDecisionBlock(p.strictCustom);
 
   const msgs = recent ?? [];
   const lastA = [...msgs].reverse().find((m) => m.role === 'assistant');
@@ -180,7 +184,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
         temperature,
         messages: [
           { role: 'system', content: DECISION_SYSTEM },
-          { role: 'user', content: buildDecisionUser({ latestStory, backpackSummary, summary, recentText, npcSummary, currentSceneName }) },
+          { role: 'user', content: buildDecisionUser({ latestStory, backpackSummary, summary, recentText, npcSummary, currentSceneName, strictCustomDecisionBlock }) },
         ],
         signal,
       },

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, Dices, Sparkles, Wand2 } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Dices, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react';
 import { useContentStore, selectAllOutlines, selectAllBackgrounds, selectAllWorldBooks, selectAllEvents, flattenWorldBookEntries } from '@/store/useContentStore';
 import { useGameStore } from '@/store/useGameStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -10,8 +10,11 @@ import { Input } from '@/components/ui/Input';
 import { OrnateDivider } from '@/components/ui/Ornaments';
 import { itemsFromStartStrings } from '@/lib/items';
 import { requestRandomOutline, requestRandomBackground, requestRandomScene, requestRandomEvents, requestRandomWorldBook } from '@/services/randomizers';
+import { StrictCustomEditor } from '@/components/StrictCustomEditor';
+import { useStrictCustomStore } from '@/store/useStrictCustomStore';
+import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
 
-type Step = 'outline' | 'background' | 'config';
+type Step = 'outline' | 'background' | 'config' | 'strict';
 
 export default function SetupPage() {
   const nav = useNavigate();
@@ -23,6 +26,7 @@ export default function SetupPage() {
   const events = useContentStore(selectAllEvents);
 
   const createSave = useGameStore((s) => s.createSave);
+  const strictCustomDraft = useStrictCustomStore((s) => s.config);
 
   const [step, setStep] = useState<Step>('outline');
   const [outlineId, setOutlineId] = useState<string>();
@@ -57,6 +61,7 @@ export default function SetupPage() {
     () => backgrounds.find((b) => b.id === backgroundId),
     [backgrounds, backgroundId],
   );
+  const strictDetailCount = strictCustomDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
 
   // 选中 outline 时默认挂载其关联的世界书
   useEffect(() => {
@@ -176,7 +181,8 @@ export default function SetupPage() {
     outlineId && backgroundId && (infiniteMode || totalRounds >= 5) && manualInputEvery >= 1;
 
   const handleBack = () => {
-    if (step === 'config') setStep('background');
+    if (step === 'strict') setStep('config');
+    else if (step === 'config') setStep('background');
     else if (step === 'background') setStep('outline');
     else nav('/');
   };
@@ -186,6 +192,8 @@ export default function SetupPage() {
       if (outlineId) setStep('background');
     } else if (step === 'background') {
       if (backgroundId) setStep('config');
+    } else if (step === 'strict') {
+      setStep('config');
     } else {
       start();
     }
@@ -194,10 +202,11 @@ export default function SetupPage() {
   const canGoNext =
     step === 'outline' ? !!outlineId
       : step === 'background' ? !!backgroundId
+      : step === 'strict' ? true
       : !!canStart;
 
-  const nextLabel = step === 'config' ? '启程' : '下一步';
-  const backLabel = step === 'outline' ? '返回主页' : '上一步';
+  const nextLabel = step === 'config' ? '启程' : step === 'strict' ? '返回启程设定' : '下一步';
+  const backLabel = step === 'outline' ? '返回主页' : step === 'strict' ? '返回启程设定' : '上一步';
 
   const toggle = (list: string[], id: string): string[] =>
     list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
@@ -210,6 +219,7 @@ export default function SetupPage() {
     }
     if (!selectedOutline || !selectedBackground) return;
     const saveName = `${characterName || '旅人'} · ${selectedOutline.title}`;
+    const strictCustom = normalizeStrictCustomConfig(strictCustomDraft);
     createSave({
       name: saveName,
       config: {
@@ -224,6 +234,7 @@ export default function SetupPage() {
         worldBookIds,
         eventIds,
         characterName: characterName.trim() || undefined,
+        strictCustom: strictCustom.enabled ? strictCustom : undefined,
       },
       initialScene: (customStartScene?.trim() || selectedBackground.startScene),
       initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),
@@ -240,7 +251,7 @@ export default function SetupPage() {
         <div className="flex gap-4 text-sm font-serif">
           <StepDot active={step === 'outline'} done={!!outlineId}>一 · 选择故事</StepDot>
           <StepDot active={step === 'background'} done={!!backgroundId}>二 · 选择出身</StepDot>
-          <StepDot active={step === 'config'} done={!!canStart}>三 · 启程</StepDot>
+          <StepDot active={step === 'config' || step === 'strict'} done={!!canStart}>三 · 启程</StepDot>
         </div>
         <div className="w-16" />
       </div>
@@ -364,6 +375,10 @@ export default function SetupPage() {
         </div>
       )}
 
+      {step === 'strict' && (
+        <StrictCustomEditor />
+      )}
+
       {step === 'config' && selectedOutline && selectedBackground && (
         <div className="grid gap-6 md:grid-cols-5">
           <div className="md:col-span-3">
@@ -427,6 +442,29 @@ export default function SetupPage() {
                 hint="超载需丢弃"
               />
             </div>
+
+            <Card className={strictCustomDraft.enabled ? 'mt-4 border-gold/70 shadow-glow-sm' : 'mt-4'}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <CardTitle className="flex items-center gap-2 mb-1">
+                    <SlidersHorizontal size={16} /> 严格自定义模式
+                    {strictCustomDraft.enabled && (
+                      <span className="text-[10px] text-gold/80 tracking-[0.25em] uppercase">已启用</span>
+                    )}
+                  </CardTitle>
+                  <CardMeta>
+                    用高优先级提示词控制隐藏设定揭示、回合推进粒度和指定回合详细大纲。
+                  </CardMeta>
+                  <div className="text-xs text-parchment-200/70">
+                    详细大纲 {strictDetailCount} 项
+                    {strictCustomDraft.enabled ? ' · 将随新旅程固化' : ' · 当前未启用'}
+                  </div>
+                </div>
+                <Button variant="outline" onClick={() => setStep('strict')}>
+                  编辑
+                </Button>
+              </div>
+            </Card>
 
             <OrnateDivider>世界书</OrnateDivider>
             <div className="text-xs text-parchment-200/70 mb-2">
@@ -593,6 +631,7 @@ export default function SetupPage() {
             {step === 'outline' && '一 · 选择故事'}
             {step === 'background' && '二 · 选择出身'}
             {step === 'config' && '三 · 启程'}
+            {step === 'strict' && '三 · 严格自定义'}
           </div>
           <Button
             size="lg"

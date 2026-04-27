@@ -3,7 +3,9 @@
 
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
 import type { Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
+import type { StrictCustomConfig } from '@/types/custom';
 import { formatItemsForPrompt } from '@/lib/items';
+import { buildStrictCustomStoryBlock } from '@/lib/strictCustom';
 
 export interface BuildStorySystemParams {
   outline?: StoryOutline;
@@ -22,6 +24,7 @@ export interface BuildStorySystemParams {
   finalizeRequested?: boolean;  // 无尽模式下玩家要求本回合收束
   lengthHint?: 'short' | 'standard' | 'long';
   styleAddendum?: string;
+  strictCustom?: StrictCustomConfig;
 }
 
 function inferAct(currentRound: number, totalRounds: number, acts: string[] | undefined): string {
@@ -35,7 +38,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const {
     outline, background, characterName, activeWorldBookEntries,
     summary, currentRound, totalRounds, triggeredEvent, backpack, usedItems, npcs, anchors, currentScene,
-    finalizeRequested, lengthHint, styleAddendum,
+    finalizeRequested, lengthHint, styleAddendum, strictCustom,
   } = p;
 
   const isInfinite = !totalRounds || totalRounds <= 0;
@@ -128,6 +131,11 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     const desc = currentScene.description ? ` —— ${currentScene.description}` : '';
     parts.push('', `【当前所在场景】${currentScene.name}${desc}`);
     parts.push('若玩家本回合输入显式表达了"前往 XXX"的意图，请在本回合完成场景切换，用感官细节描写抵达过程与新环境；否则继续在当前场景内推进。');
+  }
+
+  const strictCustomBlock = buildStrictCustomStoryBlock(strictCustom, currentRound);
+  if (strictCustomBlock) {
+    parts.push('', strictCustomBlock);
   }
 
   if (usedItems && usedItems.length) {

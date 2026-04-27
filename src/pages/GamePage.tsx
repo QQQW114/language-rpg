@@ -201,6 +201,7 @@ export default function GamePage() {
         npcs: state.npcs,
         anchors: state.anchors,
         currentScene: state.currentScene,
+        strictCustom: content.strictCustom,
         summarizedUntilIndex: state.summarizedUntilIndex,
         finalizeRequested: !!state.finalizeRequested,
         onDelta: (t) => setStreaming((prev) => prev + t),
@@ -291,6 +292,7 @@ export default function GamePage() {
         summary: s.state.summary,
         recent: s.state.history.slice(-8),
         currentSceneName: s.state.currentScene?.name,
+        strictCustom: s.content.strictCustom,
       });
       const grantKey = `round-${s.state.currentRound}`;
       actions.applyDecisionResult(s.id, grantKey, grants, destroys, s.state.currentRound);
