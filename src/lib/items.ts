@@ -22,7 +22,17 @@ export interface RawGrant {
 }
 
 export interface RawDestroy {
+  id?: string;
   name: string;
+  reason?: string;
+}
+
+export interface RawItemPatch {
+  id?: string;
+  name?: string;
+  action: 'update' | 'delete';
+  description?: string;
+  type?: ItemType;
   reason?: string;
 }
 

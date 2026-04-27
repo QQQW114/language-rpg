@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { GameSave, GameState, GameConfig, GameContent, Message, Choice, GamePhase, Item, AdventureReview, Npc, NpcUpdateRaw, MemoryAnchor, SceneRef } from '@/types/game';
 import { clamp, genId, nowMs } from '@/lib/utils';
-import { createItem, type RawGrant, type RawDestroy } from '@/lib/items';
+import { createItem, type RawGrant, type RawDestroy, type RawItemPatch } from '@/lib/items';
 
 interface GameStoreState {
   saves: Record<string, GameSave>;
@@ -37,7 +37,7 @@ interface GameStoreState {
   consumeRefresh: (id: string) => boolean;     // 返回是否成功消耗
 
   // ---- 背包 / 道具 ----
-  applyDecisionResult: (id: string, grantKey: string, grants: RawGrant[], destroys: RawDestroy[], round: number) => RawDestroy[];
+  applyDecisionResult: (id: string, grantKey: string, grants: RawGrant[], destroys: RawDestroy[], itemPatches: RawItemPatch[], round: number) => RawDestroy[];
   commitPendingGrants: (id: string) => void;     // 固化 grants + 移除 pendingDestroy 项
   toggleSelectItem: (id: string, itemId: string) => void;
   clearSelectedItems: (id: string) => void;
@@ -120,6 +120,93 @@ function mergeScenes(history: SceneRef[], scenes: Array<SceneRef | undefined>): 
     });
   }
   return Array.from(byName.values()).slice(-40);
+}
+
+function findItemIndex(items: Item[], ref: { id?: string; name?: string }): number {
+  const id = ref.id?.trim();
+  if (id) {
+    const idx = items.findIndex((it) => it.id === id);
+    if (idx >= 0) return idx;
+  }
+  const name = ref.name?.trim();
+  if (name) {
+    return items.findIndex((it) => it.name.trim() === name);
+  }
+  return -1;
+}
+
+function markItemPendingDestroy(
+  items: Item[],
+  ref: { id?: string; name?: string; reason?: string },
+  appliedDestroys: RawDestroy[],
+): void {
+  const idx = findItemIndex(items, ref);
+  if (idx < 0 || items[idx].pendingDestroy) return;
+  const reason = ref.reason?.trim().slice(0, 80) || undefined;
+  items[idx] = { ...items[idx], pendingDestroy: true, destroyReason: reason };
+  appliedDestroys.push({ id: items[idx].id, name: items[idx].name, reason });
+}
+
+function applyItemPatches(items: Item[], patches: RawItemPatch[], appliedDestroys: RawDestroy[]): Item[] {
+  if (!patches?.length) return items;
+  const next = [...items];
+  for (const patch of patches.slice(0, 6)) {
+    const idx = findItemIndex(next, patch);
+    if (idx < 0) continue;
+    if (patch.action === 'delete') {
+      markItemPendingDestroy(next, patch, appliedDestroys);
+      continue;
+    }
+
+    const name = patch.name?.trim().slice(0, 20);
+    const description = patch.description?.trim().slice(0, 160);
+    const type = patch.type === 'consumable' || patch.type === 'reusable' ? patch.type : undefined;
+    if (!name && !description && !type) continue;
+    next[idx] = {
+      ...next[idx],
+      name: name || next[idx].name,
+      description: description || next[idx].description,
+      type: type || next[idx].type,
+    };
+  }
+  return next;
+}
+
+function firstUniqueNpcIndex(npcs: Npc[], predicate: (npc: Npc) => boolean): number {
+  const matches = npcs
+    .map((npc, index) => ({ npc, index }))
+    .filter(({ npc }) => predicate(npc));
+  return matches.length === 1 ? matches[0].index : -1;
+}
+
+function findNpcIndex(npcs: Npc[], ref: { id?: string; name?: string; role?: string }): number {
+  const id = ref.id?.trim();
+  if (id) {
+    const idx = npcs.findIndex((n) => n.id === id);
+    if (idx >= 0) return idx;
+  }
+  const name = ref.name?.trim();
+  if (name) {
+    const idx = npcs.findIndex((n) => n.name.trim() === name);
+    if (idx >= 0) return idx;
+    const byExistingRole = firstUniqueNpcIndex(npcs, (n) => n.role?.trim() === name);
+    if (byExistingRole >= 0) return byExistingRole;
+  }
+  const role = ref.role?.trim();
+  if (role) {
+    const byRoleOrName = firstUniqueNpcIndex(npcs, (n) =>
+      n.name.trim() === role || n.role?.trim() === role,
+    );
+    if (byRoleOrName >= 0) return byRoleOrName;
+  }
+  return -1;
+}
+
+function normalizeNpcAffinity(base: number, direct?: number, delta?: number): number {
+  const hasDirect = Number.isFinite(direct);
+  const directValue = hasDirect ? Math.round(direct as number) : base;
+  const deltaValue = Number.isFinite(delta) ? Math.round(delta as number) : 0;
+  return clamp(directValue + deltaValue, -100, 100);
 }
 
 export const useGameStore = create<GameStoreState>()(
@@ -390,7 +477,7 @@ export const useGameStore = create<GameStoreState>()(
         return true;
       },
 
-      applyDecisionResult: (id, grantKey, grants, destroys, round) => {
+      applyDecisionResult: (id, grantKey, grants, destroys, itemPatches, round) => {
         const appliedDestroys: RawDestroy[] = [];
         set((s) => {
           const save = s.saves[id];
@@ -400,7 +487,10 @@ export const useGameStore = create<GameStoreState>()(
             .filter((it) => !it.pendingGrantKey)
             .map((it) => (it.pendingDestroy ? { ...it, pendingDestroy: undefined, destroyReason: undefined } : it));
 
-          // 2. 加入新的 grants（去重 by name）
+          // 2. 应用模型对既有道具的补丁（update 直接生效；delete 与 destroys 一样先做 pending）
+          items = applyItemPatches(items, itemPatches ?? [], appliedDestroys);
+
+          // 3. 加入新的 grants（去重 by name）
           const existingNames = new Set(items.map((it) => it.name.trim()));
           const fresh: Item[] = (grants ?? [])
             .filter((g) => g && typeof g.name === 'string' && g.name.trim())
@@ -412,24 +502,21 @@ export const useGameStore = create<GameStoreState>()(
             existingNames.add(f.name.trim());
           }
 
-          // 3. 标记 destroys（按 name 完全匹配，首个命中）
+          // 4. 标记 destroys（优先按 id，兼容旧协议按 name 完全匹配）
           for (const d of (destroys ?? []).slice(0, 4)) {
             const targetName = (d?.name ?? '').trim();
-            if (!targetName) continue;
-            const idx = items.findIndex((it) => it.name.trim() === targetName && !it.pendingDestroy);
-            if (idx >= 0) {
-              items[idx] = { ...items[idx], pendingDestroy: true, destroyReason: d.reason };
-              appliedDestroys.push({ name: items[idx].name, reason: d.reason });
-            }
+            const targetId = d?.id?.trim();
+            if (!targetName && !targetId) continue;
+            markItemPendingDestroy(items, { id: targetId, name: targetName, reason: d.reason }, appliedDestroys);
           }
 
-          // 4. 清理已不存在 / 待销毁道具的选中态
+          // 5. 清理已不存在 / 待销毁道具的选中态
           const validForSelect = new Set(
             items.filter((it) => !it.pendingDestroy).map((it) => it.id),
           );
           const selectedItemIds = (save.state.selectedItemIds ?? []).filter((x) => validForSelect.has(x));
 
-          // 5. 容量检查：待销毁道具不计入占用
+          // 6. 容量检查：待销毁道具不计入占用
           const capacity = save.config.itemCapacity ?? 8;
           const effectiveCount = items.filter((it) => !it.pendingDestroy).length;
           const needsDiscard = Math.max(0, effectiveCount - capacity);
@@ -550,42 +637,48 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           if (!updates?.length) return s;
-          const existing = [...(save.state.npcs ?? [])];
-          const byName = new Map(existing.map((n) => [n.name.trim(), n]));
+          const npcs = [...(save.state.npcs ?? [])];
           for (const u of updates) {
             const name = (u.name ?? '').trim();
-            if (!name) continue;
-            const current = byName.get(name);
-            const delta = Number.isFinite(u.affinityDelta) ? (u.affinityDelta as number) : 0;
-            if (current) {
+            const action = u.action ?? 'upsert';
+            const idx = findNpcIndex(npcs, { id: u.id, name, role: u.role });
+
+            if (action === 'delete') {
+              if (idx >= 0) npcs.splice(idx, 1);
+              continue;
+            }
+
+            if (idx >= 0) {
+              const current = npcs[idx];
               const next: Npc = {
                 ...current,
-                role: current.role ?? u.role,
-                description: current.description ?? u.description,
-                affinity: clamp(current.affinity + delta, -100, 100),
+                name: name.slice(0, 20) || current.name,
+                role: u.role?.trim() ? u.role.trim().slice(0, 30) : current.role,
+                description: u.description?.trim() ? u.description.trim().slice(0, 160) : current.description,
+                affinity: normalizeNpcAffinity(current.affinity, u.affinity, u.affinityDelta),
                 lastRound: round,
                 appearances: current.appearances + 1,
-                recentNote: u.note || current.recentNote,
+                recentNote: u.note?.trim() ? u.note.trim().slice(0, 80) : current.recentNote,
               };
-              byName.set(name, next);
+              npcs[idx] = next;
             } else {
+              if (!name) continue;
               const next: Npc = {
-                id: genId('npc'),
-                name,
-                role: u.role,
-                description: u.description,
-                affinity: clamp(delta, -100, 100),
+                id: u.id?.trim() || genId('npc'),
+                name: name.slice(0, 20),
+                role: u.role?.trim() ? u.role.trim().slice(0, 30) : undefined,
+                description: u.description?.trim() ? u.description.trim().slice(0, 160) : undefined,
+                affinity: normalizeNpcAffinity(0, u.affinity, u.affinityDelta),
                 firstRound: round,
                 lastRound: round,
                 appearances: 1,
-                recentNote: u.note,
+                recentNote: u.note?.trim() ? u.note.trim().slice(0, 80) : undefined,
               };
-              byName.set(name, next);
+              npcs.push(next);
             }
           }
-          const merged = Array.from(byName.values());
           return {
-            saves: { ...s.saves, [id]: touch(save, { state: { ...save.state, npcs: merged } }) },
+            saves: { ...s.saves, [id]: touch(save, { state: { ...save.state, npcs } }) },
           };
         }),
 

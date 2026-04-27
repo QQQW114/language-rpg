@@ -164,7 +164,7 @@ export default function GamePage() {
   ) => {
     const actions = useGameStore.getState();
     const current = actions.saves[sourceSave.id] ?? sourceSave;
-    const { choices, grants, destroys, npcs, currentScene, availableScenes } = await requestChoices({
+    const { choices, grants, destroys, itemPatches, npcs, currentScene, availableScenes } = await requestChoices({
       settings,
       latestStory,
       backpack: current.state.backpack ?? [],
@@ -180,7 +180,7 @@ export default function GamePage() {
 
     const afterDecision = useGameStore.getState().saves[sourceSave.id] ?? current;
     const grantKey = `round-${afterDecision.state.currentRound}`;
-    actions.applyDecisionResult(sourceSave.id, grantKey, grants, destroys, afterDecision.state.currentRound);
+    actions.applyDecisionResult(sourceSave.id, grantKey, grants, destroys, itemPatches, afterDecision.state.currentRound);
     if (npcs?.length) actions.applyNpcUpdates(sourceSave.id, npcs, afterDecision.state.currentRound);
     if (includeChoices || currentScene || availableScenes.length) {
       actions.setScenes(sourceSave.id, currentScene, availableScenes);

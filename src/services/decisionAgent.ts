@@ -13,7 +13,7 @@ import {
   getDecisionUserTemplate,
   renderPromptTemplate,
 } from '@/lib/strictCustom';
-import type { RawGrant, RawDestroy } from '@/lib/items';
+import type { RawGrant, RawDestroy, RawItemPatch } from '@/lib/items';
 
 export interface DecisionRequest {
   settings: AppSettings;
@@ -33,6 +33,7 @@ export interface DecisionResult {
   choices: Choice[];
   grants: RawGrant[];
   destroys: RawDestroy[];
+  itemPatches: RawItemPatch[];
   npcs: NpcUpdateRaw[];
   currentScene?: SceneRef;
   availableScenes: SceneRef[];
@@ -43,6 +44,11 @@ const FALLBACK_CHOICES: Choice[] = [
   { id: 'b', label: '果断采取行动，夺取主动权', hint: '冒险' },
   { id: 'c', label: '试探性地与在场的人物交谈', hint: '社交' },
 ];
+
+function cleanId(value: unknown, max = 80): string | undefined {
+  const id = String(value ?? '').trim().slice(0, max);
+  return id || undefined;
+}
 
 function sanitizeChoices(raw: unknown): Choice[] | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -89,10 +95,42 @@ function sanitizeDestroys(raw: unknown): RawDestroy[] {
   const out: RawDestroy[] = [];
   for (const item of arr.slice(0, 4)) {
     if (!item || typeof item !== 'object') continue;
+    const id = cleanId((item as { id?: unknown }).id);
     const name = String((item as { name?: unknown }).name ?? '').trim();
-    if (!name) continue;
+    if (!name && !id) continue;
     const reason = String((item as { reason?: unknown }).reason ?? '').trim();
-    out.push({ name: name.slice(0, 30), reason: reason.slice(0, 80) });
+    out.push({ id, name: name.slice(0, 30), reason: reason.slice(0, 80) });
+  }
+  return out;
+}
+
+function sanitizeItemPatches(raw: unknown): RawItemPatch[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const arr = (raw as { itemPatches?: unknown }).itemPatches;
+  if (!Array.isArray(arr)) return [];
+  const out: RawItemPatch[] = [];
+  for (const item of arr.slice(0, 6)) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    const rawAction = String(obj.action ?? '').trim().toLowerCase();
+    const action: RawItemPatch['action'] =
+      rawAction === 'delete' || rawAction === 'remove' || rawAction === 'destroy' ? 'delete' : 'update';
+    const id = cleanId(obj.id);
+    const name = String(obj.name ?? '').trim().slice(0, 30);
+    if (!id && !name) continue;
+    const description = String(obj.description ?? '').trim().slice(0, 160);
+    const rawType = String(obj.type ?? '').trim().toLowerCase();
+    const type: ItemType | undefined =
+      rawType === 'consumable' ? 'consumable' : rawType === 'reusable' ? 'reusable' : undefined;
+    const reason = String(obj.reason ?? '').trim().slice(0, 80);
+    out.push({
+      id,
+      name: name || undefined,
+      action,
+      description: description || undefined,
+      type,
+      reason: reason || undefined,
+    });
   }
   return out;
 }
@@ -102,19 +140,33 @@ function sanitizeNpcs(raw: unknown): NpcUpdateRaw[] {
   const arr = (raw as { npcs?: unknown }).npcs;
   if (!Array.isArray(arr)) return [];
   const out: NpcUpdateRaw[] = [];
-  for (const item of arr.slice(0, 6)) {
+  for (const item of arr.slice(0, 8)) {
     if (!item || typeof item !== 'object') continue;
-    const name = String((item as any).name ?? '').trim();
-    if (!name) continue;
-    const role = String((item as any).role ?? '').trim().slice(0, 30);
-    const description = String((item as any).description ?? '').trim().slice(0, 120);
-    const deltaNum = Number((item as any).affinityDelta ?? 0);
+    const obj = item as Record<string, unknown>;
+    const id = cleanId(obj.id);
+    const name = String(obj.name ?? '').trim();
+    if (!name && !id) continue;
+    const rawAction = String(obj.action ?? '').trim().toLowerCase();
+    const action: NpcUpdateRaw['action'] =
+      rawAction === 'delete' || rawAction === 'remove'
+        ? 'delete'
+        : rawAction === 'update'
+          ? 'update'
+          : 'upsert';
+    const role = String(obj.role ?? '').trim().slice(0, 30);
+    const description = String(obj.description ?? '').trim().slice(0, 160);
+    const affinityNum = Number(obj.affinity);
+    const affinity = Number.isFinite(affinityNum) ? clamp(Math.round(affinityNum), -100, 100) : undefined;
+    const deltaNum = Number(obj.affinityDelta ?? 0);
     const affinityDelta = Number.isFinite(deltaNum) ? clamp(Math.round(deltaNum), -30, 30) : 0;
-    const note = String((item as any).note ?? '').trim().slice(0, 60);
+    const note = String(obj.note ?? '').trim().slice(0, 80);
     out.push({
-      name: name.slice(0, 16),
+      id,
+      name: name ? name.slice(0, 20) : undefined,
+      action,
       role: role || undefined,
       description: description || undefined,
+      affinity,
       affinityDelta,
       note: note || undefined,
     });
@@ -180,9 +232,49 @@ function formatNpcs(npcs: Npc[]): string {
     .map((n) => {
       const aff = n.affinity > 0 ? `+${n.affinity}` : String(n.affinity);
       const roleTag = n.role ? `（${n.role}）` : '';
-      return `- ${n.name}${roleTag}  好感 ${aff}`;
+      return `- ${n.name}${roleTag}  好感 ${aff}  id:${n.id}`;
     })
     .join('\n');
+}
+
+function formatBackpackJson(items: Item[]): string {
+  const rows = (items ?? []).slice(0, 30).map((it) => ({
+    id: it.id,
+    name: it.name,
+    description: it.description,
+    type: it.type,
+    pendingGrant: !!it.pendingGrantKey,
+    pendingDestroy: !!it.pendingDestroy,
+    destroyReason: it.destroyReason,
+  }));
+  return JSON.stringify(rows, null, 2);
+}
+
+function formatNpcJson(npcs: Npc[]): string {
+  const rows = (npcs ?? []).slice(0, 30).map((n) => ({
+    id: n.id,
+    name: n.name,
+    role: n.role,
+    description: n.description,
+    affinity: n.affinity,
+    firstRound: n.firstRound,
+    lastRound: n.lastRound,
+    appearances: n.appearances,
+    recentNote: n.recentNote,
+  }));
+  return JSON.stringify(rows, null, 2);
+}
+
+function appendMachineStateIfMissing(
+  text: string,
+  backpackJsonBlock: string,
+  npcJsonBlock: string,
+): string {
+  const additions: string[] = [];
+  if (backpackJsonBlock && !text.includes('【当前背包 JSON】')) additions.push(backpackJsonBlock);
+  if (npcJsonBlock && !text.includes('【当前已知 NPC JSON】')) additions.push(npcJsonBlock);
+  if (!additions.length) return text;
+  return [text, ...additions].filter((x) => x.trim()).join('\n\n');
 }
 
 const RECENT_MESSAGES = 6;
@@ -192,6 +284,8 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const includeChoices = p.includeChoices ?? true;
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
+  const backpackJsonBlock = ['【当前背包 JSON】', formatBackpackJson(backpack)].join('\n');
+  const npcJsonBlock = ['【当前已知 NPC JSON】', formatNpcJson(npcs)].join('\n');
   const currentSceneContextText = formatSceneContext(currentScene, currentSceneName);
   const strictCustomDecisionBlock = includeChoices ? buildStrictCustomDecisionBlock(p.strictCustom) : '';
   const decisionSystemPrompt = includeChoices
@@ -219,33 +313,44 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const defaultDecisionUserPrompt = includeChoices ? buildDecisionUser({
     latestStory,
     backpackSummary,
+    backpackJsonBlock,
     summary,
     recentText,
     npcSummary,
+    npcJsonBlock,
     currentSceneName,
     currentSceneContext: currentSceneContextText,
     strictCustomDecisionBlock,
   }) : buildDecisionTrackingUser({
     latestStory,
     backpackSummary,
+    backpackJsonBlock,
     summary,
     recentText,
     npcSummary,
+    npcJsonBlock,
     currentSceneName,
     currentSceneContext: currentSceneContextText,
   });
-  const decisionUserPrompt = includeChoices
+  const renderedDecisionUserPrompt = includeChoices
     ? renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {
       latestStory,
       backpackSummary,
+      backpackJsonBlock,
       summaryBlock,
       recentTextBlock,
       npcBlock,
+      npcJsonBlock,
       currentSceneBlock,
       strictCustomDecisionBlock,
       defaultDecisionUserPrompt,
     }) || defaultDecisionUserPrompt
     : defaultDecisionUserPrompt;
+  const decisionUserPrompt = appendMachineStateIfMissing(
+    renderedDecisionUserPrompt,
+    backpackJsonBlock,
+    npcJsonBlock,
+  );
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {
     const text = await chatJSON(
@@ -269,6 +374,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       choices: choices ?? [],
       grants: sanitizeGrants(obj),
       destroys: sanitizeDestroys(obj),
+      itemPatches: sanitizeItemPatches(obj),
       npcs: sanitizeNpcs(obj),
       currentScene: scenes.currentScene,
       availableScenes: scenes.availableScenes,
@@ -295,6 +401,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       : [],
     grants: [],
     destroys: [],
+    itemPatches: [],
     npcs: [],
     availableScenes: [],
   };

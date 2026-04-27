@@ -60,10 +60,17 @@ export interface TriggeredEventRecord {
   round: number;
 }
 
+export type NpcUpdateAction = 'upsert' | 'update' | 'delete';
+
 export interface NpcUpdateRaw {
-  name: string;
+  // 新协议优先按 id 修改/删除既有 NPC；旧协议可继续只传 name。
+  id?: string;
+  name?: string;
+  action?: NpcUpdateAction;
   role?: string;
   description?: string;
+  // affinity 为直接设定值；affinityDelta 为基于当前值的增量。
+  affinity?: number;
   affinityDelta?: number;
   note?: string;
 }

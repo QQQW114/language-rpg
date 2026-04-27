@@ -29,13 +29,17 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 
 【玩家当前背包】
 {{backpackSummary}}
+{{backpackJsonBlock}}
 {{npcBlock}}
+{{npcJsonBlock}}
 {{currentSceneBlock}}
 {{strictCustomDecisionBlock}}
 请按协议输出 JSON。注意：
 - grants 不要与背包重名；
-- destroys 的 name 必须与背包中某件道具 name 完全一致；
-- npcs 的 name 必须与已知 NPC 完全一致以便合并；
+- 修改/删除已有道具时优先使用【当前背包 JSON】里的 id；新物品才放 grants；
+- destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；
+- 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；
+- 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；
 - npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；
 - currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。
 - 没有就是空数组或缺省。`;
