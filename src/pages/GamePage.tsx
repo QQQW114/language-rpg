@@ -150,6 +150,37 @@ export default function GamePage() {
     return s.activeSaveId ? s.saves[s.activeSaveId] : undefined;
   }, []);
 
+  const applyDecisionForStory = useCallback(async (
+    sourceSave: GameSave,
+    latestStory: string,
+    includeChoices: boolean,
+    signal?: AbortSignal,
+  ) => {
+    const actions = useGameStore.getState();
+    const current = actions.saves[sourceSave.id] ?? sourceSave;
+    const { choices, grants, destroys, npcs, currentScene, availableScenes } = await requestChoices({
+      settings,
+      latestStory,
+      backpack: current.state.backpack ?? [],
+      npcs: current.state.npcs ?? [],
+      summary: current.state.summary,
+      recent: current.state.history.slice(-8),
+      currentSceneName: current.state.currentScene?.name,
+      strictCustom: current.content.strictCustom,
+      includeChoices,
+      signal,
+    });
+
+    const afterDecision = useGameStore.getState().saves[sourceSave.id] ?? current;
+    const grantKey = `round-${afterDecision.state.currentRound}`;
+    actions.applyDecisionResult(sourceSave.id, grantKey, grants, destroys, afterDecision.state.currentRound);
+    if (npcs?.length) actions.applyNpcUpdates(sourceSave.id, npcs, afterDecision.state.currentRound);
+    if (includeChoices || currentScene || availableScenes.length) {
+      actions.setScenes(sourceSave.id, currentScene, availableScenes);
+    }
+    if (includeChoices) actions.setChoices(sourceSave.id, choices);
+  }, [settings]);
+
   // ----- 异步任务：故事 -----
   const runStory = useCallback(async () => {
     const s = getSave();
@@ -237,7 +268,16 @@ export default function GamePage() {
         actions.clearFinalize(s.id);
         actions.endGame(s.id, full);
       } else {
-        if (afterRound % Math.max(config.manualInputEvery, 1) === 0) {
+        const shouldEnterManual = afterRound % Math.max(config.manualInputEvery, 1) === 0;
+        if (shouldEnterManual) {
+          try {
+            await applyDecisionForStory(s, full, false, abort.signal);
+          } catch (err: any) {
+            if (err?.name === 'AbortError') throw err;
+            const msg = err?.message ?? String(err);
+            console.warn('[decisionAgent] tracking-only update failed', err);
+            setErrorMsg(msg);
+          }
           actions.setPhase(s.id, 'manual');
         } else {
           actions.setChoices(s.id, undefined);
@@ -271,41 +311,26 @@ export default function GamePage() {
       setBusy(false);
       abortRef.current = null;
     }
-  }, [getSave, settings, outline, background, worldBooks, allEvents]);
+  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory]);
 
   // ----- 异步任务：选项 + 给予/销毁道具 -----
   const runChoices = useCallback(async () => {
     const s = getSave();
     if (!s) return;
-    const actions = useGameStore.getState();
     const lastAssistant = [...s.state.history].reverse().find((m) => m.role === 'assistant');
     if (!lastAssistant) return;
 
     setBusy(true);
     setErrorMsg(undefined);
     try {
-      const { choices, grants, destroys, npcs, currentScene, availableScenes } = await requestChoices({
-        settings,
-        latestStory: lastAssistant.content,
-        backpack: s.state.backpack ?? [],
-        npcs: s.state.npcs ?? [],
-        summary: s.state.summary,
-        recent: s.state.history.slice(-8),
-        currentSceneName: s.state.currentScene?.name,
-        strictCustom: s.content.strictCustom,
-      });
-      const grantKey = `round-${s.state.currentRound}`;
-      actions.applyDecisionResult(s.id, grantKey, grants, destroys, s.state.currentRound);
-      if (npcs?.length) actions.applyNpcUpdates(s.id, npcs, s.state.currentRound);
-      actions.setScenes(s.id, currentScene, availableScenes);
-      actions.setChoices(s.id, choices);
+      await applyDecisionForStory(s, lastAssistant.content, true);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       setErrorMsg(msg);
     } finally {
       setBusy(false);
     }
-  }, [getSave, settings]);
+  }, [getSave, applyDecisionForStory]);
 
   // ----- 异步任务：评分 -----
   const runReview = useCallback(async () => {

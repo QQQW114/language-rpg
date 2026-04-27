@@ -36,6 +36,7 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 - grants 不要与背包重名；
 - destroys 的 name 必须与背包中某件道具 name 完全一致；
 - npcs 的 name 必须与已知 NPC 完全一致以便合并；
+- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；
 - currentScene 必须贴合最新故事叙述；availableScenes 只列直接相邻可达处。
 - 没有就是空数组或缺省。`;
 

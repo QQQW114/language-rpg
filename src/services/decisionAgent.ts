@@ -4,7 +4,7 @@ import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
 import type { Choice, Item, ItemType, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import { chatJSON } from './llmClient';
-import { buildDecisionUser } from '@/prompts/decisionSystem';
+import { DECISION_TRACKING_SYSTEM, buildDecisionTrackingUser, buildDecisionUser } from '@/prompts/decisionSystem';
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
 import {
@@ -24,6 +24,7 @@ export interface DecisionRequest {
   recent?: Message[];
   currentSceneName?: string;
   strictCustom?: StrictCustomConfig;
+  includeChoices?: boolean;
   signal?: AbortSignal;
 }
 
@@ -170,10 +171,13 @@ const RECENT_MESSAGES = 6;
 
 export async function requestChoices(p: DecisionRequest): Promise<DecisionResult> {
   const { settings, latestStory, backpack, npcs, summary, recent, currentSceneName, signal } = p;
+  const includeChoices = p.includeChoices ?? true;
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
-  const strictCustomDecisionBlock = buildStrictCustomDecisionBlock(p.strictCustom);
-  const decisionSystemPrompt = renderPromptTemplate(getDecisionSystemTemplate(p.strictCustom), {});
+  const strictCustomDecisionBlock = includeChoices ? buildStrictCustomDecisionBlock(p.strictCustom) : '';
+  const decisionSystemPrompt = includeChoices
+    ? renderPromptTemplate(getDecisionSystemTemplate(p.strictCustom), {})
+    : renderPromptTemplate(DECISION_TRACKING_SYSTEM, {});
 
   const msgs = recent ?? [];
   const lastA = [...msgs].reverse().find((m) => m.role === 'assistant');
@@ -193,7 +197,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const currentSceneBlock = currentSceneName
     ? `【上一回合所在场景】${currentSceneName}`
     : '';
-  const defaultDecisionUserPrompt = buildDecisionUser({
+  const defaultDecisionUserPrompt = includeChoices ? buildDecisionUser({
     latestStory,
     backpackSummary,
     summary,
@@ -201,17 +205,26 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     npcSummary,
     currentSceneName,
     strictCustomDecisionBlock,
-  });
-  const decisionUserPrompt = renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {
+  }) : buildDecisionTrackingUser({
     latestStory,
     backpackSummary,
-    summaryBlock,
-    recentTextBlock,
-    npcBlock,
-    currentSceneBlock,
-    strictCustomDecisionBlock,
-    defaultDecisionUserPrompt,
-  }) || defaultDecisionUserPrompt;
+    summary,
+    recentText,
+    npcSummary,
+    currentSceneName,
+  });
+  const decisionUserPrompt = includeChoices
+    ? renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {
+      latestStory,
+      backpackSummary,
+      summaryBlock,
+      recentTextBlock,
+      npcBlock,
+      currentSceneBlock,
+      strictCustomDecisionBlock,
+      defaultDecisionUserPrompt,
+    }) || defaultDecisionUserPrompt
+    : defaultDecisionUserPrompt;
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {
     const text = await chatJSON(
@@ -227,11 +240,12 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       },
     );
     const obj = extractJSON(text);
-    const choices = sanitizeChoices(obj);
-    if (!choices) return null;
+    if (!obj) return null;
+    const choices = includeChoices ? sanitizeChoices(obj) : [];
+    if (includeChoices && !choices) return null;
     const scenes = sanitizeScenes(obj);
     return {
-      choices,
+      choices: choices ?? [],
       grants: sanitizeGrants(obj),
       destroys: sanitizeDestroys(obj),
       npcs: sanitizeNpcs(obj),
@@ -255,7 +269,9 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   }
 
   return {
-    choices: FALLBACK_CHOICES.map((c) => ({ ...c, id: genId('c').slice(-3) })),
+    choices: includeChoices
+      ? FALLBACK_CHOICES.map((c) => ({ ...c, id: genId('c').slice(-3) }))
+      : [],
     grants: [],
     destroys: [],
     npcs: [],
