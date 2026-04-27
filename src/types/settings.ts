@@ -1,6 +1,11 @@
 export type ApiFormat = 'chat' | 'responses';
 export type StoryLength = 'short' | 'standard' | 'long';
 
+export interface StoryStyleSettings {
+  storyLength: StoryLength;
+  storyStyleAddendum: string;
+}
+
 export interface AppSettings {
   apiBaseUrl: string;
   apiKey: string;

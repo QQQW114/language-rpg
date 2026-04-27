@@ -15,6 +15,7 @@ interface GameStoreState {
     initialScene?: string;      // 开局文本，会作为第 0 轮 assistant 消息
     initialItems?: Item[];      // 出身自带的物品
   }) => string;
+  importSave: (save: GameSave) => string;
   setActive: (id: string | undefined) => void;
   deleteSave: (id: string) => void;
   renameSave: (id: string, name: string) => void;
@@ -156,6 +157,23 @@ export const useGameStore = create<GameStoreState>()(
             sceneHistory: [],
             availableScenes: [],
           },
+        };
+        set((s) => ({
+          saves: { ...s.saves, [id]: save },
+          activeSaveId: id,
+        }));
+        return id;
+      },
+
+      importSave: (incoming) => {
+        const now = nowMs();
+        const id = genId('save');
+        const save: GameSave = {
+          ...incoming,
+          id,
+          name: incoming.name || '导入的旅程',
+          createdAt: incoming.createdAt || now,
+          updatedAt: now,
         };
         set((s) => ({
           saves: { ...s.saves, [id]: save },
@@ -624,6 +642,7 @@ export const useGameStore = create<GameStoreState>()(
               anchors: Array.isArray((sv.state as any)?.anchors) ? (sv.state as any).anchors : [],
               sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],
               availableScenes: Array.isArray((sv.state as any)?.availableScenes) ? (sv.state as any).availableScenes : [],
+              currentScene: (sv.state as any)?.currentScene,
             },
           };
         }

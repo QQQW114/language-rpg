@@ -1,20 +1,47 @@
 import { useNavigate } from 'react-router-dom';
 import { useGameStore } from '@/store/useGameStore';
+import { useContentStore } from '@/store/useContentStore';
 import { Button } from '@/components/ui/Button';
 import { CornerFiligree, OrnateDivider } from '@/components/ui/Ornaments';
-import { BookOpen, Settings, Library, ScrollText, Trash2, PlayCircle } from 'lucide-react';
-import { useState } from 'react';
+import { BookOpen, Settings, Library, ScrollText, Trash2, PlayCircle, Upload } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/Dialog';
+import { instantiateJourneyPackage, parseJourneyPackage } from '@/lib/journeyPackage';
 
 export default function HomePage() {
   const nav = useNavigate();
   const saves = useGameStore((s) => s.saves);
   const setActive = useGameStore((s) => s.setActive);
   const deleteSave = useGameStore((s) => s.deleteSave);
+  const importSave = useGameStore((s) => s.importSave);
   const [showSaves, setShowSaves] = useState(false);
+  const [importError, setImportError] = useState<string | undefined>();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const saveList = Object.values(saves).sort((a, b) => b.updatedAt - a.updatedAt);
   const hasSaves = saveList.length > 0;
+
+  async function onImportJourneyFile(file: File | undefined) {
+    if (!file) return;
+    setImportError(undefined);
+    try {
+      const text = await file.text();
+      const pkg = parseJourneyPackage(text);
+      const instantiated = instantiateJourneyPackage(pkg);
+      const content = useContentStore.getState();
+      instantiated.resources.outlines.forEach(content.addOutline);
+      instantiated.resources.backgrounds.forEach(content.addBackground);
+      instantiated.resources.worldBooks.forEach(content.addWorldBook);
+      instantiated.resources.events.forEach(content.addEvent);
+      const id = importSave(instantiated.save);
+      setActive(id);
+      nav('/game');
+    } catch (err: any) {
+      setImportError(err?.message ?? String(err));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
 
   return (
     <div className="min-h-full flex items-center justify-center px-6 py-12">
@@ -48,6 +75,21 @@ export default function HomePage() {
             <Button size="lg" variant="outline" onClick={() => setShowSaves(true)} className="w-64">
               <PlayCircle size={18} /> 继续旅程（{saveList.length}）
             </Button>
+          )}
+          <Button size="lg" variant="outline" onClick={() => fileInputRef.current?.click()} className="w-64">
+            <Upload size={18} /> 导入旅程包
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => onImportJourneyFile(e.target.files?.[0])}
+          />
+          {importError && (
+            <div className="w-64 text-left text-xs text-blood bg-blood/10 border border-blood/50 rounded px-3 py-2 font-serif">
+              导入失败：{importError}
+            </div>
           )}
           <div className="flex gap-2 mt-4">
             <Button variant="ghost" onClick={() => nav('/library')}>

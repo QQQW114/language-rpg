@@ -26,6 +26,7 @@ import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
 import { maybeCompress } from '@/services/contextCompressor';
 import type { Choice, GameSave, Item, Message, SceneRef } from '@/types/game';
+import { buildJourneyPackage } from '@/lib/journeyPackage';
 
 const RECENT_TEXT_WINDOW = 2400;
 
@@ -73,20 +74,25 @@ function formatChatRecord(save: GameSave): string {
   return lines.join('\n');
 }
 
-async function saveTextFile(text: string, fileName: string): Promise<'saved' | 'downloaded' | 'cancelled'> {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+async function saveTextFile(
+  text: string,
+  fileName: string,
+  mime = 'text/markdown;charset=utf-8',
+  types: any[] = [
+    {
+      description: 'Markdown 文本',
+      accept: { 'text/markdown': ['.md'], 'text/plain': ['.txt'] },
+    },
+  ],
+): Promise<'saved' | 'downloaded' | 'cancelled'> {
+  const blob = new Blob([text], { type: mime });
   const picker = (window as any).showSaveFilePicker;
 
   if (typeof picker === 'function') {
     try {
       const handle = await picker({
         suggestedName: fileName,
-        types: [
-          {
-            description: 'Markdown 文本',
-            accept: { 'text/markdown': ['.md'], 'text/plain': ['.txt'] },
-          },
-        ],
+        types,
       });
       const writable = await handle.createWritable();
       await writable.write(blob);
@@ -213,10 +219,17 @@ export default function GamePage() {
 
     const selectedSet = new Set(state.selectedItemIds ?? []);
     const usedItems: Item[] = (state.backpack ?? []).filter((it) => selectedSet.has(it.id));
+    const storySettings = content.storyStyle
+      ? {
+        ...settings,
+        storyLength: content.storyStyle.storyLength,
+        storyStyleAddendum: content.storyStyle.storyStyleAddendum,
+      }
+      : settings;
 
     try {
       const full = await requestStory({
-        settings,
+        settings: storySettings,
         outline,
         background,
         characterName: content.characterName,
@@ -477,6 +490,39 @@ export default function GamePage() {
     }
   }
 
+  async function onExportJourneyPackage() {
+    if (!save) return;
+    setExportMsg(undefined);
+    setErrorMsg(undefined);
+    try {
+      const fileName = `${safeFileName(save.name)}-旅程包.json`;
+      const pkg = buildJourneyPackage({
+        save,
+        settings,
+        outlines,
+        backgrounds,
+        worldBooks,
+        events: allEvents,
+      });
+      const result = await saveTextFile(
+        JSON.stringify(pkg, null, 2),
+        fileName,
+        'application/json;charset=utf-8',
+        [
+          {
+            description: '言灵旅程包 JSON',
+            accept: { 'application/json': ['.json'], 'text/plain': ['.json'] },
+          },
+        ],
+      );
+      if (result === 'cancelled') return;
+      setExportMsg(result === 'saved' ? '旅程包已写入文件。' : '旅程包已导出。');
+      window.setTimeout(() => setExportMsg(undefined), 2200);
+    } catch (err: any) {
+      setErrorMsg(err?.message ?? String(err));
+    }
+  }
+
   function onTravel(scene: SceneRef) {
     if (!save || busy || (save.state.needsDiscard ?? 0) > 0) return;
     const actions = useGameStore.getState();
@@ -518,7 +564,16 @@ export default function GamePage() {
           title="导出当前聊天记录（默认使用固定文件名，方便覆盖旧文件）"
         >
           <Download size={16} />
-          <span className="hidden sm:inline">导出</span>
+          <span className="hidden sm:inline">聊天</span>
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onExportJourneyPackage}
+          title="导出可分享/可导入的完整旅程包（不包含 API Key）"
+        >
+          <Download size={16} />
+          <span className="hidden sm:inline">旅程包</span>
         </Button>
         <Button
           variant="outline"

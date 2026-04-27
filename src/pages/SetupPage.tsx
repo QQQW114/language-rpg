@@ -276,6 +276,10 @@ export default function SetupPage() {
         eventIds,
         characterName: characterName.trim() || undefined,
         strictCustom: strictCustom.enabled ? strictCustom : undefined,
+        storyStyle: {
+          storyLength: settings.storyLength,
+          storyStyleAddendum: settings.storyStyleAddendum,
+        },
       },
       initialScene: (customStartScene?.trim() || selectedBackground.startScene),
       initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),

@@ -1,4 +1,5 @@
 import type { StrictCustomConfig } from './custom';
+import type { StoryStyleSettings } from './settings';
 
 export type MessageRole = 'system' | 'user' | 'assistant';
 
@@ -51,6 +52,7 @@ export interface GameContent {
   eventIds: string[];         // 启用的随机事件 id
   characterName?: string;     // 玩家为角色起的名字
   strictCustom?: StrictCustomConfig; // 严格自定义模式配置（创建存档时固化）
+  storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 
 export interface TriggeredEventRecord {
