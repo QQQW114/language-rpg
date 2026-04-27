@@ -443,6 +443,15 @@ export default function GamePage() {
     useGameStore.getState().removeAnchor(save.id, anchorId);
   }
 
+  function canModifyMessage(_historyIndex: number, _msg: Message) {
+    return (
+      !!save &&
+      !busy &&
+      !streaming &&
+      save.state.phase !== 'story'
+    );
+  }
+
   function canModifyAssistant(historyIndex: number, msg: Message) {
     return (
       !!save &&
@@ -452,6 +461,16 @@ export default function GamePage() {
       !streaming &&
       save.state.phase !== 'story'
     );
+  }
+
+  function onEditMessage(historyIndex: number, msg: Message, content: string) {
+    if (!save || !canModifyMessage(historyIndex, msg)) return;
+    useGameStore.getState().updateMessage(save.id, historyIndex, content);
+  }
+
+  function onDeleteMessage(historyIndex: number, msg: Message) {
+    if (!save || !canModifyMessage(historyIndex, msg)) return;
+    useGameStore.getState().deleteMessage(save.id, historyIndex);
   }
 
   function onEditAssistant(historyIndex: number, msg: Message, content: string) {
@@ -488,6 +507,11 @@ export default function GamePage() {
     } catch (err: any) {
       setErrorMsg(err?.message ?? String(err));
     }
+  }
+
+  function onChangeCurrentChoices(choices: Choice[]) {
+    if (!save || busy || save.state.phase !== 'choices') return;
+    useGameStore.getState().setChoices(save.id, choices);
   }
 
   async function onExportJourneyPackage() {
@@ -621,9 +645,12 @@ export default function GamePage() {
             anchors={save.state.anchors}
             onPinAnchor={onPinAnchor}
             onUnpinAnchor={onUnpinAnchor}
+            onEditMessage={onEditMessage}
+            onDeleteMessage={onDeleteMessage}
             onEditAssistant={onEditAssistant}
             onRegenerateAssistant={onRegenerateAssistant}
             onRegenerateAssistantWithHint={onRegenerateAssistantWithHint}
+            canModifyMessage={canModifyMessage}
             canEditAssistant={canModifyAssistant}
             canRegenerateAssistant={canModifyAssistant}
           />
@@ -719,6 +746,7 @@ export default function GamePage() {
                   <ChoicePanel
                     choices={save.state.lastChoices}
                     onPick={onPick}
+                    onChangeChoices={onChangeCurrentChoices}
                     disabled={busy || needsDiscard > 0}
                   />
                 )}

@@ -22,6 +22,8 @@ interface GameStoreState {
   updateStateOf: (id: string, patch: Partial<GameState>) => void;
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
   appendMessage: (id: string, msg: Message) => void;
+  updateMessage: (id: string, historyIndex: number, content: string) => void;
+  deleteMessage: (id: string, historyIndex: number) => void;
   updateAssistantMessage: (id: string, historyIndex: number, content: string) => void;
   regenerateAssistantMessage: (id: string, historyIndex: number, hint?: string) => void;
   setPhase: (id: string, phase: GamePhase) => void;
@@ -226,20 +228,20 @@ export const useGameStore = create<GameStoreState>()(
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
 
-      updateAssistantMessage: (id, historyIndex, content) =>
+      updateMessage: (id, historyIndex, content) =>
         set((s) => {
           const save = s.saves[id];
           if (!save) return s;
           const msg = save.state.history[historyIndex];
           const nextContent = content.trim();
-          if (!msg || msg.role !== 'assistant' || !nextContent) return s;
+          if (!msg || !nextContent) return s;
 
           const history = save.state.history.map((m, i) =>
             i === historyIndex ? { ...m, content: nextContent } : m,
           );
           const latest = latestAssistantIndex(save.state.history);
-          const isLatest = historyIndex === latest;
-          const pendingClean = isLatest && save.state.phase === 'choices'
+          const isLatestAssistant = msg.role === 'assistant' && historyIndex === latest;
+          const pendingClean = isLatestAssistant && save.state.phase === 'choices'
             ? clearPendingDecisionItems(save.state, save.config.itemCapacity ?? 8)
             : {};
           const summaryInvalid = historyIndex < (save.state.summarizedUntilIndex ?? 0);
@@ -251,11 +253,54 @@ export const useGameStore = create<GameStoreState>()(
             error: undefined,
             regenerationHint: undefined,
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
-            ...(isLatest && save.state.phase === 'choices' ? { lastChoices: undefined } : {}),
-            ...(isLatest && save.state.phase === 'ended' ? { ending: nextContent, review: undefined } : {}),
+            ...(isLatestAssistant && save.state.phase === 'choices' ? { lastChoices: undefined } : {}),
+            ...(isLatestAssistant && save.state.phase === 'ended' ? { ending: nextContent, review: undefined } : {}),
+            ...(msg.role === 'user' && save.state.lastPlayerInput === msg.content ? { lastPlayerInput: nextContent } : {}),
           };
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
+
+      deleteMessage: (id, historyIndex) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const msg = save.state.history[historyIndex];
+          if (!msg) return s;
+
+          const history = save.state.history.filter((_, i) => i !== historyIndex);
+          const latest = latestAssistantIndex(save.state.history);
+          const isLatestAssistant = msg.role === 'assistant' && historyIndex === latest;
+          const pendingClean = isLatestAssistant
+            ? clearPendingDecisionItems(save.state, save.config.itemCapacity ?? 8)
+            : {};
+          const summaryInvalid = historyIndex <= (save.state.summarizedUntilIndex ?? 0);
+          const lastUser = [...history].reverse().find((m) => m.role === 'user');
+
+          const state: GameState = {
+            ...save.state,
+            ...pendingClean,
+            history,
+            error: undefined,
+            regenerationHint: undefined,
+            ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
+            ...(isLatestAssistant ? {
+              phase: save.state.phase === 'ended' || save.state.phase === 'choices' ? 'manual' : save.state.phase,
+              lastChoices: undefined,
+              ending: undefined,
+              review: undefined,
+            } : {}),
+            ...(msg.role === 'assistant'
+              ? { anchors: (save.state.anchors ?? []).filter((a) => a.round !== msg.round) }
+              : {}),
+            ...(msg.role === 'user' && save.state.lastPlayerInput === msg.content
+              ? { lastPlayerInput: lastUser?.content }
+              : {}),
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      updateAssistantMessage: (id, historyIndex, content) =>
+        get().updateMessage(id, historyIndex, content),
 
       regenerateAssistantMessage: (id, historyIndex, hint) =>
         set((s) => {
