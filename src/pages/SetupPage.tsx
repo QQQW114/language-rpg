@@ -585,7 +585,19 @@ export default function SetupPage() {
                 return (
                   <div
                     key={e.id}
-                    className="bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 hover:border-gold/60"
+                    role={isEditing ? undefined : 'checkbox'}
+                    aria-checked={isEditing ? undefined : eventIds.includes(e.id)}
+                    tabIndex={isEditing ? undefined : 0}
+                    onClick={isEditing ? undefined : () => setEventIds(toggle(eventIds, e.id))}
+                    onKeyDown={isEditing ? undefined : (ev) => {
+                      if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        setEventIds(toggle(eventIds, e.id));
+                      }
+                    }}
+                    className={`bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 hover:border-gold/60 ${
+                      isEditing ? '' : 'cursor-pointer'
+                    }`}
                   >
                     {isEditing && editingEvent ? (
                       <SetupEventEditForm
@@ -599,8 +611,8 @@ export default function SetupPage() {
                         <input
                           type="checkbox"
                           checked={eventIds.includes(e.id)}
-                          onChange={() => setEventIds(toggle(eventIds, e.id))}
-                          className="mt-1 accent-gold"
+                          readOnly
+                          className="mt-1 accent-gold pointer-events-none"
                         />
                         <div className="flex-1 min-w-0">
                           <div className="text-parchment-100 text-sm flex items-center gap-2">
@@ -617,7 +629,11 @@ export default function SetupPage() {
                             {e.directive}
                           </div>
                         </div>
-                        <div className="shrink-0 flex flex-col gap-1">
+                        <div
+                          className="shrink-0 flex flex-col gap-1"
+                          onClick={(ev) => ev.stopPropagation()}
+                          onKeyDown={(ev) => ev.stopPropagation()}
+                        >
                           <Button size="sm" variant="outline" onClick={() => startEventEdit(e)} title="编辑事件">
                             <Pencil size={12} />
                           </Button>

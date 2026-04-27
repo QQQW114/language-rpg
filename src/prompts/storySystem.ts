@@ -31,11 +31,49 @@ export interface BuildStorySystemParams {
   strictCustom?: StrictCustomConfig;
 }
 
-function inferAct(currentRound: number, totalRounds: number, acts: string[] | undefined): string {
-  if (!acts || acts.length === 0) return '';
-  const ratio = Math.max(0, Math.min(1, currentRound / Math.max(totalRounds, 1)));
-  const index = Math.min(acts.length - 1, Math.floor(ratio * acts.length));
-  return acts[index];
+function buildActPlanBlock(
+  acts: string[] | undefined,
+  nextRound: number,
+  totalRounds: number,
+  finalizeRequested?: boolean,
+): string {
+  const cleanActs = (acts ?? []).map((a) => a.trim()).filter(Boolean);
+  if (!cleanActs.length) return '';
+
+  const isInfinite = !totalRounds || totalRounds <= 0;
+  const lines = [
+    '【阶段路线图】（这是长期剧情骨架，必须纳入规划；不要在正文中直接剧透给玩家）',
+  ];
+
+  if (isInfinite) {
+    cleanActs.forEach((act, index) => {
+      lines.push(`· 第 ${index + 1} 阶段：${act}`);
+    });
+    if (finalizeRequested) {
+      lines.push(`当前阶段参考：玩家已要求完结，请服务于最终阶段：${cleanActs[cleanActs.length - 1]}`);
+    } else {
+      lines.push(
+        '当前阶段参考：无尽模式没有固定回合配比；请结合历史摘要与最近对话判断已经完成到哪一阶段，优先推进尚未充分完成的最早阶段，不要自由脱纲或提前跳到后续幕。',
+      );
+    }
+  } else {
+    const ratio = Math.max(0, Math.min(0.999, (nextRound - 1) / Math.max(totalRounds, 1)));
+    const currentIndex = finalizeRequested
+      ? cleanActs.length - 1
+      : Math.min(cleanActs.length - 1, Math.floor(ratio * cleanActs.length));
+
+    cleanActs.forEach((act, index) => {
+      const start = Math.floor((index * totalRounds) / cleanActs.length) + 1;
+      const end = Math.max(start, Math.floor(((index + 1) * totalRounds) / cleanActs.length));
+      lines.push(`· 第 ${index + 1} 阶段（约第 ${start}-${end} 回合）：${act}`);
+    });
+    lines.push(`当前阶段参考：第 ${nextRound} 回合应服务于第 ${currentIndex + 1} 阶段：${cleanActs[currentIndex]}`);
+  }
+
+  lines.push(
+    '执行规则：允许因玩家选择微调顺序，但不要无故抛弃路线图；每回合只推进一个清晰 beat，不要在一个回合内跨越多个阶段。',
+  );
+  return lines.join('\n');
 }
 
 export function buildStorySystem(p: BuildStorySystemParams): string {
@@ -68,8 +106,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
         '（必须严格遵循上述文风与题材，禁止擅自转向其他类型——例如不要把恋爱故事写成惊悚悬疑，不要把温情成长故事写成动作冒险；情节冲突应源于"题材本身应有的张力"，不要靠外部悬疑/超自然元素凭空制造戏剧性。）',
       );
     }
-    const currentAct = inferAct(currentRound, totalRounds, outline.acts);
-    if (currentAct) outlineLines.push(`当前阶段：${currentAct}`);
+    const actPlanBlock = buildActPlanBlock(outline.acts, nextRound, totalRounds, finalizeRequested);
+    if (actPlanBlock) outlineLines.push('', actPlanBlock);
   }
 
   const backgroundBlock = background
