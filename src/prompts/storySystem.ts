@@ -17,6 +17,7 @@ export interface BuildStorySystemParams {
   characterName?: string;
   activeWorldBookEntries: WorldBookEntry[];
   summary?: string;
+  longTermMemory?: string;
   currentRound: number;
   totalRounds: number;          // 0 = 无尽模式
   triggeredEvent?: RandomEvent;
@@ -79,7 +80,7 @@ function buildActPlanBlock(
 export function buildStorySystem(p: BuildStorySystemParams): string {
   const {
     outline, background, characterName, activeWorldBookEntries,
-    summary, currentRound, totalRounds, triggeredEvent, backpack, usedItems, npcs, anchors, currentScene,
+    summary, longTermMemory, currentRound, totalRounds, triggeredEvent, backpack, usedItems, npcs, anchors, currentScene,
     finalizeRequested, lengthHint, styleAddendum, strictCustom,
   } = p;
 
@@ -133,6 +134,14 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     ? ['【历史摘要】', summary.trim()].join('\n')
     : '';
 
+  const memoryBlock = longTermMemory?.trim()
+    ? [
+      '【长期一致性记忆】',
+      '以下记录是系统周期性整理出的外观、服装、关系、承诺、计划、未解线索等连续性信息；写作时请优先保持一致，除非新剧情明确改变它们。',
+      longTermMemory.trim(),
+    ].join('\n')
+    : '';
+
   const npcLines: string[] = [];
   if (npcs && npcs.length) {
     npcLines.push('【已登场人物】（请保持人物一致性：姓名、外形、性格不得与以下记录冲突）');
@@ -140,8 +149,9 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
       const aff = n.affinity > 0 ? `+${n.affinity}` : `${n.affinity}`;
       const role = n.role ? `【${n.role}】` : '';
       const desc = n.description ? ` —— ${n.description}` : '';
+      const details = n.details?.length ? `；细节：${n.details.slice(0, 8).join('、')}` : '';
       const note = n.recentNote ? `（最近：${n.recentNote}）` : '';
-      npcLines.push(`· ${n.name}${role}（好感 ${aff}）${desc}${note}`);
+      npcLines.push(`· ${n.name}${role}（好感 ${aff}）${desc}${details}${note}`);
     }
   }
 
@@ -220,7 +230,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const strictCustomBlock = buildStrictCustomStoryBlock(strictCustom, nextRound);
   const template = getStorySystemTemplate(strictCustom);
 
-  return renderPromptTemplate(template, {
+  const rendered = renderPromptTemplate(template, {
     round: nextRound,
     completedRounds: currentRound,
     nextRound,
@@ -232,6 +242,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     worldBookAlwaysBlock,
     worldBookTriggeredBlock,
     summaryBlock,
+    memoryBlock,
     npcsBlock: npcLines.join('\n'),
     anchorsBlock: anchorLines.join('\n'),
     backpackBlock,
@@ -242,4 +253,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     styleAddendumBlock,
     specialBlock,
   });
+  if (memoryBlock && !rendered.includes('【长期一致性记忆】')) {
+    return [rendered, memoryBlock].join('\n\n');
+  }
+  return rendered;
 }

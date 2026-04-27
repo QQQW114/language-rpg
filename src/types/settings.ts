@@ -17,7 +17,10 @@ export interface AppSettings {
   storyMaxTokens: number;              // 故事单次最大输出 token；0 表示不传，由服务端决定
   maxHistoryRounds: number;
   summaryModel?: string;
+  memoryModel?: string;
   randomModel?: string;
+  memoryEveryRounds: number;          // 每隔多少个已完成回合更新长期记忆；0 表示关闭
+  memoryMaxChars: number;             // 长期记忆块最大字符数
   storyLength: StoryLength;            // 故事篇幅偏好
   storyStyleAddendum: string;          // 故事风格自由追加提示
 }
@@ -33,7 +36,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyMaxTokens: 4096,
   maxHistoryRounds: 22,
   summaryModel: '',
+  memoryModel: '',
   randomModel: '',
+  memoryEveryRounds: 3,
+  memoryMaxChars: 4000,
   storyLength: 'standard',
   storyStyleAddendum: '',
 };

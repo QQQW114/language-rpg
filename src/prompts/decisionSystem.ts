@@ -16,7 +16,7 @@ export const DECISION_SYSTEM = `你是一个严格遵守输出协议的文字冒
      "grants":[{"name":"...","description":"...","type":"consumable"}],
      "destroys":[{"id":"item_xxx","name":"与背包中某件道具的 name 完全一致","reason":"..."}],
      "itemPatches":[{"id":"item_xxx","action":"update","name":"...","description":"...","type":"reusable","reason":"..."}],
-     "npcs":[{"id":"npc_xxx","action":"update","name":"人物名","role":"...","description":"...","affinity":35,"affinityDelta":-20~20,"note":"..."}],
+     "npcs":[{"id":"npc_xxx","action":"update","name":"人物名","role":"...","description":"...","details":["粉色美甲","上次见面穿 JK 服","我怀疑她可能暗恋某人"],"affinity":35,"affinityDelta":-20~20,"note":"..."}],
      "currentScene":{"name":"场景名（4~10 字）","description":"一句话描述，≤25 字","time":"当前时间","weather":"当前天气"},
      "availableScenes":[{"name":"可前往场景名","description":"≤20 字一句话"}]
    }
@@ -38,6 +38,8 @@ npcs：仅列本回合登场/互动或需要修正去重的配角；最多 6 个
 - 新 NPC 用 action="upsert" 或省略 action；可直接给 affinity 作为初始好感度（-100~100），也可给 affinityDelta。
 - 修改已有 NPC 可直接给 affinity 设定当前好感度，或给 affinityDelta 表示本回合变化；不要同时滥用。
 - 删除 NPC 仅用于重复条目、误识别条目或故事明确不应继续保留的人物档案；普通离场/死亡通常仍应保留人物志，不要删除。
+- details 用于记录主角已知的细节短条目：外观（粉色美甲）、服装（上次见面穿 JK 服）、习惯、关系猜测、承诺牵连等；最多 5 条，每条 ≤24 字。
+- 区分"上次见面穿..."与"常常穿..."：只有多次证据才写常态；猜测必须写"我怀疑/可能/似乎"。
 - role / description / note 都必须基于【主角已经看见、听见、亲身经历或合理推断】的信息，不要写上帝视角秘密、真实身份、隐藏动机或主角尚不知道的背景。
 - description 用主角视角记录第一印象或已知事实；若主角不了解对方，就写"我不知道"或"我不了解"，也可以省略。
 
@@ -76,7 +78,7 @@ export const DECISION_TRACKING_SYSTEM = `你是一个严格遵守输出协议的
      "grants":[{"name":"...","description":"...","type":"consumable"}],
      "destroys":[{"id":"item_xxx","name":"与背包中某件道具的 name 完全一致","reason":"..."}],
      "itemPatches":[{"id":"item_xxx","action":"update","name":"...","description":"...","type":"reusable","reason":"..."}],
-     "npcs":[{"id":"npc_xxx","action":"update","name":"人物名","role":"...","description":"...","affinity":35,"affinityDelta":-20~20,"note":"..."}],
+     "npcs":[{"id":"npc_xxx","action":"update","name":"人物名","role":"...","description":"...","details":["粉色美甲","上次见面穿 JK 服","我怀疑她可能暗恋某人"],"affinity":35,"affinityDelta":-20~20,"note":"..."}],
      "currentScene":{"name":"场景名（4~10 字）","description":"一句话描述，≤25 字","time":"当前时间","weather":"当前天气"},
      "availableScenes":[{"name":"可前往场景名","description":"≤20 字一句话"}]
    }
@@ -96,6 +98,8 @@ npcs：仅列本回合登场/互动或需要修正去重的配角；最多 6 个
 - 新 NPC 用 action="upsert" 或省略 action；可直接给 affinity 作为初始好感度（-100~100），也可给 affinityDelta。
 - 修改已有 NPC 可直接给 affinity 设定当前好感度，或给 affinityDelta 表示本回合变化；不要同时滥用。
 - 删除 NPC 仅用于重复条目、误识别条目或故事明确不应继续保留的人物档案；普通离场/死亡通常仍应保留人物志，不要删除。
+- details 用于记录主角已知的细节短条目：外观（粉色美甲）、服装（上次见面穿 JK 服）、习惯、关系猜测、承诺牵连等；最多 5 条，每条 ≤24 字。
+- 区分"上次见面穿..."与"常常穿..."：只有多次证据才写常态；猜测必须写"我怀疑/可能/似乎"。
 - role / description / note 都必须基于【主角已经看见、听见、亲身经历或合理推断】的信息，不要写上帝视角秘密、真实身份、隐藏动机或主角尚不知道的背景。
 - description 用主角视角记录第一印象或已知事实；若主角不了解对方，就写"我不知道"或"我不了解"，也可以省略。
 
@@ -156,6 +160,7 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
   parts.push('- destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；');
   parts.push('- 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；');
   parts.push('- 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；');
+  parts.push('- npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；');
   parts.push('- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；');
   parts.push('- currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。');
   parts.push('- 没有就是空数组或缺省。');
@@ -191,6 +196,7 @@ export function buildDecisionTrackingUser(p: BuildDecisionUserParams): string {
   parts.push('- destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；');
   parts.push('- 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；');
   parts.push('- 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；');
+  parts.push('- npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；');
   parts.push('- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；');
   parts.push('- currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。');
   parts.push('- 没有就是空数组或缺省。');

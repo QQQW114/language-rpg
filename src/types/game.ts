@@ -72,6 +72,8 @@ export interface NpcUpdateRaw {
   // affinity 为直接设定值；affinityDelta 为基于当前值的增量。
   affinity?: number;
   affinityDelta?: number;
+  details?: string[];                  // 外观、服装、习惯、关系猜测等主角已知细节
+  replaceDetails?: boolean;            // true 时用 details 覆盖旧细节；默认追加合并
   note?: string;
 }
 
@@ -84,6 +86,7 @@ export interface Npc {
   firstRound: number;
   lastRound: number;
   appearances: number;
+  details?: string[];                  // 外观/服装/承诺/关系猜测等一致性细节
   recentNote?: string;
 }
 
@@ -99,6 +102,8 @@ export interface GameState {
   history: Message[];
   summary: string;
   summarizedUntilIndex: number;             // history 中已被摘要覆盖的前缀 index（投喂故事模型时从此处开始切）
+  longTermMemory?: string;                  // 周期性整理出的长期一致性记忆块
+  lastMemoryRound?: number;                 // 上次成功更新长期记忆时的已完成回合数
   characterSheet: Record<string, unknown>;
   triggeredEvents: TriggeredEventRecord[];
   lastChoices?: Choice[];

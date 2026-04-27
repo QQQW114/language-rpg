@@ -21,6 +21,7 @@ interface GameStoreState {
   renameSave: (id: string, name: string) => void;
   updateStateOf: (id: string, patch: Partial<GameState>) => void;
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
+  setLongTermMemory: (id: string, memory: string, round: number) => void;
   appendMessage: (id: string, msg: Message) => void;
   updateMessage: (id: string, historyIndex: number, content: string) => void;
   deleteMessage: (id: string, historyIndex: number) => void;
@@ -209,6 +210,31 @@ function normalizeNpcAffinity(base: number, direct?: number, delta?: number): nu
   return clamp(directValue + deltaValue, -100, 100);
 }
 
+function normalizeNpcDetails(raw: unknown): string[] {
+  const arr = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(/[;；、\n]/)
+      : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of arr) {
+    const text = String(item ?? '').trim().slice(0, 48);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+function mergeNpcDetails(prev: string[] | undefined, incoming: string[] | undefined, replace?: boolean): string[] | undefined {
+  const next = normalizeNpcDetails(incoming);
+  if (replace) return next.length ? next : undefined;
+  const merged = normalizeNpcDetails([...(prev ?? []), ...next]);
+  return merged.length ? merged.slice(-10) : undefined;
+}
+
 export const useGameStore = create<GameStoreState>()(
   persist(
     (set, get) => ({
@@ -234,6 +260,8 @@ export const useGameStore = create<GameStoreState>()(
             history,
             summary: '',
             summarizedUntilIndex: 0,
+            longTermMemory: '',
+            lastMemoryRound: 0,
             characterSheet: {},
             triggeredEvents: [],
             phase: 'choices',
@@ -307,6 +335,12 @@ export const useGameStore = create<GameStoreState>()(
           };
         }),
 
+      setLongTermMemory: (id, memory, round) =>
+        get().updateStateOf(id, {
+          longTermMemory: memory.trim(),
+          lastMemoryRound: Math.max(0, Math.floor(round)),
+        }),
+
       appendMessage: (id, msg) =>
         set((s) => {
           const save = s.saves[id];
@@ -332,6 +366,7 @@ export const useGameStore = create<GameStoreState>()(
             ? clearPendingDecisionItems(save.state, save.config.itemCapacity ?? 8)
             : {};
           const summaryInvalid = historyIndex < (save.state.summarizedUntilIndex ?? 0);
+          const memoryInvalid = msg.round <= (save.state.lastMemoryRound ?? 0);
 
           const state: GameState = {
             ...save.state,
@@ -340,6 +375,7 @@ export const useGameStore = create<GameStoreState>()(
             error: undefined,
             regenerationHint: undefined,
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
+            ...(memoryInvalid ? { longTermMemory: '', lastMemoryRound: 0 } : {}),
             ...(isLatestAssistant && save.state.phase === 'choices' ? { lastChoices: undefined } : {}),
             ...(isLatestAssistant && save.state.phase === 'ended' ? { ending: nextContent, review: undefined } : {}),
             ...(msg.role === 'user' && save.state.lastPlayerInput === msg.content ? { lastPlayerInput: nextContent } : {}),
@@ -361,6 +397,7 @@ export const useGameStore = create<GameStoreState>()(
             ? clearPendingDecisionItems(save.state, save.config.itemCapacity ?? 8)
             : {};
           const summaryInvalid = historyIndex <= (save.state.summarizedUntilIndex ?? 0);
+          const memoryInvalid = msg.round <= (save.state.lastMemoryRound ?? 0);
           const lastUser = [...history].reverse().find((m) => m.role === 'user');
 
           const state: GameState = {
@@ -370,6 +407,7 @@ export const useGameStore = create<GameStoreState>()(
             error: undefined,
             regenerationHint: undefined,
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
+            ...(memoryInvalid ? { longTermMemory: '', lastMemoryRound: 0 } : {}),
             ...(isLatestAssistant ? {
               phase: save.state.phase === 'ended' || save.state.phase === 'choices' ? 'manual' : save.state.phase,
               lastChoices: undefined,
@@ -402,6 +440,7 @@ export const useGameStore = create<GameStoreState>()(
           const summaryInvalid =
             historyIndex <= (save.state.summarizedUntilIndex ?? 0) ||
             history.length < (save.state.summarizedUntilIndex ?? 0);
+          const memoryInvalid = msg.round <= (save.state.lastMemoryRound ?? 0);
           const regenerationHint = hint?.trim().slice(0, 1200) || undefined;
 
           const state: GameState = {
@@ -420,6 +459,7 @@ export const useGameStore = create<GameStoreState>()(
             anchors: (save.state.anchors ?? []).filter((a) => a.round < msg.round),
             availableScenes: [],
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
+            ...(memoryInvalid ? { longTermMemory: '', lastMemoryRound: 0 } : {}),
           };
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
@@ -658,6 +698,7 @@ export const useGameStore = create<GameStoreState>()(
                 affinity: normalizeNpcAffinity(current.affinity, u.affinity, u.affinityDelta),
                 lastRound: round,
                 appearances: current.appearances + 1,
+                details: mergeNpcDetails(current.details, u.details, u.replaceDetails),
                 recentNote: u.note?.trim() ? u.note.trim().slice(0, 80) : current.recentNote,
               };
               npcs[idx] = next;
@@ -672,6 +713,7 @@ export const useGameStore = create<GameStoreState>()(
                 firstRound: round,
                 lastRound: round,
                 appearances: 1,
+                details: mergeNpcDetails(undefined, u.details, true),
                 recentNote: u.note?.trim() ? u.note.trim().slice(0, 80) : undefined,
               };
               npcs.push(next);
@@ -771,12 +813,16 @@ export const useGameStore = create<GameStoreState>()(
             state: {
               ...sv.state,
               summarizedUntilIndex: (sv.state as any)?.summarizedUntilIndex ?? 0,
+              longTermMemory: typeof (sv.state as any)?.longTermMemory === 'string' ? (sv.state as any).longTermMemory : '',
+              lastMemoryRound: (sv.state as any)?.lastMemoryRound ?? 0,
               refreshesLeft: (sv.state as any)?.refreshesLeft ?? 0,
               backpack: Array.isArray((sv.state as any)?.backpack) ? (sv.state as any).backpack : [],
               selectedItemIds: Array.isArray((sv.state as any)?.selectedItemIds) ? (sv.state as any).selectedItemIds : [],
               needsDiscard: (sv.state as any)?.needsDiscard ?? 0,
               regenerationHint: typeof (sv.state as any)?.regenerationHint === 'string' ? (sv.state as any).regenerationHint : undefined,
-              npcs: Array.isArray((sv.state as any)?.npcs) ? (sv.state as any).npcs : [],
+              npcs: Array.isArray((sv.state as any)?.npcs)
+                ? (sv.state as any).npcs.map((n: any) => ({ ...n, details: normalizeNpcDetails(n.details) }))
+                : [],
               anchors: Array.isArray((sv.state as any)?.anchors) ? (sv.state as any).anchors : [],
               sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],
               availableScenes: Array.isArray((sv.state as any)?.availableScenes) ? (sv.state as any).availableScenes : [],

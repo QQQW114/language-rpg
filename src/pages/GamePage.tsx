@@ -21,6 +21,7 @@ import { AnchorsList } from '@/components/AnchorsList';
 import { SceneMap } from '@/components/SceneMap';
 import { requestStory } from '@/services/storyAgent';
 import { requestChoices } from '@/services/decisionAgent';
+import { requestMemoryUpdate } from '@/services/memoryAgent';
 import { requestReview } from '@/services/reviewAgent';
 import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
@@ -186,6 +187,40 @@ export default function GamePage() {
       actions.setScenes(sourceSave.id, currentScene, availableScenes);
     }
     if (includeChoices) actions.setChoices(sourceSave.id, choices);
+
+    const completedRound = afterDecision.state.currentRound;
+    const memoryEvery = Math.max(0, Math.floor(settings.memoryEveryRounds ?? 0));
+    const latestForMemory = useGameStore.getState().saves[sourceSave.id];
+    if (
+      latestForMemory &&
+      memoryEvery > 0 &&
+      completedRound > 0 &&
+      completedRound % memoryEvery === 0 &&
+      completedRound > (latestForMemory.state.lastMemoryRound ?? 0)
+    ) {
+      const memory = await requestMemoryUpdate({
+        settings,
+        previousMemory: latestForMemory.state.longTermMemory,
+        recent: latestForMemory.state.history.slice(-10),
+        decision: {
+          choices,
+          grants,
+          destroys,
+          itemPatches,
+          npcs,
+          currentScene,
+          availableScenes,
+        },
+        npcs: latestForMemory.state.npcs ?? [],
+        backpack: latestForMemory.state.backpack ?? [],
+        currentScene: latestForMemory.state.currentScene,
+        maxChars: settings.memoryMaxChars ?? 4000,
+        signal,
+      });
+      if (memory) {
+        actions.setLongTermMemory(sourceSave.id, memory, completedRound);
+      }
+    }
   }, [settings]);
 
   // ----- 异步任务：故事 -----
@@ -235,6 +270,7 @@ export default function GamePage() {
         characterName: content.characterName,
         activeWorldBookEntries: activeEntries,
         summary: state.summary,
+        longTermMemory: state.longTermMemory,
         history: state.history,
         currentRound: state.currentRound,
         totalRounds: config.totalRounds,
@@ -780,6 +816,7 @@ export default function GamePage() {
               outline={outline}
               background={background}
               summary={save.state.summary}
+              longTermMemory={save.state.longTermMemory}
               activeWorldBookCount={activeEntriesCount}
               triggeredEventsCount={save.state.triggeredEvents.length}
               refreshesLeft={refreshesLeft}

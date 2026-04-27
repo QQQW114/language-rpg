@@ -8,6 +8,7 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动�
 {{worldBookAlwaysBlock}}
 {{worldBookTriggeredBlock}}
 {{summaryBlock}}
+{{memoryBlock}}
 {{npcsBlock}}
 {{anchorsBlock}}
 {{backpackBlock}}
@@ -40,6 +41,7 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 - destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；
 - 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；
 - 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；
+- npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；
 - npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；
 - currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。
 - 没有就是空数组或缺省。`;

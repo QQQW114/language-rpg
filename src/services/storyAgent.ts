@@ -15,6 +15,7 @@ export interface StoryRequest {
   characterName?: string;
   activeWorldBookEntries: WorldBookEntry[];
   summary?: string;
+  longTermMemory?: string;
   history: Message[];
   currentRound: number;
   totalRounds: number;
@@ -43,6 +44,7 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     characterName: p.characterName,
     activeWorldBookEntries: p.activeWorldBookEntries,
     summary: p.summary,
+    longTermMemory: p.longTermMemory,
     currentRound: p.currentRound,
     totalRounds: p.totalRounds,
     triggeredEvent: p.triggeredEvent,

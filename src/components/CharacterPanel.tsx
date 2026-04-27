@@ -6,6 +6,7 @@ interface CharacterPanelProps {
   outline?: StoryOutline;
   background?: Background;
   summary?: string;
+  longTermMemory?: string;
   activeWorldBookCount: number;
   triggeredEventsCount: number;
   refreshesLeft?: number;
@@ -13,7 +14,7 @@ interface CharacterPanelProps {
 }
 
 export function CharacterPanel({
-  characterName, outline, background, summary, activeWorldBookCount, triggeredEventsCount, refreshesLeft, itemCount,
+  characterName, outline, background, summary, longTermMemory, activeWorldBookCount, triggeredEventsCount, refreshesLeft, itemCount,
 }: CharacterPanelProps) {
   return (
     <aside className="flex flex-col gap-4 font-serif text-sm">
@@ -80,6 +81,17 @@ export function CharacterPanel({
           </h3>
           <div className="bg-parchment-800/60 border border-parchment-600/40 rounded-md p-3 text-xs text-parchment-200/90 leading-relaxed max-h-48 overflow-auto">
             {summary}
+          </div>
+        </section>
+      )}
+
+      {longTermMemory && (
+        <section>
+          <h3 className="flex items-center gap-2 text-gold-light tracking-wider mb-2 text-xs uppercase">
+            <FileText size={14} /> 长期记忆
+          </h3>
+          <div className="bg-parchment-800/60 border border-parchment-600/40 rounded-md p-3 text-xs text-parchment-200/90 leading-relaxed max-h-48 overflow-auto whitespace-pre-wrap">
+            {longTermMemory}
           </div>
         </section>
       )}

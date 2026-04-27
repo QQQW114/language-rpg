@@ -135,6 +135,24 @@ function sanitizeItemPatches(raw: unknown): RawItemPatch[] {
   return out;
 }
 
+function sanitizeDetailList(raw: unknown): string[] | undefined {
+  const arr = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(/[;；、\n]/)
+      : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of arr) {
+    const text = String(item ?? '').trim().slice(0, 48);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= 8) break;
+  }
+  return out.length ? out : undefined;
+}
+
 function sanitizeNpcs(raw: unknown): NpcUpdateRaw[] {
   if (!raw || typeof raw !== 'object') return [];
   const arr = (raw as { npcs?: unknown }).npcs;
@@ -160,6 +178,8 @@ function sanitizeNpcs(raw: unknown): NpcUpdateRaw[] {
     const deltaNum = Number(obj.affinityDelta ?? 0);
     const affinityDelta = Number.isFinite(deltaNum) ? clamp(Math.round(deltaNum), -30, 30) : 0;
     const note = String(obj.note ?? '').trim().slice(0, 80);
+    const details = sanitizeDetailList(obj.details);
+    const replaceDetails = obj.replaceDetails === true;
     out.push({
       id,
       name: name ? name.slice(0, 20) : undefined,
@@ -168,6 +188,8 @@ function sanitizeNpcs(raw: unknown): NpcUpdateRaw[] {
       description: description || undefined,
       affinity,
       affinityDelta,
+      details,
+      replaceDetails,
       note: note || undefined,
     });
   }
@@ -232,7 +254,8 @@ function formatNpcs(npcs: Npc[]): string {
     .map((n) => {
       const aff = n.affinity > 0 ? `+${n.affinity}` : String(n.affinity);
       const roleTag = n.role ? `（${n.role}）` : '';
-      return `- ${n.name}${roleTag}  好感 ${aff}  id:${n.id}`;
+      const details = n.details?.length ? `  细节：${n.details.slice(0, 6).join('、')}` : '';
+      return `- ${n.name}${roleTag}  好感 ${aff}  id:${n.id}${details}`;
     })
     .join('\n');
 }
@@ -257,6 +280,7 @@ function formatNpcJson(npcs: Npc[]): string {
     role: n.role,
     description: n.description,
     affinity: n.affinity,
+    details: n.details ?? [],
     firstRound: n.firstRound,
     lastRound: n.lastRound,
     appearances: n.appearances,

@@ -101,6 +101,13 @@ export default function SettingsPage() {
           hint="用于压缩超长历史为梗概"
         />
         <Input
+          label="长期记忆模型（可选）"
+          value={draft.memoryModel ?? ''}
+          onChange={(e) => set('memoryModel', e.target.value.trim())}
+          placeholder="留空则使用摘要模型或故事模型"
+          hint="用于周期性整理角色外观、承诺、线索等一致性记忆"
+        />
+        <Input
           label="随机生成模型（可选）"
           value={draft.randomModel ?? ''}
           onChange={(e) => set('randomModel', e.target.value.trim())}
@@ -147,6 +154,27 @@ export default function SettingsPage() {
           onChange={(e) => set('storyMaxTokens', Math.max(0, Math.floor(Number(e.target.value) || 0)))}
           hint="默认 4096。若模型因长度被截断，会自动续写并拼接；填 0 表示不传该参数，由服务端决定。"
         />
+        <div className="grid grid-cols-2 gap-4">
+          <Input
+            label="长期记忆间隔（回合）"
+            type="number"
+            min={0}
+            max={20}
+            value={draft.memoryEveryRounds}
+            onChange={(e) => set('memoryEveryRounds', Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+            hint="每过 X 个已完成回合，在故事与决策完成后整理一次；0 表示关闭"
+          />
+          <Input
+            label="长期记忆最大长度"
+            type="number"
+            min={800}
+            max={12000}
+            step={200}
+            value={draft.memoryMaxChars}
+            onChange={(e) => set('memoryMaxChars', Math.max(800, Math.floor(Number(e.target.value) || 4000)))}
+            hint="记忆块最大字符数，越长越稳但会占上下文"
+          />
+        </div>
 
         <OrnateDivider>故事风格</OrnateDivider>
         <Field label="篇幅偏好" hint="每回合故事的大致字数区间">

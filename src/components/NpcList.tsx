@@ -53,7 +53,7 @@ export function NpcList({ npcs, onOpenAll }: NpcListProps) {
           <div
             key={n.id}
             className="flex items-center justify-between gap-2 bg-parchment-800/60 border border-parchment-600/40 rounded px-2 py-1.5"
-            title={`${n.description ?? ''}${n.recentNote ? '\n最近：' + n.recentNote : ''}`}
+            title={`${n.description ?? ''}${n.details?.length ? '\n细节：' + n.details.join('、') : ''}${n.recentNote ? '\n最近：' + n.recentNote : ''}`}
           >
             <div className="min-w-0 flex-1">
               <div className="text-sm text-parchment-50 font-serif truncate">
@@ -63,6 +63,9 @@ export function NpcList({ npcs, onOpenAll }: NpcListProps) {
               {n.recentNote && (
                 <div className="text-[11px] text-parchment-200/60 italic truncate">{n.recentNote}</div>
               )}
+              {n.details?.length ? (
+                <div className="text-[10px] text-gold/60 truncate">{n.details.slice(0, 2).join(' · ')}</div>
+              ) : null}
             </div>
             <span
               className={clsx(

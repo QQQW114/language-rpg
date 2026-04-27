@@ -46,6 +46,18 @@ export function NpcDialog({ open, onClose, npcs }: NpcDialogProps) {
                 {n.description && (
                   <div className="text-sm text-parchment-200/80 mt-1 leading-relaxed">{n.description}</div>
                 )}
+                {n.details?.length ? (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {n.details.map((detail) => (
+                      <span
+                        key={detail}
+                        className="text-[11px] px-2 py-0.5 rounded-full border border-gold/30 bg-parchment-900/50 text-parchment-100"
+                      >
+                        {detail}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="mt-3">
                   <div className="flex items-center justify-between text-xs font-serif mb-1">
                     <span className="text-parchment-200/60">好感度</span>
