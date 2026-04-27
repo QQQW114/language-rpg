@@ -96,7 +96,7 @@ export default function LibraryPage() {
     const msg = modifiedPreset
       ? '确定删除这个本地修改？删除后会恢复为预设原版。'
       : '确定删除这个自定义条目？';
-    if (!confirm(msg)) return;
+    if (tab !== 'events' && !confirm(msg)) return;
     if (tab === 'outlines') removeOutline(id);
     else if (tab === 'backgrounds') removeBackground(id);
     else if (tab === 'worldbooks') removeWorldBook(id);

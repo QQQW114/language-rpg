@@ -246,10 +246,6 @@ export default function SetupPage() {
 
   const deleteEventFromSetup = (event: RandomEvent) => {
     const isGeneratedOrImported = !PRESET_EVENTS.some((item) => item.id === event.id);
-    const msg = isGeneratedOrImported
-      ? '确定删除这个随机事件？自定义/随机生成的事件会从书库中移除。'
-      : '确定从本次启程中移除这个预设随机事件？';
-    if (!confirm(msg)) return;
     setEventIds((prev) => prev.filter((id) => id !== event.id));
     setHiddenEventIds((prev) => Array.from(new Set([...prev, event.id])));
     if (isGeneratedOrImported) removeEvent(event.id);
