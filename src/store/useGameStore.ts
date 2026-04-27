@@ -22,7 +22,7 @@ interface GameStoreState {
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
   appendMessage: (id: string, msg: Message) => void;
   updateAssistantMessage: (id: string, historyIndex: number, content: string) => void;
-  regenerateAssistantMessage: (id: string, historyIndex: number) => void;
+  regenerateAssistantMessage: (id: string, historyIndex: number, hint?: string) => void;
   setPhase: (id: string, phase: GamePhase) => void;
   setChoices: (id: string, choices?: Choice[]) => void;
   setLastPlayerInput: (id: string, text?: string) => void;
@@ -222,6 +222,7 @@ export const useGameStore = create<GameStoreState>()(
             ...pendingClean,
             history,
             error: undefined,
+            regenerationHint: undefined,
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
             ...(isLatest && save.state.phase === 'choices' ? { lastChoices: undefined } : {}),
             ...(isLatest && save.state.phase === 'ended' ? { ending: nextContent, review: undefined } : {}),
@@ -229,7 +230,7 @@ export const useGameStore = create<GameStoreState>()(
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
 
-      regenerateAssistantMessage: (id, historyIndex) =>
+      regenerateAssistantMessage: (id, historyIndex, hint) =>
         set((s) => {
           const save = s.saves[id];
           if (!save) return s;
@@ -242,6 +243,7 @@ export const useGameStore = create<GameStoreState>()(
           const summaryInvalid =
             historyIndex <= (save.state.summarizedUntilIndex ?? 0) ||
             history.length < (save.state.summarizedUntilIndex ?? 0);
+          const regenerationHint = hint?.trim().slice(0, 1200) || undefined;
 
           const state: GameState = {
             ...save.state,
@@ -249,6 +251,7 @@ export const useGameStore = create<GameStoreState>()(
             history,
             currentRound: msg.round,
             lastPlayerInput: lastUser?.content,
+            regenerationHint,
             phase: 'story',
             lastChoices: undefined,
             ending: undefined,
@@ -599,6 +602,7 @@ export const useGameStore = create<GameStoreState>()(
               backpack: Array.isArray((sv.state as any)?.backpack) ? (sv.state as any).backpack : [],
               selectedItemIds: Array.isArray((sv.state as any)?.selectedItemIds) ? (sv.state as any).selectedItemIds : [],
               needsDiscard: (sv.state as any)?.needsDiscard ?? 0,
+              regenerationHint: typeof (sv.state as any)?.regenerationHint === 'string' ? (sv.state as any).regenerationHint : undefined,
               npcs: Array.isArray((sv.state as any)?.npcs) ? (sv.state as any).npcs : [],
               anchors: Array.isArray((sv.state as any)?.anchors) ? (sv.state as any).anchors : [],
               sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],

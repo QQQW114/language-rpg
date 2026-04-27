@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Message, MemoryAnchor } from '@/types/game';
 import { OrnateDivider } from './ui/Ornaments';
-import { Bookmark, BookmarkCheck, Check, Pencil, RotateCw, X } from 'lucide-react';
+import { Bookmark, BookmarkCheck, Check, Pencil, RotateCw, Sparkles, X } from 'lucide-react';
 import { clsx } from '@/lib/utils';
 
 interface StoryViewProps {
@@ -15,6 +15,7 @@ interface StoryViewProps {
   onUnpinAnchor?: (anchorId: string) => void;
   onEditAssistant?: (historyIndex: number, msg: Message, content: string) => void;
   onRegenerateAssistant?: (historyIndex: number, msg: Message) => void;
+  onRegenerateAssistantWithHint?: (historyIndex: number, msg: Message, hint: string) => void;
   canEditAssistant?: (historyIndex: number, msg: Message) => boolean;
   canRegenerateAssistant?: (historyIndex: number, msg: Message) => boolean;
 }
@@ -35,12 +36,15 @@ export function StoryView({
   onUnpinAnchor,
   onEditAssistant,
   onRegenerateAssistant,
+  onRegenerateAssistantWithHint,
   canEditAssistant,
   canRegenerateAssistant,
 }: StoryViewProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const [editingIndex, setEditingIndex] = useState<number | undefined>();
   const [editingText, setEditingText] = useState('');
+  const [hintIndex, setHintIndex] = useState<number | undefined>();
+  const [hintText, setHintText] = useState('');
 
   // 建立 round -> anchor 的映射（一个 round 可能多次被锚定，但我们只取第一个标记 UI）
   const anchorByRound = new Map<number, MemoryAnchor>();
@@ -58,9 +62,11 @@ export function StoryView({
         if (m.role === 'assistant') {
           const pinned = anchorByRound.get(m.round);
           const editing = editingIndex === i;
+          const hinting = hintIndex === i;
           const editEnabled = !!onEditAssistant && (!canEditAssistant || canEditAssistant(i, m));
           const regenEnabled = !!onRegenerateAssistant && (!canRegenerateAssistant || canRegenerateAssistant(i, m));
-          const hasControls = onPinAnchor || onUnpinAnchor || editEnabled || regenEnabled;
+          const regenWithHintEnabled = !!onRegenerateAssistantWithHint && (!canRegenerateAssistant || canRegenerateAssistant(i, m));
+          const hasControls = onPinAnchor || onUnpinAnchor || editEnabled || regenEnabled || regenWithHintEnabled;
           const iconButtonClass =
             'p-1 rounded text-parchment-200/50 hover:text-gold-light hover:bg-parchment-800/80 transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
           return (
@@ -103,11 +109,48 @@ export function StoryView({
                   {m.content}
                 </ReactMarkdown>
               )}
+              {hinting && (
+                <div className="mt-3 rounded-md border border-gold/40 bg-parchment-900/50 p-3 shadow-glow-sm">
+                  <div className="mb-2 text-xs tracking-[0.25em] text-gold/70 font-serif uppercase">
+                    增强重新请求 · 重要参考
+                  </div>
+                  <textarea
+                    value={hintText}
+                    onChange={(e) => setHintText(e.target.value)}
+                    placeholder="写下希望模型重写时重点参考的提示，例如：加强母亲的情绪、保留雨夜氛围、不要立刻揭露真相……"
+                    className="w-full min-h-[110px] resize-y rounded-md border border-parchment-600/50 bg-ink/40 px-3 py-2 font-serif text-sm leading-relaxed text-parchment-50 outline-none focus:border-gold/80 placeholder:text-parchment-200/35"
+                  />
+                  <div className="mt-2 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHintIndex(undefined);
+                        setHintText('');
+                      }}
+                      className="rounded border border-parchment-600/50 px-2 py-1 text-xs text-parchment-200/80 hover:border-gold/60 hover:text-gold-light"
+                    >
+                      <X size={12} className="inline mr-1" />取消
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!hintText.trim()}
+                      onClick={() => {
+                        onRegenerateAssistantWithHint?.(i, m, hintText);
+                        setHintIndex(undefined);
+                        setHintText('');
+                      }}
+                      className="rounded border border-gold/60 px-2 py-1 text-xs text-gold-light hover:bg-gold/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Sparkles size={12} className="inline mr-1" />确认重写
+                    </button>
+                  </div>
+                </div>
+              )}
               {hasControls && (
                 <div
                   className={clsx(
                     'absolute -left-8 top-1 flex flex-col gap-1 transition-opacity',
-                    pinned || editing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+                    pinned || editing || hinting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
                   )}
                 >
                   {(onPinAnchor || onUnpinAnchor) && (
@@ -140,10 +183,23 @@ export function StoryView({
                     <button
                       type="button"
                       onClick={() => onRegenerateAssistant?.(i, m)}
-                      title="重新请求这次模型回复（会回到本回合并重新生成）"
+                      title="直接重新请求这次模型回复"
                       className={iconButtonClass}
                     >
                       <RotateCw size={16} />
+                    </button>
+                  )}
+                  {regenWithHintEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHintIndex(i);
+                        setHintText('');
+                      }}
+                      title="增强重新请求：附加重要参考提示词"
+                      className={clsx(iconButtonClass, hinting && 'text-gold-light')}
+                    >
+                      <Sparkles size={16} />
                     </button>
                   )}
                 </div>

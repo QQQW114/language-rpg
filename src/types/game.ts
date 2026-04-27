@@ -89,6 +89,7 @@ export interface GameState {
   triggeredEvents: TriggeredEventRecord[];
   lastChoices?: Choice[];
   lastPlayerInput?: string;
+  regenerationHint?: string;                  // 重新请求本回合时附加给故事模型的重要参考
   phase: GamePhase;
   ending?: string;
   error?: string;

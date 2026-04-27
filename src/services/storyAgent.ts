@@ -18,6 +18,7 @@ export interface StoryRequest {
   totalRounds: number;
   triggeredEvent?: RandomEvent;
   playerInput?: string;
+  regenerationHint?: string;
   backpack?: Item[];
   usedItems?: Item[];
   npcs?: Npc[];
@@ -70,6 +71,16 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     userMessage = userMessage
       ? `${userMessage}\n（本回合使用道具：${list}）`
       : `（本回合使用道具：${list}；请继续推进剧情。）`;
+  }
+
+  const regenerationHint = p.regenerationHint?.trim();
+  if (regenerationHint) {
+    const hintBlock =
+      `\n\n【本次重新生成的重要参考】\n${regenerationHint}\n` +
+      '请把以上内容作为本回合重写时的优先参考；不要机械复述提示词本身，仍需保持原有文风与连续性。';
+    userMessage = userMessage
+      ? `${userMessage}${hintBlock}`
+      : `（请重新生成本回合。）${hintBlock}`;
   }
 
   if (userMessage) {

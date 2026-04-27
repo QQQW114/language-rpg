@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Home, Package, RotateCw, Settings, Sparkles, StopCircle, Flag } from 'lucide-react';
+import { Download, Home, Package, RotateCw, Settings, Sparkles, StopCircle, Flag } from 'lucide-react';
 import { useGameStore, useActiveSave } from '@/store/useGameStore';
 import { useContentStore, selectAllBackgrounds, selectAllEvents, selectAllOutlines, selectAllWorldBooks, flattenWorldBookEntries } from '@/store/useContentStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -29,6 +29,84 @@ import type { Choice, GameSave, Item, Message, SceneRef } from '@/types/game';
 
 const RECENT_TEXT_WINDOW = 2400;
 
+function safeFileName(name: string): string {
+  const cleaned = name
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned ? cleaned.slice(0, 80) : 'language-rpg';
+}
+
+function formatChatRecord(save: GameSave): string {
+  const lines: string[] = [];
+  lines.push(`# ${save.name}`);
+  lines.push('');
+  lines.push(`- 导出时间：${new Date().toLocaleString()}`);
+  if (save.content.characterName) lines.push(`- 角色：${save.content.characterName}`);
+  lines.push(`- 当前回合：${save.state.currentRound}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  for (const msg of save.state.history) {
+    if (msg.role === 'assistant') {
+      lines.push(`## 第 ${msg.round} 回合 · 故事`);
+    } else if (msg.role === 'user') {
+      lines.push(`## 第 ${msg.round} 回合 · 玩家行动`);
+    } else {
+      lines.push(`## 第 ${msg.round} 回合 · 系统`);
+    }
+    lines.push('');
+    lines.push(msg.content.trim());
+    lines.push('');
+  }
+
+  if (save.state.summary?.trim()) {
+    lines.push('---');
+    lines.push('');
+    lines.push('## 自动摘要');
+    lines.push('');
+    lines.push(save.state.summary.trim());
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+async function saveTextFile(text: string, fileName: string): Promise<'saved' | 'downloaded' | 'cancelled'> {
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+  const picker = (window as any).showSaveFilePicker;
+
+  if (typeof picker === 'function') {
+    try {
+      const handle = await picker({
+        suggestedName: fileName,
+        types: [
+          {
+            description: 'Markdown 文本',
+            accept: { 'text/markdown': ['.md'], 'text/plain': ['.txt'] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return 'saved';
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return 'cancelled';
+      // 浏览器/权限不支持时降级为下载。
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return 'downloaded';
+}
+
 export default function GamePage() {
   const nav = useNavigate();
   const save = useActiveSave();
@@ -43,6 +121,7 @@ export default function GamePage() {
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | undefined>();
+  const [exportMsg, setExportMsg] = useState<string | undefined>();
   const [backpackOpen, setBackpackOpen] = useState(false);
   const [npcOpen, setNpcOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -116,6 +195,7 @@ export default function GamePage() {
         totalRounds: config.totalRounds,
         triggeredEvent,
         playerInput: state.lastPlayerInput,
+        regenerationHint: state.regenerationHint,
         backpack: state.backpack,
         usedItems,
         npcs: state.npcs,
@@ -133,6 +213,7 @@ export default function GamePage() {
       actions.appendMessage(s.id, { role: 'assistant', content: full, round: nextRound });
       actions.incrementRound(s.id);
       actions.setLastPlayerInput(s.id, undefined);
+      actions.updateStateOf(s.id, { regenerationHint: undefined });
       setStreaming('');
 
       // 固化本回合获得的道具 → 消耗已勾选的一次性物品 → 清空本轮选择
@@ -339,11 +420,33 @@ export default function GamePage() {
 
   function onRegenerateAssistant(historyIndex: number, msg: Message) {
     if (!save || !canModifyAssistant(historyIndex, msg)) return;
-    if (!confirm('重新请求这次模型回复？当前回复与后续选项会被丢弃，并从本回合重新生成。')) return;
     setStreaming('');
     setErrorMsg(undefined);
     busyRef.current = false;
     useGameStore.getState().regenerateAssistantMessage(save.id, historyIndex);
+  }
+
+  function onRegenerateAssistantWithHint(historyIndex: number, msg: Message, hint: string) {
+    if (!save || !canModifyAssistant(historyIndex, msg)) return;
+    setStreaming('');
+    setErrorMsg(undefined);
+    busyRef.current = false;
+    useGameStore.getState().regenerateAssistantMessage(save.id, historyIndex, hint);
+  }
+
+  async function onExportChatRecord() {
+    if (!save) return;
+    setExportMsg(undefined);
+    setErrorMsg(undefined);
+    try {
+      const fileName = `${safeFileName(save.name)}-聊天记录.md`;
+      const result = await saveTextFile(formatChatRecord(save), fileName);
+      if (result === 'cancelled') return;
+      setExportMsg(result === 'saved' ? '聊天记录已写入文件。' : '聊天记录已导出；文件名固定，便于覆盖旧文件。');
+      window.setTimeout(() => setExportMsg(undefined), 2200);
+    } catch (err: any) {
+      setErrorMsg(err?.message ?? String(err));
+    }
   }
 
   function onTravel(scene: SceneRef) {
@@ -380,6 +483,15 @@ export default function GamePage() {
         <div className="text-sm text-parchment-200/80 font-serif hidden md:block truncate max-w-[180px]">
           {save.name}
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onExportChatRecord}
+          title="导出当前聊天记录（默认使用固定文件名，方便覆盖旧文件）"
+        >
+          <Download size={16} />
+          <span className="hidden sm:inline">导出</span>
+        </Button>
         <Button
           variant="outline"
           size="sm"
@@ -428,6 +540,7 @@ export default function GamePage() {
             onUnpinAnchor={onUnpinAnchor}
             onEditAssistant={onEditAssistant}
             onRegenerateAssistant={onRegenerateAssistant}
+            onRegenerateAssistantWithHint={onRegenerateAssistantWithHint}
             canEditAssistant={canModifyAssistant}
             canRegenerateAssistant={canModifyAssistant}
           />
@@ -457,6 +570,12 @@ export default function GamePage() {
                   <RotateCw size={14} /> 重试
                 </Button>
               </div>
+            </div>
+          )}
+
+          {exportMsg && (
+            <div className="mt-6 text-sm text-gold-light bg-gold/10 border border-gold/40 rounded px-4 py-3 font-serif animate-fade-in">
+              {exportMsg}
             </div>
           )}
 
