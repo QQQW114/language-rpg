@@ -34,7 +34,7 @@ export function StrictCustomEditor() {
           <div>
             <CardTitle className="mb-1">启用严格自定义</CardTitle>
             <CardMeta>
-              开启后，下方规则会被注入故事/决策模型；关闭时仅作为草稿保存，不影响新旅程。
+              开启后，新旅程会使用下方提示词模板作为实际请求内容；关闭时仅作为草稿保存，不影响新旅程。
             </CardMeta>
           </div>
         </label>
@@ -73,42 +73,52 @@ export function StrictCustomEditor() {
 
       <OrnateDivider>提示词链路</OrnateDivider>
       <div className="text-sm text-parchment-200/70 leading-relaxed mb-3">
-        这些内容会注入到具体模型请求链路中，优先级高于普通规则。留空则使用项目默认链路。
-        可使用 <code className="text-gold/80">{'{{round}}'}</code> 表示当前回合，
-        故事模型 User 链路还可使用 <code className="text-gold/80">{'{{input}}'}</code> 表示玩家输入。
+        这些文本框显示的就是实际请求会使用的模板：默认已填入项目原本提示词；玩家修改后会直接覆盖对应的
+        system / user 内容，而不是追加到末尾。清空某项会自动回退到项目默认模板。
+        故事模板常用变量：
+        <code className="text-gold/80 mx-1">{'{{round}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{roundInfo}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{strictCustomBlock}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{defaultUserMessage}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{input}}'}</code>。
+        决策 User 模板常用
+        <code className="text-gold/80 mx-1">{'{{latestStory}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{backpackSummary}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{strictCustomDecisionBlock}}'}</code>
+        <code className="text-gold/80 mx-1">{'{{defaultDecisionUserPrompt}}'}</code>。
       </div>
       <div className="grid gap-4 md:grid-cols-2">
         <Textarea
-          label="故事模型 · System 链路追加"
+          label="故事模型 · System 提示词模板"
           value={config.storySystemPrompt}
           onChange={(e) => update({ storySystemPrompt: e.target.value })}
-          rows={5}
-          placeholder="例如：你必须把本回合收束在一个新压力点，不得揭示主角真正能力。"
-          hint="注入到故事模型 system prompt 末尾，适合控制整体写作协议。"
+          rows={8}
+          placeholder="默认显示项目原本的故事 system prompt；可直接在此编辑。"
+          hint="会直接作为故事模型的 system prompt。保留 {{strictCustomBlock}} 才会让上方严格规则和详细大纲参与请求。"
         />
         <Textarea
-          label="故事模型 · User 链路追加"
+          label="故事模型 · User 提示词模板"
           value={config.storyUserPrompt}
           onChange={(e) => update({ storyUserPrompt: e.target.value })}
-          rows={5}
-          placeholder="例如：本回合第 {{round}} 回合。玩家输入是：{{input}}。请只写它的即时后果。"
-          hint="注入到每回合故事请求的 user 消息末尾，适合给单回合执行约束。"
+          rows={8}
+          placeholder="默认：{{defaultUserMessage}}"
+          hint="会直接作为每回合故事请求的 user 消息。{{defaultUserMessage}} 包含玩家输入、道具使用和重新生成参考。"
         />
         <Textarea
-          label="决策模型 · System 链路追加"
+          label="决策模型 · System 提示词模板"
           value={config.decisionSystemPrompt}
           onChange={(e) => update({ decisionSystemPrompt: e.target.value })}
-          rows={5}
-          placeholder="例如：无论如何都必须保持 JSON 协议；选项只能围绕当前压力点。"
-          hint="注入到决策模型 system prompt 末尾。不要破坏 JSON 输出协议。"
+          rows={8}
+          placeholder="默认显示项目原本的决策 system prompt；可直接在此编辑。"
+          hint="会直接作为决策模型的 system prompt。建议保留 JSON 输出协议，避免选项解析失败。"
         />
         <Textarea
-          label="决策模型 · User 链路追加"
+          label="决策模型 · User 提示词模板"
           value={config.decisionUserPrompt}
           onChange={(e) => update({ decisionUserPrompt: e.target.value })}
-          rows={5}
-          placeholder="例如：不要生成会直接解决危机的选项；至少一个选项应是继续等待或掩饰。"
-          hint="注入到决策模型 user prompt 中，适合控制当前选项倾向。"
+          rows={8}
+          placeholder="默认显示项目原本的决策 user prompt；可直接在此编辑。"
+          hint="会直接作为决策模型的 user prompt。保留 {{strictCustomDecisionBlock}} 才会让上方选项生成偏好参与请求。"
         />
       </div>
 

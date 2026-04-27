@@ -11,9 +11,9 @@ export interface StrictCustomConfig {
   pacingPrompt: string;          // 推进粒度 / 节奏控制
   revealPrompt: string;          // 隐藏设定揭示规则
   choicePrompt: string;          // 决策/选项生成偏好
-  storySystemPrompt: string;     // 注入故事模型 system 链路的追加提示
-  storyUserPrompt: string;       // 注入故事模型 user 链路的追加提示
-  decisionSystemPrompt: string;  // 注入决策模型 system 链路的追加提示
-  decisionUserPrompt: string;    // 注入决策模型 user 链路的追加提示
+  storySystemPrompt: string;     // 故事模型 system 提示词覆盖模板
+  storyUserPrompt: string;       // 故事模型 user 提示词覆盖模板
+  decisionSystemPrompt: string;  // 决策模型 system 提示词覆盖模板
+  decisionUserPrompt: string;    // 决策模型 user 提示词覆盖模板
   detailedOutline: StrictRoundDirective[];
 }

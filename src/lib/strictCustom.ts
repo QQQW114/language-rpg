@@ -1,4 +1,43 @@
 import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
+import { DECISION_SYSTEM } from '@/prompts/decisionSystem';
+
+export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动小说主持人（TRPG GM），正在与玩家共同完成一段长篇角色扮演。
+{{roundInfo}}
+{{outlineBlock}}
+{{backgroundBlock}}
+{{worldBookAlwaysBlock}}
+{{worldBookTriggeredBlock}}
+{{summaryBlock}}
+{{npcsBlock}}
+{{anchorsBlock}}
+{{backpackBlock}}
+{{currentSceneBlock}}
+{{strictCustomBlock}}
+{{usedItemsBlock}}
+{{writingRulesBlock}}
+{{styleAddendumBlock}}
+{{specialBlock}}
+
+现在，请根据最近的对话上下文与玩家最新的输入，输出本回合的故事推进。除正文外不要输出任何前言、标题或解释说明。`;
+
+export const DEFAULT_STORY_USER_TEMPLATE = `{{defaultUserMessage}}`;
+
+export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
+{{recentTextBlock}}
+【玩家最新看到的故事片段】
+{{latestStory}}
+
+【玩家当前背包】
+{{backpackSummary}}
+{{npcBlock}}
+{{currentSceneBlock}}
+{{strictCustomDecisionBlock}}
+请按协议输出 JSON。注意：
+- grants 不要与背包重名；
+- destroys 的 name 必须与背包中某件道具 name 完全一致；
+- npcs 的 name 必须与已知 NPC 完全一致以便合并；
+- currentScene 必须贴合最新故事叙述；availableScenes 只列直接相邻可达处。
+- 没有就是空数组或缺省。`;
 
 export const DEFAULT_STRICT_CUSTOM_CONFIG: StrictCustomConfig = {
   enabled: false,
@@ -10,10 +49,10 @@ export const DEFAULT_STRICT_CUSTOM_CONFIG: StrictCustomConfig = {
     '隐藏能力、身份秘密、幕后真相、世界机制只作为幕后设定保持一致；除非玩家明确尝试、调查、触发，或详细大纲指定揭示，否则不要写进正文。',
   choicePrompt:
     '选项应围绕当前压力点给出 3~4 个差异明确的行动，不要提前替玩家解决危机，也不要把隐藏设定作为选项前提。',
-  storySystemPrompt: '',
-  storyUserPrompt: '',
-  decisionSystemPrompt: '',
-  decisionUserPrompt: '',
+  storySystemPrompt: DEFAULT_STORY_SYSTEM_TEMPLATE,
+  storyUserPrompt: DEFAULT_STORY_USER_TEMPLATE,
+  decisionSystemPrompt: DECISION_SYSTEM,
+  decisionUserPrompt: DEFAULT_DECISION_USER_TEMPLATE,
   detailedOutline: [],
 };
 
@@ -25,6 +64,10 @@ function clampRound(n: unknown, fallback: number): number {
 
 export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>): StrictCustomConfig {
   const base = DEFAULT_STRICT_CUSTOM_CONFIG;
+  const promptTemplate = (value: string | undefined, fallback: string, limit = 8000) => {
+    const trimmed = (value ?? '').trim();
+    return (trimmed || fallback).slice(0, limit);
+  };
   const detailedOutline = (input?.detailedOutline ?? [])
     .map((item, index) => {
       const start = clampRound(item.startRound, 1);
@@ -47,19 +90,25 @@ export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>)
     pacingPrompt: (input?.pacingPrompt ?? base.pacingPrompt).trim().slice(0, 2000),
     revealPrompt: (input?.revealPrompt ?? base.revealPrompt).trim().slice(0, 2000),
     choicePrompt: (input?.choicePrompt ?? base.choicePrompt).trim().slice(0, 2000),
-    storySystemPrompt: (input?.storySystemPrompt ?? base.storySystemPrompt).trim().slice(0, 3000),
-    storyUserPrompt: (input?.storyUserPrompt ?? base.storyUserPrompt).trim().slice(0, 3000),
-    decisionSystemPrompt: (input?.decisionSystemPrompt ?? base.decisionSystemPrompt).trim().slice(0, 3000),
-    decisionUserPrompt: (input?.decisionUserPrompt ?? base.decisionUserPrompt).trim().slice(0, 3000),
+    storySystemPrompt: promptTemplate(input?.storySystemPrompt, base.storySystemPrompt),
+    storyUserPrompt: promptTemplate(input?.storyUserPrompt, base.storyUserPrompt),
+    decisionSystemPrompt: promptTemplate(input?.decisionSystemPrompt, base.decisionSystemPrompt),
+    decisionUserPrompt: promptTemplate(input?.decisionUserPrompt, base.decisionUserPrompt),
     detailedOutline,
   };
 }
 
-function applyPromptVars(text: string, vars: Record<string, string | number | undefined>): string {
-  return text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+export function renderPromptTemplate(
+  text: string,
+  vars: Record<string, string | number | undefined>,
+): string {
+  const rendered = text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
     const value = vars[key];
     return value === undefined || value === null ? '' : String(value);
   });
+  return rendered
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function getActiveRoundDirectives(
@@ -102,50 +151,33 @@ export function buildStrictCustomStoryBlock(
 export function buildStrictCustomDecisionBlock(config: StrictCustomConfig | undefined): string {
   if (!config?.enabled) return '';
   const normalized = normalizeStrictCustomConfig(config);
-  const lines: string[] = [];
-  if (normalized.choicePrompt) {
-    lines.push('【严格自定义模式 · 选项规则】', normalized.choicePrompt);
-  }
-  if (normalized.decisionUserPrompt) {
-    if (lines.length) lines.push('');
-    lines.push('【严格自定义模式 · 决策模型 User 链路追加】', normalized.decisionUserPrompt);
-  }
-  return lines.join('\n');
-}
-
-export function buildStrictStorySystemPromptAppend(
-  config: StrictCustomConfig | undefined,
-  round: number,
-): string {
-  if (!config?.enabled) return '';
-  const normalized = normalizeStrictCustomConfig(config);
-  if (!normalized.storySystemPrompt) return '';
+  if (!normalized.choicePrompt) return '';
   return [
-    '【严格自定义模式 · 故事模型 System 链路追加】',
-    applyPromptVars(normalized.storySystemPrompt, { round }),
+    '【严格自定义模式 · 选项规则】',
+    normalized.choicePrompt,
   ].join('\n');
 }
 
-export function buildStrictStoryUserPromptAppend(
-  config: StrictCustomConfig | undefined,
-  round: number,
-  playerInput?: string,
-): string {
-  if (!config?.enabled) return '';
+export function getStorySystemTemplate(config: StrictCustomConfig | undefined): string {
+  if (!config?.enabled) return DEFAULT_STORY_SYSTEM_TEMPLATE;
   const normalized = normalizeStrictCustomConfig(config);
-  if (!normalized.storyUserPrompt) return '';
-  return [
-    '【严格自定义模式 · 故事模型 User 链路追加】',
-    applyPromptVars(normalized.storyUserPrompt, { round, input: playerInput ?? '' }),
-  ].join('\n');
+  return normalized.storySystemPrompt || DEFAULT_STORY_SYSTEM_TEMPLATE;
 }
 
-export function buildStrictDecisionSystemPromptAppend(config: StrictCustomConfig | undefined): string {
-  if (!config?.enabled) return '';
+export function getStoryUserTemplate(config: StrictCustomConfig | undefined): string {
+  if (!config?.enabled) return DEFAULT_STORY_USER_TEMPLATE;
   const normalized = normalizeStrictCustomConfig(config);
-  if (!normalized.decisionSystemPrompt) return '';
-  return [
-    '【严格自定义模式 · 决策模型 System 链路追加】',
-    normalized.decisionSystemPrompt,
-  ].join('\n');
+  return normalized.storyUserPrompt || DEFAULT_STORY_USER_TEMPLATE;
+}
+
+export function getDecisionSystemTemplate(config: StrictCustomConfig | undefined): string {
+  if (!config?.enabled) return DECISION_SYSTEM;
+  const normalized = normalizeStrictCustomConfig(config);
+  return normalized.decisionSystemPrompt || DECISION_SYSTEM;
+}
+
+export function getDecisionUserTemplate(config: StrictCustomConfig | undefined): string {
+  if (!config?.enabled) return DEFAULT_DECISION_USER_TEMPLATE;
+  const normalized = normalizeStrictCustomConfig(config);
+  return normalized.decisionUserPrompt || DEFAULT_DECISION_USER_TEMPLATE;
 }

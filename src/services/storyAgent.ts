@@ -6,7 +6,7 @@ import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
 import { chatStreamDetailed, type ChatMessage } from './llmClient';
 import { buildStorySystem } from '@/prompts/storySystem';
-import { buildStrictStorySystemPromptAppend, buildStrictStoryUserPromptAppend } from '@/lib/strictCustom';
+import { getStoryUserTemplate, renderPromptTemplate } from '@/lib/strictCustom';
 
 export interface StoryRequest {
   settings: AppSettings;
@@ -37,7 +37,7 @@ const MAX_CONTEXT_MESSAGES = 40;
 const MAX_AUTO_CONTINUES = 2;
 
 export async function requestStory(p: StoryRequest): Promise<string> {
-  const baseSystemPrompt = buildStorySystem({
+  const systemPrompt = buildStorySystem({
     outline: p.outline,
     background: p.background,
     characterName: p.characterName,
@@ -56,11 +56,6 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     lengthHint: p.settings.storyLength,
     styleAddendum: p.settings.storyStyleAddendum,
   });
-  const systemPrompt = [
-    baseSystemPrompt,
-    buildStrictStorySystemPromptAppend(p.strictCustom, p.currentRound),
-  ].filter(Boolean).join('\n\n');
-
   // 以 summarizedUntilIndex 为起点，从 history 中切出未被摘要的部分（再做一层 MAX_CONTEXT_MESSAGES 兜底）
   const startIdx = Math.max(
     p.summarizedUntilIndex ?? 0,
@@ -73,42 +68,45 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     ...trimmed.map((m) => ({ role: m.role, content: m.content }) as ChatMessage),
   ];
 
-  let userMessage = p.playerInput?.trim() || '';
+  let defaultUserMessage = p.playerInput?.trim() || '';
+  let usedItemsBlock = '';
   if (p.usedItems && p.usedItems.length) {
     const list = p.usedItems.map((it) => `「${it.name}」`).join('、');
-    userMessage = userMessage
-      ? `${userMessage}\n（本回合使用道具：${list}）`
+    usedItemsBlock = `（本回合使用道具：${list}）`;
+    defaultUserMessage = defaultUserMessage
+      ? `${defaultUserMessage}\n${usedItemsBlock}`
       : `（本回合使用道具：${list}；请继续推进剧情。）`;
   }
 
+  let regenerationHintBlock = '';
   const regenerationHint = p.regenerationHint?.trim();
   if (regenerationHint) {
-    const hintBlock =
+    regenerationHintBlock =
       `\n\n【本次重新生成的重要参考】\n${regenerationHint}\n` +
       '请把以上内容作为本回合重写时的优先参考；不要机械复述提示词本身，仍需保持原有文风与连续性。';
-    userMessage = userMessage
-      ? `${userMessage}${hintBlock}`
-      : `（请重新生成本回合。）${hintBlock}`;
+    defaultUserMessage = defaultUserMessage
+      ? `${defaultUserMessage}${regenerationHintBlock}`
+      : `（请重新生成本回合。）${regenerationHintBlock}`;
   }
 
-  const chainUserPrompt = buildStrictStoryUserPromptAppend(
-    p.strictCustom,
-    p.currentRound,
-    p.playerInput,
-  );
-  if (chainUserPrompt) {
-    userMessage = userMessage
-      ? `${userMessage}\n\n${chainUserPrompt}`
-      : chainUserPrompt;
+  if (!defaultUserMessage) {
+    defaultUserMessage = p.currentRound === 0
+      ? '（故事开始。请开启第一回合。）'
+      : '（请推进剧情。）';
   }
 
-  if (userMessage) {
-    messages.push({ role: 'user', content: userMessage });
-  } else if (p.currentRound === 0) {
-    messages.push({ role: 'user', content: '（故事开始。请开启第一回合。）' });
-  } else {
-    messages.push({ role: 'user', content: '（请推进剧情。）' });
-  }
+  const nextRound = p.currentRound + 1;
+  const userMessage = renderPromptTemplate(getStoryUserTemplate(p.strictCustom), {
+    round: nextRound,
+    completedRounds: p.currentRound,
+    nextRound,
+    input: p.playerInput ?? '',
+    playerInput: p.playerInput ?? '',
+    defaultUserMessage,
+    usedItemsBlock,
+    regenerationHintBlock: regenerationHintBlock.trim(),
+  }) || defaultUserMessage;
+  messages.push({ role: 'user', content: userMessage });
 
   const maxTokens =
     Number.isFinite(p.settings.storyMaxTokens) && p.settings.storyMaxTokens > 0

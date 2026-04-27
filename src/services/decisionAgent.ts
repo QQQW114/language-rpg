@@ -4,10 +4,15 @@ import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
 import type { Choice, Item, ItemType, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import { chatJSON } from './llmClient';
-import { DECISION_SYSTEM, buildDecisionUser } from '@/prompts/decisionSystem';
+import { buildDecisionUser } from '@/prompts/decisionSystem';
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
-import { buildStrictCustomDecisionBlock, buildStrictDecisionSystemPromptAppend } from '@/lib/strictCustom';
+import {
+  buildStrictCustomDecisionBlock,
+  getDecisionSystemTemplate,
+  getDecisionUserTemplate,
+  renderPromptTemplate,
+} from '@/lib/strictCustom';
 import type { RawGrant, RawDestroy } from '@/lib/items';
 
 export interface DecisionRequest {
@@ -168,10 +173,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
   const strictCustomDecisionBlock = buildStrictCustomDecisionBlock(p.strictCustom);
-  const decisionSystemPrompt = [
-    DECISION_SYSTEM,
-    buildStrictDecisionSystemPromptAppend(p.strictCustom),
-  ].filter(Boolean).join('\n\n');
+  const decisionSystemPrompt = renderPromptTemplate(getDecisionSystemTemplate(p.strictCustom), {});
 
   const msgs = recent ?? [];
   const lastA = [...msgs].reverse().find((m) => m.role === 'assistant');
@@ -179,6 +181,37 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     ? msgs.slice(0, msgs.length - 1).slice(-RECENT_MESSAGES)
     : msgs.slice(-RECENT_MESSAGES);
   const recentText = formatRecent(trimmed);
+  const summaryBlock = summary?.trim()
+    ? ['【历史摘要】', summary.trim()].join('\n')
+    : '';
+  const recentTextBlock = recentText.trim()
+    ? ['【最近若干回合】', recentText.trim()].join('\n')
+    : '';
+  const npcBlock = npcSummary.trim()
+    ? ['【当前已知 NPC】', npcSummary.trim()].join('\n')
+    : '';
+  const currentSceneBlock = currentSceneName
+    ? `【上一回合所在场景】${currentSceneName}`
+    : '';
+  const defaultDecisionUserPrompt = buildDecisionUser({
+    latestStory,
+    backpackSummary,
+    summary,
+    recentText,
+    npcSummary,
+    currentSceneName,
+    strictCustomDecisionBlock,
+  });
+  const decisionUserPrompt = renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {
+    latestStory,
+    backpackSummary,
+    summaryBlock,
+    recentTextBlock,
+    npcBlock,
+    currentSceneBlock,
+    strictCustomDecisionBlock,
+    defaultDecisionUserPrompt,
+  }) || defaultDecisionUserPrompt;
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {
     const text = await chatJSON(
@@ -188,7 +221,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
         temperature,
         messages: [
           { role: 'system', content: decisionSystemPrompt },
-          { role: 'user', content: buildDecisionUser({ latestStory, backpackSummary, summary, recentText, npcSummary, currentSceneName, strictCustomDecisionBlock }) },
+          { role: 'user', content: decisionUserPrompt },
         ],
         signal,
       },
