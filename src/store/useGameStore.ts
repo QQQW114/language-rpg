@@ -235,6 +235,35 @@ function mergeNpcDetails(prev: string[] | undefined, incoming: string[] | undefi
   return merged.length ? merged.slice(-10) : undefined;
 }
 
+function normalizeAnchors(rawAnchors: unknown, history: Message[] | undefined): MemoryAnchor[] {
+  if (!Array.isArray(rawAnchors)) return [];
+  const historyByRound = new Map<number, Message>();
+  for (const msg of history ?? []) {
+    if (msg.role === 'assistant') historyByRound.set(msg.round, msg);
+  }
+
+  const out: MemoryAnchor[] = [];
+  for (const raw of rawAnchors) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Partial<MemoryAnchor>;
+    const round = Math.floor(Number(item.round));
+    if (!Number.isFinite(round)) continue;
+    const restored = historyByRound.get(round)?.content?.trim() || '';
+    const content = item.content?.trim() || restored || item.excerpt?.trim() || '';
+    const excerpt = item.excerpt?.trim() || content.slice(0, 160);
+    if (!content && !excerpt) continue;
+    out.push({
+      id: item.id || genId('anc'),
+      round,
+      excerpt: excerpt.slice(0, 160),
+      content,
+      note: item.note?.trim() || undefined,
+      createdAt: Number(item.createdAt) || nowMs(),
+    });
+  }
+  return out;
+}
+
 export const useGameStore = create<GameStoreState>()(
   persist(
     (set, get) => ({
@@ -372,6 +401,13 @@ export const useGameStore = create<GameStoreState>()(
             ...save.state,
             ...pendingClean,
             history,
+            anchors: msg.role === 'assistant'
+              ? (save.state.anchors ?? []).map((a) =>
+                a.round === msg.round
+                  ? { ...a, excerpt: nextContent.slice(0, 160), content: nextContent }
+                  : a,
+              )
+              : save.state.anchors,
             error: undefined,
             regenerationHint: undefined,
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
@@ -762,8 +798,13 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           const anchors = [...(save.state.anchors ?? [])];
+          const content = anchor.content?.trim() || anchor.excerpt?.trim() || '';
+          const excerpt = (anchor.excerpt?.trim() || content.slice(0, 160)).slice(0, 160);
+          if (!content && !excerpt) return s;
           anchors.push({
             ...anchor,
+            excerpt,
+            content,
             id: genId('anc'),
             createdAt: nowMs(),
           });
@@ -823,7 +864,7 @@ export const useGameStore = create<GameStoreState>()(
               npcs: Array.isArray((sv.state as any)?.npcs)
                 ? (sv.state as any).npcs.map((n: any) => ({ ...n, details: normalizeNpcDetails(n.details) }))
                 : [],
-              anchors: Array.isArray((sv.state as any)?.anchors) ? (sv.state as any).anchors : [],
+              anchors: normalizeAnchors((sv.state as any)?.anchors, (sv.state as any)?.history),
               sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],
               availableScenes: Array.isArray((sv.state as any)?.availableScenes) ? (sv.state as any).availableScenes : [],
               currentScene: (sv.state as any)?.currentScene,

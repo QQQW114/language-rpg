@@ -470,8 +470,9 @@ export default function GamePage() {
 
   function onPinAnchor(msg: Message) {
     if (!save) return;
-    const excerpt = msg.content.trim().slice(0, 120);
-    useGameStore.getState().addAnchor(save.id, { round: msg.round, excerpt });
+    const content = msg.content.trim();
+    const excerpt = content.slice(0, 160);
+    useGameStore.getState().addAnchor(save.id, { round: msg.round, excerpt, content });
   }
 
   function onUnpinAnchor(anchorId: string) {

@@ -30,10 +30,14 @@ export function AnchorsList({ anchors, onRemove, onUpdateNote }: AnchorsListProp
         <Bookmark size={14} /> 记忆锚点 · {anchors.length}
       </h3>
       <div className="space-y-1.5">
-        {anchors.slice().reverse().slice(0, 8).map((a) => (
+        {anchors.slice().reverse().slice(0, 8).map((a) => {
+          const preview = a.excerpt || a.content || '';
+          const full = a.content || a.excerpt || '';
+          return (
           <div
             key={a.id}
             className="relative bg-parchment-800/60 border border-parchment-600/40 rounded px-2 py-1.5 text-xs group"
+            title={full}
           >
             <div className="flex items-start justify-between gap-1">
               <div className="text-[10px] text-gold/70 tracking-wider">第 {a.round} 回合</div>
@@ -72,9 +76,10 @@ export function AnchorsList({ anchors, onRemove, onUpdateNote }: AnchorsListProp
             ) : a.note ? (
               <div className="text-gold-light font-serif mt-0.5">{a.note}</div>
             ) : null}
-            <div className="text-parchment-200/70 italic line-clamp-2 mt-0.5">{a.excerpt}</div>
+            <div className="text-parchment-200/70 italic line-clamp-2 mt-0.5">{preview}</div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

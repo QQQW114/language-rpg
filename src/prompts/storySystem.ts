@@ -77,6 +77,10 @@ function buildActPlanBlock(
   return lines.join('\n');
 }
 
+function anchorContent(a: MemoryAnchor): string {
+  return (a.content?.trim() || a.excerpt?.trim() || '').trim();
+}
+
 export function buildStorySystem(p: BuildStorySystemParams): string {
   const {
     outline, background, characterName, activeWorldBookEntries,
@@ -160,7 +164,9 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     anchorLines.push('【玩家标记的关键记忆】（这些是玩家认为重要、不可遗忘的情节，请在后续叙事中显性或隐性地呼应它们）');
     for (const a of anchors.slice(-8)) {
       const note = a.note ? `【${a.note}】` : '';
-      anchorLines.push(`· 第 ${a.round} 回合${note}：${a.excerpt}`);
+      const content = anchorContent(a);
+      if (!content) continue;
+      anchorLines.push(`· 第 ${a.round} 回合${note}：${content}`);
     }
   }
 

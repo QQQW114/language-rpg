@@ -128,7 +128,8 @@ export interface GameState {
 export interface MemoryAnchor {
   id: string;
   round: number;
-  excerpt: string;               // 原文节选（截断）
+  excerpt: string;               // UI 预览用短摘录
+  content?: string;              // 完整标记内容；提示词注入优先使用它
   note?: string;                 // 玩家可选的备注
   createdAt: number;
 }
