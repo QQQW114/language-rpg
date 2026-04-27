@@ -1,0 +1,624 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, ChevronRight, Dices, Sparkles, Wand2 } from 'lucide-react';
+import { useContentStore, selectAllOutlines, selectAllBackgrounds, selectAllWorldBooks, selectAllEvents, flattenWorldBookEntries } from '@/store/useContentStore';
+import { useGameStore } from '@/store/useGameStore';
+import { useSettingsStore } from '@/store/useSettingsStore';
+import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { OrnateDivider } from '@/components/ui/Ornaments';
+import { itemsFromStartStrings } from '@/lib/items';
+import { requestRandomOutline, requestRandomBackground, requestRandomScene, requestRandomEvents, requestRandomWorldBook } from '@/services/randomizers';
+
+type Step = 'outline' | 'background' | 'config';
+
+export default function SetupPage() {
+  const nav = useNavigate();
+  const settings = useSettingsStore((s) => s.settings);
+
+  const outlines = useContentStore(selectAllOutlines);
+  const backgrounds = useContentStore(selectAllBackgrounds);
+  const worldBooks = useContentStore(selectAllWorldBooks);
+  const events = useContentStore(selectAllEvents);
+
+  const createSave = useGameStore((s) => s.createSave);
+
+  const [step, setStep] = useState<Step>('outline');
+  const [outlineId, setOutlineId] = useState<string>();
+  const [backgroundId, setBackgroundId] = useState<string>();
+  const [characterName, setCharacterName] = useState('');
+  const [totalRounds, setTotalRounds] = useState(30);
+  const [infiniteMode, setInfiniteMode] = useState(false);
+  const [manualInputEvery, setManualInputEvery] = useState(5);
+  const [refreshChoiceEvery, setRefreshChoiceEvery] = useState(3);
+  const [itemCapacity, setItemCapacity] = useState(8);
+  const [worldBookIds, setWorldBookIds] = useState<string[]>([]);
+  const [eventIds, setEventIds] = useState<string[]>(events.map((e) => e.id));
+  const [customStartScene, setCustomStartScene] = useState<string | undefined>();
+  const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
+  const [genError, setGenError] = useState<string | undefined>();
+  const [outlineHint, setOutlineHint] = useState('');
+  const [backgroundHint, setBackgroundHint] = useState('');
+  const [sceneHint, setSceneHint] = useState('');
+  const [eventsHint, setEventsHint] = useState('');
+  const [worldBookHint, setWorldBookHint] = useState('');
+
+  const addOutline = useContentStore((s) => s.addOutline);
+  const addBackground = useContentStore((s) => s.addBackground);
+  const addEvent = useContentStore((s) => s.addEvent);
+  const addWorldBook = useContentStore((s) => s.addWorldBook);
+
+  const selectedOutline = useMemo(
+    () => outlines.find((o) => o.id === outlineId),
+    [outlines, outlineId],
+  );
+  const selectedBackground = useMemo(
+    () => backgrounds.find((b) => b.id === backgroundId),
+    [backgrounds, backgroundId],
+  );
+
+  // 选中 outline 时默认挂载其关联的世界书
+  useEffect(() => {
+    if (selectedOutline?.worldBookIds?.length) {
+      setWorldBookIds(selectedOutline.worldBookIds);
+    }
+  }, [selectedOutline]);
+
+  // 切换 background 时，清空之前的随机开局覆盖
+  useEffect(() => {
+    setCustomStartScene(undefined);
+  }, [backgroundId]);
+
+  // ---- 随机生成 ----
+  const ensureApi = (): boolean => {
+    if (!settings.apiKey) {
+      if (confirm('尚未配置 API Key，随机生成需要调用模型。是否前往设置？')) nav('/settings');
+      return false;
+    }
+    return true;
+  };
+
+  async function genRandomOutline() {
+    if (!ensureApi()) return;
+    setGenError(undefined);
+    setGenBusy('outline');
+    try {
+      const avoid = outlines.map((o) => o.title).slice(0, 20);
+      const out = await requestRandomOutline(settings, {
+        avoidTitles: avoid,
+        theme: outlineHint.trim() || undefined,
+      });
+      addOutline(out);
+      setOutlineId(out.id);
+    } catch (err: any) {
+      setGenError(err?.message ?? String(err));
+    } finally {
+      setGenBusy(null);
+    }
+  }
+
+  async function genRandomBackground() {
+    if (!ensureApi() || !selectedOutline) return;
+    setGenError(undefined);
+    setGenBusy('background');
+    try {
+      const entries = flattenWorldBookEntries(worldBooks, worldBookIds);
+      const bg = await requestRandomBackground(settings, selectedOutline, entries, backgroundHint.trim() || undefined);
+      addBackground(bg);
+      setBackgroundId(bg.id);
+      setCustomStartScene(undefined);
+    } catch (err: any) {
+      setGenError(err?.message ?? String(err));
+    } finally {
+      setGenBusy(null);
+    }
+  }
+
+  async function genRandomScene() {
+    if (!ensureApi() || !selectedOutline || !selectedBackground) return;
+    setGenError(undefined);
+    setGenBusy('scene');
+    try {
+      const scene = await requestRandomScene(settings, selectedOutline, selectedBackground, sceneHint.trim() || undefined);
+      setCustomStartScene(scene);
+    } catch (err: any) {
+      setGenError(err?.message ?? String(err));
+    } finally {
+      setGenBusy(null);
+    }
+  }
+
+  async function genRandomEvents() {
+    if (!ensureApi() || !selectedOutline) return;
+    setGenError(undefined);
+    setGenBusy('events');
+    try {
+      const scene = customStartScene?.trim() || selectedBackground?.startScene;
+      const evs = await requestRandomEvents(
+        settings,
+        selectedOutline,
+        selectedBackground,
+        scene,
+        eventsHint.trim() || undefined,
+        6,
+      );
+      for (const ev of evs) addEvent(ev);
+      setEventIds((prev) => Array.from(new Set([...prev, ...evs.map((e) => e.id)])));
+    } catch (err: any) {
+      setGenError(err?.message ?? String(err));
+    } finally {
+      setGenBusy(null);
+    }
+  }
+
+  async function genRandomWorldBook() {
+    if (!ensureApi()) return;
+    setGenError(undefined);
+    setGenBusy('worldbook');
+    try {
+      const wb = await requestRandomWorldBook(
+        settings,
+        selectedOutline,
+        worldBookHint.trim() || undefined,
+        7,
+      );
+      addWorldBook(wb);
+      setWorldBookIds((prev) => Array.from(new Set([...prev, wb.id])));
+    } catch (err: any) {
+      setGenError(err?.message ?? String(err));
+    } finally {
+      setGenBusy(null);
+    }
+  }
+
+  const canStart =
+    outlineId && backgroundId && (infiniteMode || totalRounds >= 5) && manualInputEvery >= 1;
+
+  const handleBack = () => {
+    if (step === 'config') setStep('background');
+    else if (step === 'background') setStep('outline');
+    else nav('/');
+  };
+
+  const handleNext = () => {
+    if (step === 'outline') {
+      if (outlineId) setStep('background');
+    } else if (step === 'background') {
+      if (backgroundId) setStep('config');
+    } else {
+      start();
+    }
+  };
+
+  const canGoNext =
+    step === 'outline' ? !!outlineId
+      : step === 'background' ? !!backgroundId
+      : !!canStart;
+
+  const nextLabel = step === 'config' ? '启程' : '下一步';
+  const backLabel = step === 'outline' ? '返回主页' : '上一步';
+
+  const toggle = (list: string[], id: string): string[] =>
+    list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+
+  const start = () => {
+    if (!settings.apiKey) {
+      if (!confirm('尚未配置 API Key，无法调用模型。是否先前往设置页面？')) return;
+      nav('/settings');
+      return;
+    }
+    if (!selectedOutline || !selectedBackground) return;
+    const saveName = `${characterName || '旅人'} · ${selectedOutline.title}`;
+    createSave({
+      name: saveName,
+      config: {
+        totalRounds: infiniteMode ? 0 : totalRounds,
+        manualInputEvery,
+        refreshChoiceEvery,
+        itemCapacity,
+      },
+      content: {
+        outlineId,
+        backgroundId,
+        worldBookIds,
+        eventIds,
+        characterName: characterName.trim() || undefined,
+      },
+      initialScene: (customStartScene?.trim() || selectedBackground.startScene),
+      initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),
+    });
+    nav('/game');
+  };
+
+  return (
+    <div className="min-h-full max-w-5xl mx-auto px-6 py-8 pb-24">
+      <div className="flex items-center justify-between mb-6">
+        <Button variant="ghost" onClick={handleBack}>
+          <ArrowLeft size={16} /> {backLabel}
+        </Button>
+        <div className="flex gap-4 text-sm font-serif">
+          <StepDot active={step === 'outline'} done={!!outlineId}>一 · 选择故事</StepDot>
+          <StepDot active={step === 'background'} done={!!backgroundId}>二 · 选择出身</StepDot>
+          <StepDot active={step === 'config'} done={!!canStart}>三 · 启程</StepDot>
+        </div>
+        <div className="w-16" />
+      </div>
+
+      {step === 'outline' && (
+        <div>
+          <div className="flex items-end justify-between mb-2 gap-4">
+            <div>
+              <h2 className="font-serif text-2xl text-gold-light">选择你的故事</h2>
+              <div className="text-sm text-parchment-200/70">所有故事都会由模型重新演绎；你的每一次选择都可能把它引向新的方向。</div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={genRandomOutline}
+              loading={genBusy === 'outline'}
+              disabled={genBusy !== null}
+            >
+              <Wand2 size={16} /> 随机生成新故事
+            </Button>
+          </div>
+          <div className="mb-4">
+            <textarea
+              value={outlineHint}
+              onChange={(e) => setOutlineHint(e.target.value)}
+              placeholder={'（可选）生成偏好，可写得尽量详细。例如：\n- 题材：校园恋爱 / 末世温情 / 武侠 / 赛博朋克 / 悬疑\n- 核心冲突：一段注定错过的暗恋；或一场为了姐姐的复仇\n- 基调：偏治愈 / 偏苦涩 / 有喜剧元素\n- 主角约束：必须是女性，盲人，以第一次出远门为开场\n- 禁忌元素：不要超自然 / 不要战斗描写'}
+              className="w-full bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/50 rounded-md px-3 py-2 font-serif text-sm focus:outline-none focus:border-gold/70 focus:shadow-glow-sm transition-all resize-y min-h-[80px] leading-relaxed"
+              rows={3}
+            />
+          </div>
+          {genError && genBusy !== 'outline' && step === 'outline' && (
+            <div className="text-sm text-blood bg-blood/10 border border-blood/50 rounded px-3 py-2 mb-3">{genError}</div>
+          )}
+          <div className="grid gap-4 md:grid-cols-2 mt-4">
+            {outlines.map((o) => (
+              <Card
+                key={o.id}
+                interactive
+                selected={outlineId === o.id}
+                onClick={() => setOutlineId(o.id)}
+              >
+                <CardTitle>
+                  {o.coverEmoji && <span className="mr-2">{o.coverEmoji}</span>}
+                  {o.title}
+                  {o.id.startsWith('gen_') && <span className="ml-2 text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
+                </CardTitle>
+                {o.tone && <CardMeta>{o.tone}</CardMeta>}
+                <div className="text-sm text-parchment-100/90 leading-relaxed">
+                  {o.synopsis}
+                </div>
+                {o.acts?.length > 0 && (
+                  <ul className="mt-3 text-xs text-parchment-200/70 space-y-1">
+                    {o.acts.map((a, i) => (
+                      <li key={i} className="pl-3 border-l border-gold-dark/60">{a}</li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {step === 'background' && (
+        <div>
+          <div className="flex items-end justify-between mb-2 gap-4">
+            <div>
+              <h2 className="font-serif text-2xl text-gold-light">选择你的出身</h2>
+              <div className="text-sm text-parchment-200/70">出身决定开局的场景、初始技能与物品。</div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={genRandomBackground}
+              loading={genBusy === 'background'}
+              disabled={genBusy !== null || !selectedOutline}
+              title={!selectedOutline ? '请先选一个故事' : '根据大纲随机生成一个出身'}
+            >
+              <Wand2 size={16} /> 随机出身
+            </Button>
+          </div>
+          <div className="mb-4">
+            <textarea
+              value={backgroundHint}
+              onChange={(e) => setBackgroundHint(e.target.value)}
+              placeholder={'（可选）出身偏好，可写得具体。例如：\n- 类型：失忆少女 / 退役军人 / 隐退高手 / 孤儿 / 大家族私生子\n- 技能倾向：擅长医术，不擅长武力\n- 性格：内向、谨慎，有一点社恐\n- 负担/秘密：身上有一块不能让人发现的胎记；欠下不小的赌债'}
+              className="w-full bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/50 rounded-md px-3 py-2 font-serif text-sm focus:outline-none focus:border-gold/70 focus:shadow-glow-sm transition-all resize-y min-h-[80px] leading-relaxed"
+              rows={3}
+            />
+          </div>
+          {genError && genBusy !== 'background' && step === 'background' && (
+            <div className="text-sm text-blood bg-blood/10 border border-blood/50 rounded px-3 py-2 mb-3">{genError}</div>
+          )}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mt-4">
+            {backgrounds.map((b) => (
+              <Card
+                key={b.id}
+                interactive
+                selected={backgroundId === b.id}
+                onClick={() => setBackgroundId(b.id)}
+              >
+                <CardTitle>
+                  {b.coverEmoji && <span className="mr-2">{b.coverEmoji}</span>}
+                  {b.name}
+                  {b.id.startsWith('gen_') && <span className="ml-2 text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
+                </CardTitle>
+                <div className="text-sm text-parchment-100/90 leading-relaxed mb-2">
+                  {b.description}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {b.traits.map((t) => (
+                    <span
+                      key={t}
+                      className="text-[11px] px-2 py-0.5 rounded border border-gold/40 text-parchment-100 bg-parchment-900/40"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {step === 'config' && selectedOutline && selectedBackground && (
+        <div className="grid gap-6 md:grid-cols-5">
+          <div className="md:col-span-3">
+            <h2 className="font-serif text-2xl text-gold-light mb-4">启程设定</h2>
+
+            <Input
+              label="角色姓名（可留空）"
+              value={characterName}
+              onChange={(e) => setCharacterName(e.target.value)}
+              placeholder="为你的角色起一个名字"
+              maxLength={20}
+            />
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <span className="block text-sm text-gold-light mb-1 tracking-wide">总回合数</span>
+                <input
+                  type="number"
+                  min={5}
+                  max={200}
+                  value={totalRounds}
+                  onChange={(e) => setTotalRounds(Number(e.target.value) || 30)}
+                  disabled={infiniteMode}
+                  className="w-full bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/50 rounded-md px-3 py-2 font-serif focus:outline-none focus:border-gold/70 focus:shadow-glow-sm transition-all disabled:opacity-40"
+                />
+                <label className="mt-1 flex items-center gap-1.5 text-xs text-parchment-200/80 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={infiniteMode}
+                    onChange={(e) => setInfiniteMode(e.target.checked)}
+                    className="accent-gold"
+                  />
+                  <span className={infiniteMode ? 'text-gold-light font-semibold' : ''}>无尽模式 ∞</span>
+                </label>
+              </div>
+              <Input
+                label="手动输入频率"
+                type="number"
+                min={1}
+                max={50}
+                value={manualInputEvery}
+                onChange={(e) => setManualInputEvery(Number(e.target.value) || 5)}
+                hint="每 N 回合"
+              />
+              <Input
+                label="刷新决策频率"
+                type="number"
+                min={1}
+                max={50}
+                value={refreshChoiceEvery}
+                onChange={(e) => setRefreshChoiceEvery(Number(e.target.value) || 3)}
+                hint="每 N 回合 +1 次"
+              />
+              <Input
+                label="背包容量"
+                type="number"
+                min={3}
+                max={30}
+                value={itemCapacity}
+                onChange={(e) => setItemCapacity(Number(e.target.value) || 8)}
+                hint="超载需丢弃"
+              />
+            </div>
+
+            <OrnateDivider>世界书</OrnateDivider>
+            <div className="text-xs text-parchment-200/70 mb-2">
+              激活的世界书条目会在命中关键词时注入给故事模型，补充背景设定。可按下方按钮让模型根据当前大纲生成一本专属世界书。
+            </div>
+            <div className="flex items-start gap-2 mb-2">
+              <textarea
+                value={worldBookHint}
+                onChange={(e) => setWorldBookHint(e.target.value)}
+                placeholder={'（可选）世界书偏好，可写得详细。例如：\n- 题材：低魔奇幻 / 蒸汽朋克 / 近代谍战 / 东方武侠\n- 必须包含：三大主要势力，一种独有货币，一个禁忌组织\n- 禁忌：不出现电子设备；不出现枪械；不出现神明'}
+                className="flex-1 bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-3 py-1.5 font-serif text-xs focus:outline-none focus:border-gold/60 resize-y min-h-[60px] leading-relaxed"
+                rows={3}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={genRandomWorldBook}
+                loading={genBusy === 'worldbook'}
+                disabled={genBusy !== null}
+              >
+                <Wand2 size={14} /> 随机世界书
+              </Button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {worldBooks.map((w) => (
+                <label
+                  key={w.id}
+                  className="flex items-start gap-2 bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 cursor-pointer hover:border-gold/60"
+                >
+                  <input
+                    type="checkbox"
+                    checked={worldBookIds.includes(w.id)}
+                    onChange={() => setWorldBookIds(toggle(worldBookIds, w.id))}
+                    className="mt-1 accent-gold"
+                  />
+                  <div>
+                    <div className="text-parchment-100 text-sm">
+                      {w.name}
+                      {w.id.startsWith('gen_wb') && <span className="ml-2 text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
+                    </div>
+                    <div className="text-xs text-parchment-200/60">
+                      {w.entries.length} 条 · {w.description ?? '无简介'}
+                    </div>
+                  </div>
+                </label>
+              ))}
+              {worldBooks.length === 0 && (
+                <div className="text-sm text-parchment-200/60">尚无世界书，可前往书库导入或用上方按钮随机生成。</div>
+              )}
+            </div>
+
+            <OrnateDivider>随机事件</OrnateDivider>
+            <div className="text-xs text-parchment-200/70 mb-2">
+              每个勾选的事件都有机会在合适的回合被模型自然融入故事。可按下方按钮让模型根据当前故事设定生成一批专属事件。
+            </div>
+            <div className="flex items-start gap-2 mb-2">
+              <textarea
+                value={eventsHint}
+                onChange={(e) => setEventsHint(e.target.value)}
+                placeholder={'（可选）事件偏好，可写得详细。例如：\n- 基调：偏日常温情 / 偏突发转折\n- 要求：必含一次误会、一次失而复得、一次雨夜、一次三人共处\n- 禁忌：不要流血暴力；不要生离死别'}
+                className="flex-1 bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-3 py-1.5 font-serif text-xs focus:outline-none focus:border-gold/60 resize-y min-h-[60px] leading-relaxed"
+                rows={3}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={genRandomEvents}
+                loading={genBusy === 'events'}
+                disabled={genBusy !== null}
+              >
+                <Wand2 size={14} /> 随机事件池
+              </Button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {events.map((e) => (
+                <label
+                  key={e.id}
+                  className="flex items-start gap-2 bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 cursor-pointer hover:border-gold/60"
+                >
+                  <input
+                    type="checkbox"
+                    checked={eventIds.includes(e.id)}
+                    onChange={() => setEventIds(toggle(eventIds, e.id))}
+                    className="mt-1 accent-gold"
+                  />
+                  <div>
+                    <div className="text-parchment-100 text-sm flex items-center gap-2">
+                      <Dices size={12} className="text-gold/70" /> {e.name}
+                      {e.id.startsWith('gen_ev') && <span className="text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
+                    </div>
+                    <div className="text-xs text-parchment-200/60">
+                      概率 {Math.round(e.probability * 100)}%
+                      {e.minRound ? ` · 第 ${e.minRound} 回合起` : ''}
+                      {e.once ? ' · 仅触发一次' : ''}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <aside className="md:col-span-2">
+            <div className="sticky top-6">
+              <h3 className="font-serif text-xs tracking-[0.3em] text-gold-light uppercase mb-3">
+                <Sparkles size={14} className="inline mr-1" /> 你的选择
+              </h3>
+              <Card>
+                <div className="text-xs text-parchment-200/70">故事</div>
+                <div className="font-serif text-parchment-50 text-lg mb-2">
+                  {selectedOutline.coverEmoji} {selectedOutline.title}
+                </div>
+                <div className="text-xs text-parchment-200/70">出身</div>
+                <div className="font-serif text-parchment-50 mb-2">
+                  {selectedBackground.coverEmoji} {selectedBackground.name}
+                </div>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-parchment-200/70">
+                    开局场景 {customStartScene && <span className="text-gold-light">· 已随机 ·</span>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={genRandomScene}
+                    disabled={genBusy !== null}
+                    className="text-xs text-gold-light hover:text-gold disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <Wand2 size={12} /> {genBusy === 'scene' ? '生成中…' : '随机开局'}
+                  </button>
+                </div>
+                <textarea
+                  value={sceneHint}
+                  onChange={(e) => setSceneHint(e.target.value)}
+                  placeholder={'（可选）开局偏好，可写得具体。例如：\n- 地点：雨夜街角 / 客栈楼上的独立房间 / 葬礼刚结束的归途\n- 氛围：疲惫、潮湿、某种奇异的安宁\n- 必须出现：一个陌生的陶碗；一封没写完的信'}
+                  className="w-full bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-2 py-1 font-serif text-xs mb-2 focus:outline-none focus:border-gold/60 resize-y min-h-[52px] leading-relaxed"
+                  rows={3}
+                />
+                <div className="text-xs text-parchment-200/90 italic leading-relaxed max-h-48 overflow-auto whitespace-pre-line">
+                  {customStartScene ?? selectedBackground.startScene}
+                </div>
+                {customStartScene && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomStartScene(undefined)}
+                    className="mt-2 text-[10px] text-parchment-200/60 hover:text-gold-light underline underline-offset-2"
+                  >
+                    恢复默认开局
+                  </button>
+                )}
+              </Card>
+              {genError && (
+                <div className="mt-3 text-xs text-blood bg-blood/10 border border-blood/50 rounded px-3 py-2">{genError}</div>
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* 粘底的步骤导航条 */}
+      <div className="fixed bottom-0 left-0 right-0 z-30 bg-parchment-800/85 backdrop-blur-md border-t border-parchment-600/50">
+        <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
+          <Button variant="outline" onClick={handleBack}>
+            <ArrowLeft size={16} /> {backLabel}
+          </Button>
+          <div className="text-xs text-parchment-200/60 font-serif hidden sm:block">
+            {step === 'outline' && '一 · 选择故事'}
+            {step === 'background' && '二 · 选择出身'}
+            {step === 'config' && '三 · 启程'}
+          </div>
+          <Button
+            size="lg"
+            disabled={!canGoNext}
+            onClick={handleNext}
+          >
+            {nextLabel} {step !== 'config' && <ChevronRight size={16} />}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StepDot({ active, done, children }: { active?: boolean; done?: boolean; children: React.ReactNode }) {
+  return (
+    <span
+      className={`px-3 py-1 rounded-full border text-xs tracking-wider ${
+        active
+          ? 'border-gold text-gold-light shadow-glow-sm'
+          : done
+          ? 'border-gold/40 text-parchment-100/80'
+          : 'border-parchment-600/40 text-parchment-200/60'
+      }`}
+    >
+      {children}
+    </span>
+  );
+}
