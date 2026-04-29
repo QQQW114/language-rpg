@@ -30,6 +30,13 @@ export interface AuthorRandomEventConfig {
   };
 }
 
+export interface AuthorDirectorConfig {
+  enabled: boolean;
+  everyRounds: number;        // 每完成多少回合刷新一次叙事计划
+  horizonRounds: number;      // 每次规划未来多少回合
+  prompt: string;             // 玩家对叙事导演/大纲映射的额外要求
+}
+
 export interface StoryArcStage {
   id: string;
   startRound: number;
@@ -155,6 +162,7 @@ export interface GameContent {
   strictCustom?: StrictCustomConfig; // 严格自定义模式配置（创建存档时固化）
   authorCustom?: StrictCustomConfig; // 执笔模式独立提示词链路（创建存档时固化）
   authorRandomEvent?: AuthorRandomEventConfig; // 执笔模式随机事件/动态事件弧配置
+  authorDirector?: AuthorDirectorConfig; // 执笔模式叙事导演/大纲映射配置
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 

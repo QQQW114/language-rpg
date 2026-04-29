@@ -40,6 +40,7 @@ export function AuthorArcPanel({
   randomEventState?: AuthorRandomEventState;
 }) {
   const pending = randomEventState?.pendingEvent ? [randomEventState.pendingEvent] : [];
+  const plan = narrative?.plan;
   const active = [
     ...(randomEventState?.activeEvents ?? []),
     ...(narrative?.activeArcs ?? []),
@@ -48,7 +49,7 @@ export function AuthorArcPanel({
     ...(randomEventState?.completedEvents ?? []),
     ...(narrative?.completedArcs ?? []),
   ].slice(-8).reverse();
-  const hasAny = pending.length || active.length || completed.length || randomEventState?.lastError;
+  const hasAny = plan || pending.length || active.length || completed.length || randomEventState?.lastError;
 
   return (
     <Card>
@@ -59,6 +60,14 @@ export function AuthorArcPanel({
       {!hasAny && (
         <div className="text-xs text-parchment-200/60 leading-relaxed">
           暂无进行中的长线事件。若启用了剧情驱动随机事件，系统会在合适回合自动生成。
+        </div>
+      )}
+      {plan && (
+        <div className="mb-2 rounded border border-gold/30 bg-gold/10 px-3 py-2 text-xs leading-relaxed text-parchment-100/85">
+          <div className="text-[11px] tracking-[0.25em] text-gold/80 uppercase mb-1">当前导演计划</div>
+          {plan.currentStage && <div>阶段：{plan.currentStage}</div>}
+          {plan.stageGoal && <div>目标：{plan.stageGoal}</div>}
+          {plan.nextRoundFocus && <div>下一回合：{plan.nextRoundFocus}</div>}
         </div>
       )}
       <div className="space-y-2">

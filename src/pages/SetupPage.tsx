@@ -27,9 +27,9 @@ import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { useAuthorModeStore } from '@/store/useAuthorModeStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
-import { DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, normalizeAuthorRandomEventConfig } from '@/lib/authorMode';
+import { DEFAULT_AUTHOR_DIRECTOR_CONFIG, DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, normalizeAuthorDirectorConfig, normalizeAuthorRandomEventConfig } from '@/lib/authorMode';
 import type { RandomEvent } from '@/types/content';
-import type { AuthorRandomEventConfig, JourneyMode } from '@/types/game';
+import type { AuthorDirectorConfig, AuthorRandomEventConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
@@ -62,6 +62,9 @@ export default function SetupPage() {
   const [eventIds, setEventIds] = useState<string[]>([]);
   const [authorRandomEvent, setAuthorRandomEvent] = useState<AuthorRandomEventConfig>(() =>
     normalizeAuthorRandomEventConfig(DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG),
+  );
+  const [authorDirector, setAuthorDirector] = useState<AuthorDirectorConfig>(() =>
+    normalizeAuthorDirectorConfig(DEFAULT_AUTHOR_DIRECTOR_CONFIG),
   );
   const [customStartScene, setCustomStartScene] = useState<string | undefined>();
   const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
@@ -291,6 +294,10 @@ export default function SetupPage() {
     );
   };
 
+  const updateAuthorDirector = (patch: Partial<AuthorDirectorConfig>) => {
+    setAuthorDirector((prev) => normalizeAuthorDirectorConfig({ ...prev, ...patch }));
+  };
+
   const toggleAuthorPoolEvent = (id: string) => {
     setAuthorRandomEvent((prev) =>
       normalizeAuthorRandomEventConfig({
@@ -354,6 +361,7 @@ export default function SetupPage() {
     const authorCustom = normalizeStrictCustomConfig({ ...authorDraft, enabled: true });
     const isAuthorMode = journeyMode === 'author';
     const normalizedAuthorRandomEvent = normalizeAuthorRandomEventConfig(authorRandomEvent);
+    const normalizedAuthorDirector = normalizeAuthorDirectorConfig(authorDirector);
     const authorEventResourceIds = Array.from(new Set([
       ...normalizedAuthorRandomEvent.poolEventIds,
       ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
@@ -376,6 +384,7 @@ export default function SetupPage() {
         strictCustom: strictCustom.enabled ? strictCustom : undefined,
         authorCustom: isAuthorMode ? authorCustom : undefined,
         authorRandomEvent: isAuthorMode ? normalizedAuthorRandomEvent : undefined,
+        authorDirector: isAuthorMode ? normalizedAuthorDirector : undefined,
         storyStyle: {
           storyLength: settings.storyLength,
           storyStyleAddendum: settings.storyStyleAddendum,
@@ -758,6 +767,11 @@ export default function SetupPage() {
             )}
 
             {journeyMode === 'author' && (
+              <>
+              <AuthorDirectorSection
+                config={authorDirector}
+                onChange={updateAuthorDirector}
+              />
               <AuthorRandomEventSection
                 config={authorRandomEvent}
                 events={visibleEvents}
@@ -780,6 +794,7 @@ export default function SetupPage() {
                 onSaveEdit={saveEventEdit}
                 onDelete={deleteEventFromSetup}
               />
+              </>
             )}
           </div>
 
@@ -1027,6 +1042,69 @@ function SetupEventList({
         </div>
       )}
     </div>
+  );
+}
+
+function AuthorDirectorSection({
+  config,
+  onChange,
+}: {
+  config: AuthorDirectorConfig;
+  onChange: (patch: Partial<AuthorDirectorConfig>) => void;
+}) {
+  return (
+    <>
+      <OrnateDivider>叙事导演</OrnateDivider>
+      <Card className={config.enabled ? 'mb-4 border-gold/60 shadow-glow-sm' : 'mb-4'}>
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div>
+            <CardTitle className="text-base">阶段目标 / 大纲映射</CardTitle>
+            <CardMeta>
+              故事和状态追踪完成后，额外调用一次导演模型，为接下来若干回合生成短期目标、节奏建议和大纲贴合方向。
+            </CardMeta>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.enabled}
+              onChange={(e) => onChange({ enabled: e.target.checked })}
+              className="accent-gold"
+            />
+            启用
+          </label>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input
+            label="刷新频率"
+            type="number"
+            min={1}
+            max={20}
+            value={config.everyRounds}
+            disabled={!config.enabled}
+            onChange={(e) => onChange({ everyRounds: Number(e.target.value) || 2 })}
+            hint="每完成 N 回合重新规划"
+          />
+          <Input
+            label="规划跨度"
+            type="number"
+            min={2}
+            max={30}
+            value={config.horizonRounds}
+            disabled={!config.enabled}
+            onChange={(e) => onChange({ horizonRounds: Number(e.target.value) || 6 })}
+            hint="向后规划 N 回合"
+          />
+        </div>
+        <Textarea
+          label="导演提示词"
+          value={config.prompt}
+          disabled={!config.enabled}
+          onChange={(e) => onChange({ prompt: e.target.value })}
+          rows={4}
+          hint="用于强调你想要的小说感、逻辑、节奏和主线贴合方式。"
+        />
+      </Card>
+    </>
   );
 }
 

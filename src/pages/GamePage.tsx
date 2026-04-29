@@ -24,6 +24,7 @@ import { requestChoices } from '@/services/decisionAgent';
 import { requestMemoryUpdate } from '@/services/memoryAgent';
 import { requestReview } from '@/services/reviewAgent';
 import { requestAuthorRandomEvent, storyArcToRandomEvent } from '@/services/authorRandomEventAgent';
+import { requestAuthorDirectorPlan } from '@/services/authorDirectorAgent';
 import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
 import { maybeCompress } from '@/services/contextCompressor';
@@ -369,6 +370,64 @@ export default function GamePage() {
     }
   }, [settings, outline, background, allEvents, addEventToLibrary]);
 
+  const maybeUpdateAuthorDirectorPlan = useCallback(async (
+    saveId: string,
+    latestStory: string,
+    signal?: AbortSignal,
+    force = false,
+  ) => {
+    const actions = useGameStore.getState();
+    const current = actions.saves[saveId];
+    if (!current || current.content.mode !== 'author') return;
+
+    const config = current.content.authorDirector;
+    if (!config?.enabled) return;
+
+    const nextRound = current.state.currentRound;
+    const completedRound = Math.max(0, nextRound - 1);
+    const narrative = current.state.authorNarrative ?? { activeArcs: [], completedArcs: [] };
+    const plan = narrative.plan;
+    const covered = !!plan?.nextFewRoundsPlan?.some((item) =>
+      nextRound >= item.startRound && nextRound <= item.endRound,
+    );
+    const stageExpired = plan?.stageTargetEndRound !== undefined && nextRound > plan.stageTargetEndRound;
+    const lastDirectorRound = narrative.lastDirectorRound ?? -9999;
+    const every = Math.max(1, config.everyRounds ?? 2);
+    const due = force || !plan || !covered || stageExpired || completedRound - lastDirectorRound >= every;
+    if (!due) return;
+
+    const nextPlan = await requestAuthorDirectorPlan({
+      settings,
+      outline,
+      background,
+      characterName: current.content.characterName,
+      currentRound: completedRound,
+      nextRound,
+      totalRounds: current.config.totalRounds,
+      config,
+      strictCustom: getPromptConfig(current.content),
+      summary: current.state.summary,
+      longTermMemory: current.state.longTermMemory,
+      recent: current.state.history.slice(-10),
+      latestStory,
+      npcs: current.state.npcs ?? [],
+      currentScene: current.state.currentScene,
+      narrative,
+      randomEventState: current.state.authorRandomEventState,
+      signal,
+    });
+
+    if (!nextPlan) return;
+    const latest = useGameStore.getState().saves[saveId] ?? current;
+    actions.setAuthorNarrativeState(saveId, {
+      ...(latest.state.authorNarrative ?? narrative),
+      plan: nextPlan,
+      activeArcs: latest.state.authorNarrative?.activeArcs ?? narrative.activeArcs,
+      completedArcs: latest.state.authorNarrative?.completedArcs ?? narrative.completedArcs,
+      lastDirectorRound: completedRound,
+    });
+  }, [settings, outline, background]);
+
   // ----- 异步任务：故事 -----
   const runStory = useCallback(async () => {
     const initial = getSave();
@@ -481,6 +540,7 @@ export default function GamePage() {
           try {
             await applyDecisionForStory(s, full, false, abort.signal);
             await maybePrepareAuthorRandomEvent(s.id, full, abort.signal);
+            await maybeUpdateAuthorDirectorPlan(s.id, full, abort.signal);
           } catch (err: any) {
             if (err?.name === 'AbortError') throw err;
             const msg = err?.message ?? String(err);
@@ -520,7 +580,7 @@ export default function GamePage() {
       setBusy(false);
       abortRef.current = null;
     }
-  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent]);
+  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan]);
 
   // ----- 异步任务：选项 + 给予/销毁道具 -----
   const runChoices = useCallback(async () => {
@@ -534,13 +594,14 @@ export default function GamePage() {
     try {
       await applyDecisionForStory(s, lastAssistant.content, true);
       await maybePrepareAuthorRandomEvent(s.id, lastAssistant.content);
+      await maybeUpdateAuthorDirectorPlan(s.id, lastAssistant.content);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       setErrorMsg(msg);
     } finally {
       setBusy(false);
     }
-  }, [getSave, applyDecisionForStory, maybePrepareAuthorRandomEvent]);
+  }, [getSave, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan]);
 
   // ----- 异步任务：评分 -----
   const runReview = useCallback(async () => {
