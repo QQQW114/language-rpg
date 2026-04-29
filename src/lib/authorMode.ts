@@ -1,5 +1,6 @@
 import type {
   AuthorDirectorConfig,
+  AuthorLogicCheckConfig,
   AuthorRandomEventConfig,
   AuthorRandomEventMode,
   GuaranteedRoundRange,
@@ -34,6 +35,13 @@ export const DEFAULT_AUTHOR_DIRECTOR_CONFIG: AuthorDirectorConfig = {
   horizonRounds: 6,
   prompt:
     '像小说编辑一样维护主线阶段、短期目标、人物关系推进和节奏。优先贴合故事大纲与玩家输入；若玩家偏离大纲，给出能自然拉回主线的下一阶段方向，而不是强行否定玩家。',
+};
+
+export const DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG: AuthorLogicCheckConfig = {
+  enabled: true,
+  everyRounds: 3,
+  prompt:
+    '重点检查人物外观/关系、时间天气、场景位置、背包道具、承诺与伏笔、大纲阶段是否前后矛盾。只给未来修复建议，不要重写已发生正文。',
 };
 
 function positiveInt(value: unknown, fallback: number, min = 1, max = 999): number {
@@ -110,6 +118,17 @@ export function normalizeAuthorDirectorConfig(
     enabled: input?.enabled !== false,
     everyRounds: positiveInt(input?.everyRounds, base.everyRounds, 1, 20),
     horizonRounds: positiveInt(input?.horizonRounds, base.horizonRounds, 2, 30),
+    prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
+  };
+}
+
+export function normalizeAuthorLogicCheckConfig(
+  input?: Partial<AuthorLogicCheckConfig>,
+): AuthorLogicCheckConfig {
+  const base = DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG;
+  return {
+    enabled: input?.enabled !== false,
+    everyRounds: positiveInt(input?.everyRounds, base.everyRounds, 1, 20),
     prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
   };
 }

@@ -11,6 +11,7 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动�
 {{summaryBlock}}
 {{memoryBlock}}
 {{narrativePlanBlock}}
+{{logicReviewBlock}}
 {{npcsBlock}}
 {{anchorsBlock}}
 {{backpackBlock}}

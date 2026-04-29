@@ -37,6 +37,12 @@ export interface AuthorDirectorConfig {
   prompt: string;             // 玩家对叙事导演/大纲映射的额外要求
 }
 
+export interface AuthorLogicCheckConfig {
+  enabled: boolean;
+  everyRounds: number;        // 每完成多少回合做一次一致性审校
+  prompt: string;             // 玩家对审校模型的额外要求
+}
+
 export interface StoryArcStage {
   id: string;
   startRound: number;
@@ -102,10 +108,28 @@ export interface NarrativePlanState {
 
 export interface AuthorNarrativeState {
   plan?: NarrativePlanState;
+  logicReview?: AuthorLogicReviewState;
   activeArcs: StoryArc[];
   completedArcs: StoryArc[];
   lastDirectorRound?: number;
   lastLogicCheckRound?: number;
+}
+
+export interface AuthorLogicIssue {
+  id: string;
+  type: 'character' | 'scene' | 'timeline' | 'item' | 'outline' | 'memory' | 'pacing' | 'other';
+  severity: 'info' | 'warning' | 'critical';
+  description: string;
+  evidence?: string;
+  repairHint?: string;
+}
+
+export interface AuthorLogicReviewState {
+  updatedAtRound: number;
+  overall: string;
+  issues: AuthorLogicIssue[];
+  repairDirectives: string[];
+  nextRoundWarnings?: string[];
 }
 
 export type MessageRole = 'system' | 'user' | 'assistant';
@@ -163,6 +187,7 @@ export interface GameContent {
   authorCustom?: StrictCustomConfig; // 执笔模式独立提示词链路（创建存档时固化）
   authorRandomEvent?: AuthorRandomEventConfig; // 执笔模式随机事件/动态事件弧配置
   authorDirector?: AuthorDirectorConfig; // 执笔模式叙事导演/大纲映射配置
+  authorLogicCheck?: AuthorLogicCheckConfig; // 执笔模式逻辑/一致性审校配置
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 

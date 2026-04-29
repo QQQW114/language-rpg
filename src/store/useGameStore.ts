@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { GameSave, GameState, GameConfig, GameContent, Message, Choice, GamePhase, Item, AdventureReview, Npc, NpcUpdateRaw, MemoryAnchor, SceneRef, AuthorNarrativeState, AuthorRandomEventState, StoryArc } from '@/types/game';
+import type { GameSave, GameState, GameConfig, GameContent, Message, Choice, GamePhase, Item, AdventureReview, Npc, NpcUpdateRaw, MemoryAnchor, SceneRef, AuthorNarrativeState, AuthorRandomEventState, StoryArc, AuthorLogicReviewState, AuthorLogicIssue } from '@/types/game';
 import { clamp, genId, nowMs } from '@/lib/utils';
 import { createItem, type RawGrant, type RawDestroy, type RawItemPatch } from '@/lib/items';
 
@@ -364,10 +364,49 @@ function normalizeStoryArcList(raw: unknown): StoryArc[] {
   return out;
 }
 
+function normalizeAuthorLogicReview(raw: unknown): AuthorLogicReviewState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<AuthorLogicReviewState>;
+  const issues: AuthorLogicIssue[] = Array.isArray(obj.issues)
+    ? obj.issues.slice(0, 12).map((item, index) => {
+      const issue = item as Partial<AuthorLogicIssue>;
+      const type = issue.type === 'character' || issue.type === 'scene' || issue.type === 'timeline' || issue.type === 'item' || issue.type === 'outline' || issue.type === 'memory' || issue.type === 'pacing' || issue.type === 'other'
+        ? issue.type
+        : 'other';
+      const severity = issue.severity === 'critical' || issue.severity === 'warning' || issue.severity === 'info'
+        ? issue.severity
+        : 'info';
+      return {
+        id: issue.id || genId(`logic_${index}`),
+        type,
+        severity,
+        description: String(issue.description ?? '').trim().slice(0, 220),
+        evidence: issue.evidence?.trim().slice(0, 220) || undefined,
+        repairHint: issue.repairHint?.trim().slice(0, 220) || undefined,
+      };
+    }).filter((item) => item.description)
+    : [];
+  const repairDirectives = Array.isArray(obj.repairDirectives)
+    ? obj.repairDirectives.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const nextRoundWarnings = Array.isArray(obj.nextRoundWarnings)
+    ? obj.nextRoundWarnings.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+    : undefined;
+  const overall = obj.overall?.trim().slice(0, 500) || (issues.length ? '存在若干连续性风险。' : '暂未发现明显连续性风险。');
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    overall,
+    issues,
+    repairDirectives,
+    nextRoundWarnings,
+  };
+}
+
 function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
   const obj = (raw ?? {}) as Partial<AuthorNarrativeState>;
   return {
     plan: obj.plan,
+    logicReview: normalizeAuthorLogicReview(obj.logicReview),
     activeArcs: normalizeStoryArcList(obj.activeArcs),
     completedArcs: normalizeStoryArcList(obj.completedArcs),
     lastDirectorRound: obj.lastDirectorRound,

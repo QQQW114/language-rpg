@@ -27,9 +27,9 @@ import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { useAuthorModeStore } from '@/store/useAuthorModeStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
-import { DEFAULT_AUTHOR_DIRECTOR_CONFIG, DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, normalizeAuthorDirectorConfig, normalizeAuthorRandomEventConfig } from '@/lib/authorMode';
+import { DEFAULT_AUTHOR_DIRECTOR_CONFIG, DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG, DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, normalizeAuthorDirectorConfig, normalizeAuthorLogicCheckConfig, normalizeAuthorRandomEventConfig } from '@/lib/authorMode';
 import type { RandomEvent } from '@/types/content';
-import type { AuthorDirectorConfig, AuthorRandomEventConfig, JourneyMode } from '@/types/game';
+import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorRandomEventConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
@@ -65,6 +65,9 @@ export default function SetupPage() {
   );
   const [authorDirector, setAuthorDirector] = useState<AuthorDirectorConfig>(() =>
     normalizeAuthorDirectorConfig(DEFAULT_AUTHOR_DIRECTOR_CONFIG),
+  );
+  const [authorLogicCheck, setAuthorLogicCheck] = useState<AuthorLogicCheckConfig>(() =>
+    normalizeAuthorLogicCheckConfig(DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG),
   );
   const [customStartScene, setCustomStartScene] = useState<string | undefined>();
   const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
@@ -298,6 +301,10 @@ export default function SetupPage() {
     setAuthorDirector((prev) => normalizeAuthorDirectorConfig({ ...prev, ...patch }));
   };
 
+  const updateAuthorLogicCheck = (patch: Partial<AuthorLogicCheckConfig>) => {
+    setAuthorLogicCheck((prev) => normalizeAuthorLogicCheckConfig({ ...prev, ...patch }));
+  };
+
   const toggleAuthorPoolEvent = (id: string) => {
     setAuthorRandomEvent((prev) =>
       normalizeAuthorRandomEventConfig({
@@ -362,6 +369,7 @@ export default function SetupPage() {
     const isAuthorMode = journeyMode === 'author';
     const normalizedAuthorRandomEvent = normalizeAuthorRandomEventConfig(authorRandomEvent);
     const normalizedAuthorDirector = normalizeAuthorDirectorConfig(authorDirector);
+    const normalizedAuthorLogicCheck = normalizeAuthorLogicCheckConfig(authorLogicCheck);
     const authorEventResourceIds = Array.from(new Set([
       ...normalizedAuthorRandomEvent.poolEventIds,
       ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
@@ -385,6 +393,7 @@ export default function SetupPage() {
         authorCustom: isAuthorMode ? authorCustom : undefined,
         authorRandomEvent: isAuthorMode ? normalizedAuthorRandomEvent : undefined,
         authorDirector: isAuthorMode ? normalizedAuthorDirector : undefined,
+        authorLogicCheck: isAuthorMode ? normalizedAuthorLogicCheck : undefined,
         storyStyle: {
           storyLength: settings.storyLength,
           storyStyleAddendum: settings.storyStyleAddendum,
@@ -772,6 +781,10 @@ export default function SetupPage() {
                 config={authorDirector}
                 onChange={updateAuthorDirector}
               />
+              <AuthorLogicCheckSection
+                config={authorLogicCheck}
+                onChange={updateAuthorLogicCheck}
+              />
               <AuthorRandomEventSection
                 config={authorRandomEvent}
                 events={visibleEvents}
@@ -1105,6 +1118,54 @@ function AuthorDirectorSection({
         />
       </Card>
     </>
+  );
+}
+
+function AuthorLogicCheckSection({
+  config,
+  onChange,
+}: {
+  config: AuthorLogicCheckConfig;
+  onChange: (patch: Partial<AuthorLogicCheckConfig>) => void;
+}) {
+  return (
+    <Card className={config.enabled ? 'mb-4 border-gold/50' : 'mb-4'}>
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div>
+          <CardTitle className="text-base">逻辑审校 / 连续性修复</CardTitle>
+          <CardMeta>
+            定期检查人物、场景、时间、道具、伏笔和大纲贴合问题，并把修复建议注入后续故事。
+          </CardMeta>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={config.enabled}
+            onChange={(e) => onChange({ enabled: e.target.checked })}
+            className="accent-gold"
+          />
+          启用
+        </label>
+      </div>
+      <Input
+        label="审校频率"
+        type="number"
+        min={1}
+        max={20}
+        value={config.everyRounds}
+        disabled={!config.enabled}
+        onChange={(e) => onChange({ everyRounds: Number(e.target.value) || 3 })}
+        hint="每完成 N 回合检查一次"
+      />
+      <Textarea
+        label="审校提示词"
+        value={config.prompt}
+        disabled={!config.enabled}
+        onChange={(e) => onChange({ prompt: e.target.value })}
+        rows={4}
+        hint="用于强调哪些连续性问题最重要；后续可再交给专门提示词模型优化。"
+      />
+    </Card>
   );
 }
 

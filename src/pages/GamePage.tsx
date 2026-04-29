@@ -25,6 +25,7 @@ import { requestMemoryUpdate } from '@/services/memoryAgent';
 import { requestReview } from '@/services/reviewAgent';
 import { requestAuthorRandomEvent, storyArcToRandomEvent } from '@/services/authorRandomEventAgent';
 import { requestAuthorDirectorPlan } from '@/services/authorDirectorAgent';
+import { requestAuthorLogicCheck } from '@/services/authorLogicCheckAgent';
 import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
 import { maybeCompress } from '@/services/contextCompressor';
@@ -428,6 +429,59 @@ export default function GamePage() {
     });
   }, [settings, outline, background]);
 
+  const maybeUpdateAuthorLogicReview = useCallback(async (
+    saveId: string,
+    latestStory: string,
+    signal?: AbortSignal,
+    force = false,
+  ) => {
+    const actions = useGameStore.getState();
+    const current = actions.saves[saveId];
+    if (!current || current.content.mode !== 'author') return;
+
+    const config = current.content.authorLogicCheck;
+    if (!config?.enabled) return;
+
+    const completedRound = Math.max(0, current.state.currentRound - 1);
+    if (completedRound <= 0) return;
+    const narrative = current.state.authorNarrative ?? { activeArcs: [], completedArcs: [] };
+    const lastLogicCheckRound = narrative.lastLogicCheckRound ?? 0;
+    const every = Math.max(1, config.everyRounds ?? 3);
+    const due = force || !narrative.logicReview || completedRound - lastLogicCheckRound >= every;
+    if (!due) return;
+
+    const review = await requestAuthorLogicCheck({
+      settings,
+      outline,
+      background,
+      characterName: current.content.characterName,
+      currentRound: completedRound,
+      totalRounds: current.config.totalRounds,
+      config,
+      summary: current.state.summary,
+      longTermMemory: current.state.longTermMemory,
+      recent: current.state.history.slice(-12),
+      latestStory,
+      npcs: current.state.npcs ?? [],
+      backpack: current.state.backpack ?? [],
+      currentScene: current.state.currentScene,
+      availableScenes: current.state.availableScenes ?? [],
+      narrative,
+      randomEventState: current.state.authorRandomEventState,
+      signal,
+    });
+
+    if (!review) return;
+    const latest = useGameStore.getState().saves[saveId] ?? current;
+    actions.setAuthorNarrativeState(saveId, {
+      ...(latest.state.authorNarrative ?? narrative),
+      logicReview: review,
+      activeArcs: latest.state.authorNarrative?.activeArcs ?? narrative.activeArcs,
+      completedArcs: latest.state.authorNarrative?.completedArcs ?? narrative.completedArcs,
+      lastLogicCheckRound: completedRound,
+    });
+  }, [settings, outline, background]);
+
   // ----- 异步任务：故事 -----
   const runStory = useCallback(async () => {
     const initial = getSave();
@@ -541,6 +595,7 @@ export default function GamePage() {
             await applyDecisionForStory(s, full, false, abort.signal);
             await maybePrepareAuthorRandomEvent(s.id, full, abort.signal);
             await maybeUpdateAuthorDirectorPlan(s.id, full, abort.signal);
+            await maybeUpdateAuthorLogicReview(s.id, full, abort.signal);
           } catch (err: any) {
             if (err?.name === 'AbortError') throw err;
             const msg = err?.message ?? String(err);
@@ -580,7 +635,7 @@ export default function GamePage() {
       setBusy(false);
       abortRef.current = null;
     }
-  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan]);
+  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview]);
 
   // ----- 异步任务：选项 + 给予/销毁道具 -----
   const runChoices = useCallback(async () => {
@@ -595,13 +650,14 @@ export default function GamePage() {
       await applyDecisionForStory(s, lastAssistant.content, true);
       await maybePrepareAuthorRandomEvent(s.id, lastAssistant.content);
       await maybeUpdateAuthorDirectorPlan(s.id, lastAssistant.content);
+      await maybeUpdateAuthorLogicReview(s.id, lastAssistant.content);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       setErrorMsg(msg);
     } finally {
       setBusy(false);
     }
-  }, [getSave, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan]);
+  }, [getSave, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview]);
 
   // ----- 异步任务：评分 -----
   const runReview = useCallback(async () => {

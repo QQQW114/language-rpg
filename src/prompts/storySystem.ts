@@ -166,6 +166,26 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     ].filter(Boolean).join('\n')
     : '';
 
+  const logicReview = authorNarrative?.logicReview;
+  const logicReviewBlock = logicReview
+    ? [
+      '【执笔模式 · 逻辑审校与修复建议】',
+      `审校回合：第 ${logicReview.updatedAtRound} 回合`,
+      logicReview.overall ? `总体：${logicReview.overall}` : '',
+      logicReview.issues?.length
+        ? [
+          '连续性风险：',
+          ...logicReview.issues.slice(0, 8).map((issue) =>
+            `· ${issue.severity}/${issue.type}：${issue.description}${issue.repairHint ? `；修复：${issue.repairHint}` : ''}`,
+          ),
+        ].join('\n')
+        : '',
+      logicReview.repairDirectives?.length ? `后续修复指令：${logicReview.repairDirectives.join('；')}` : '',
+      logicReview.nextRoundWarnings?.length ? `下一回合避免：${logicReview.nextRoundWarnings.join('；')}` : '',
+      '执行规则：优先用未来剧情自然修补连续性问题；不要在正文中暴露"审校/修复"等元信息。',
+    ].filter(Boolean).join('\n')
+    : '';
+
   const backgroundBlock = background
     ? [
       '【角色卡】',
@@ -302,6 +322,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     summaryBlock,
     memoryBlock,
     narrativePlanBlock,
+    logicReviewBlock,
     npcsBlock: npcLines.join('\n'),
     anchorsBlock: anchorLines.join('\n'),
     backpackBlock,
@@ -316,5 +337,6 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   if (storyArcBlock && !rendered.includes('【执笔模式 · 叙事弧 / 长线事件】')) fallbackBlocks.push(storyArcBlock);
   if (memoryBlock && !rendered.includes('【长期一致性记忆】')) fallbackBlocks.push(memoryBlock);
   if (narrativePlanBlock && !rendered.includes('【执笔模式 · 当前叙事导演计划】')) fallbackBlocks.push(narrativePlanBlock);
+  if (logicReviewBlock && !rendered.includes('【执笔模式 · 逻辑审校与修复建议】')) fallbackBlocks.push(logicReviewBlock);
   return fallbackBlocks.length ? [rendered, ...fallbackBlocks].join('\n\n') : rendered;
 }

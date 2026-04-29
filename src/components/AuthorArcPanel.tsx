@@ -70,6 +70,22 @@ export function AuthorArcPanel({
           {plan.nextRoundFocus && <div>下一回合：{plan.nextRoundFocus}</div>}
         </div>
       )}
+      {narrative?.logicReview && (
+        <details className="mb-2 rounded border border-parchment-600/35 bg-parchment-900/30 px-3 py-2">
+          <summary className="cursor-pointer list-none text-xs text-gold-light">
+            逻辑审校 · 第 {narrative.logicReview.updatedAtRound} 回合
+            {narrative.logicReview.issues.length > 0 && (
+              <span className="ml-2 text-blood/80">风险 {narrative.logicReview.issues.length}</span>
+            )}
+          </summary>
+          <div className="mt-2 space-y-1 text-xs leading-relaxed text-parchment-200/70">
+            <div>{narrative.logicReview.overall}</div>
+            {narrative.logicReview.repairDirectives.slice(0, 4).map((item, index) => (
+              <div key={index}>· {item}</div>
+            ))}
+          </div>
+        </details>
+      )}
       <div className="space-y-2">
         {pending.map((arc) => <ArcItem key={`p-${arc.id}`} arc={arc} />)}
         {active.map((arc) => <ArcItem key={`a-${arc.id}`} arc={arc} />)}
