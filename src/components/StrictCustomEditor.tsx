@@ -5,17 +5,41 @@ import { Input, Textarea } from '@/components/ui/Input';
 import { OrnateDivider } from '@/components/ui/Ornaments';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { clsx } from '@/lib/utils';
+import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
 
-export function StrictCustomEditor() {
-  const { config, update, reset, addDirective, updateDirective, removeDirective } = useStrictCustomStore();
+interface StrictCustomEditorProps {
+  title?: string;
+  description?: string;
+  config?: StrictCustomConfig;
+  update?: (patch: Partial<StrictCustomConfig>) => void;
+  reset?: () => void;
+  addDirective?: () => void;
+  updateDirective?: (id: string, patch: Partial<StrictRoundDirective>) => void;
+  removeDirective?: (id: string) => void;
+  showEnableToggle?: boolean;
+  enableLabel?: string;
+  enableDescription?: string;
+}
+
+export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
+  const store = useStrictCustomStore();
+  const config = props.config ?? store.config;
+  const update = props.update ?? store.update;
+  const reset = props.reset ?? store.reset;
+  const addDirective = props.addDirective ?? store.addDirective;
+  const updateDirective = props.updateDirective ?? store.updateDirective;
+  const removeDirective = props.removeDirective ?? store.removeDirective;
+  const showEnableToggle = props.showEnableToggle ?? true;
+  const title = props.title ?? '严格自定义模式';
+  const description = props.description ?? '用更高优先级的导演提示控制故事节奏、隐藏设定揭示和指定回合内容。启用后，新创建的旅程会固化当前配置。';
 
   return (
     <div>
       <div className="flex items-start justify-between gap-4 mb-5">
         <div>
-          <h2 className="font-serif text-2xl text-gold-light">严格自定义模式</h2>
+          <h2 className="font-serif text-2xl text-gold-light">{title}</h2>
           <div className="text-sm text-parchment-200/70 leading-relaxed mt-1">
-            用更高优先级的导演提示控制故事节奏、隐藏设定揭示和指定回合内容。启用后，新创建的旅程会固化当前配置。
+            {description}
           </div>
         </div>
         <Button variant="outline" onClick={reset}>
@@ -23,22 +47,31 @@ export function StrictCustomEditor() {
         </Button>
       </div>
 
-      <Card className={clsx('mb-5', config.enabled && 'border-gold/70 shadow-glow-sm')}>
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={config.enabled}
-            onChange={(e) => update({ enabled: e.target.checked })}
-            className="mt-1 accent-gold"
-          />
-          <div>
-            <CardTitle className="mb-1">启用严格自定义</CardTitle>
-            <CardMeta>
-              开启后，新旅程会使用下方提示词模板作为实际请求内容；关闭时仅作为草稿保存，不影响新旅程。
-            </CardMeta>
-          </div>
-        </label>
-      </Card>
+      {showEnableToggle ? (
+        <Card className={clsx('mb-5', config.enabled && 'border-gold/70 shadow-glow-sm')}>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.enabled}
+              onChange={(e) => update({ enabled: e.target.checked })}
+              className="mt-1 accent-gold"
+            />
+            <div>
+              <CardTitle className="mb-1">{props.enableLabel ?? '启用严格自定义'}</CardTitle>
+              <CardMeta>
+                {props.enableDescription ?? '开启后，新旅程会使用下方提示词模板作为实际请求内容；关闭时仅作为草稿保存，不影响新旅程。'}
+              </CardMeta>
+            </div>
+          </label>
+        </Card>
+      ) : (
+        <Card className="mb-5 border-gold/70 shadow-glow-sm">
+          <CardTitle className="mb-1">执笔链路已启用</CardTitle>
+          <CardMeta>
+            执笔模式会固化并使用下方独立提示词链路；当前版本先复制原严格自定义链路，后续可继续扩展专属模型与提示词。
+          </CardMeta>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         <Textarea

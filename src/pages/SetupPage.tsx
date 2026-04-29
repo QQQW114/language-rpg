@@ -23,11 +23,14 @@ import { itemsFromStartStrings } from '@/lib/items';
 import { requestRandomOutline, requestRandomBackground, requestRandomScene, requestRandomEvents, requestRandomWorldBook } from '@/services/randomizers';
 import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
+import { useAuthorModeStore } from '@/store/useAuthorModeStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
 import type { RandomEvent } from '@/types/content';
+import type { JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
+const SHOW_RANDOM_EVENTS = false;
 
 export default function SetupPage() {
   const nav = useNavigate();
@@ -40,7 +43,10 @@ export default function SetupPage() {
 
   const createSave = useGameStore((s) => s.createSave);
   const strictCustomDraft = useStrictCustomStore((s) => s.config);
+  const authorMode = useAuthorModeStore();
+  const authorDraft = authorMode.config;
 
+  const [journeyMode, setJourneyMode] = useState<JourneyMode>('adventure');
   const [step, setStep] = useState<Step>('outline');
   const [outlineId, setOutlineId] = useState<string>();
   const [backgroundId, setBackgroundId] = useState<string>();
@@ -51,7 +57,7 @@ export default function SetupPage() {
   const [refreshChoiceEvery, setRefreshChoiceEvery] = useState(3);
   const [itemCapacity, setItemCapacity] = useState(8);
   const [worldBookIds, setWorldBookIds] = useState<string[]>([]);
-  const [eventIds, setEventIds] = useState<string[]>(events.map((e) => e.id));
+  const [eventIds, setEventIds] = useState<string[]>(SHOW_RANDOM_EVENTS ? events.map((e) => e.id) : []);
   const [customStartScene, setCustomStartScene] = useState<string | undefined>();
   const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
   const [genError, setGenError] = useState<string | undefined>();
@@ -83,6 +89,7 @@ export default function SetupPage() {
     [events, hiddenEventIds],
   );
   const strictDetailCount = strictCustomDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
+  const authorDetailCount = authorDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
 
   // 选中 outline 时默认挂载其关联的世界书
   useEffect(() => {
@@ -226,8 +233,18 @@ export default function SetupPage() {
       : step === 'strict' ? true
       : !!canStart;
 
-  const nextLabel = step === 'config' ? '启程' : step === 'strict' ? '返回启程设定' : '下一步';
+  const nextLabel =
+    step === 'config' ? '启程'
+      : step === 'strict' ? '返回启程设定'
+      : '下一步';
   const backLabel = step === 'outline' ? '返回主页' : step === 'strict' ? '返回启程设定' : '上一步';
+
+  const switchJourneyMode = (mode: JourneyMode) => {
+    setJourneyMode(mode);
+    if (mode === 'author') {
+      setManualInputEvery(1);
+    }
+  };
 
   const toggle = (list: string[], id: string): string[] =>
     list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
@@ -261,11 +278,13 @@ export default function SetupPage() {
     if (!selectedOutline || !selectedBackground) return;
     const saveName = `${characterName || '旅人'} · ${selectedOutline.title}`;
     const strictCustom = normalizeStrictCustomConfig(strictCustomDraft);
-    createSave({
+    const authorCustom = normalizeStrictCustomConfig({ ...authorDraft, enabled: true });
+    const isAuthorMode = journeyMode === 'author';
+    const saveId = createSave({
       name: saveName,
       config: {
         totalRounds: infiniteMode ? 0 : totalRounds,
-        manualInputEvery,
+        manualInputEvery: isAuthorMode ? 1 : manualInputEvery,
         refreshChoiceEvery,
         itemCapacity,
       },
@@ -275,7 +294,9 @@ export default function SetupPage() {
         worldBookIds,
         eventIds,
         characterName: characterName.trim() || undefined,
+        mode: journeyMode,
         strictCustom: strictCustom.enabled ? strictCustom : undefined,
+        authorCustom: isAuthorMode ? authorCustom : undefined,
         storyStyle: {
           storyLength: settings.storyLength,
           storyStyleAddendum: settings.storyStyleAddendum,
@@ -284,6 +305,12 @@ export default function SetupPage() {
       initialScene: (customStartScene?.trim() || selectedBackground.startScene),
       initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),
     });
+    if (isAuthorMode) {
+      useGameStore.getState().updateStateOf(saveId, {
+        phase: 'manual',
+        lastChoices: undefined,
+      });
+    }
     nav('/game');
   };
 
@@ -296,10 +323,14 @@ export default function SetupPage() {
         <div className="flex gap-4 text-sm font-serif">
           <StepDot active={step === 'outline'} done={!!outlineId}>一 · 选择故事</StepDot>
           <StepDot active={step === 'background'} done={!!backgroundId}>二 · 选择出身</StepDot>
-          <StepDot active={step === 'config' || step === 'strict'} done={!!canStart}>三 · 启程</StepDot>
+          <StepDot active={step === 'config' || step === 'strict'} done={!!canStart}>
+            三 · {journeyMode === 'author' ? '执笔' : '启程'}
+          </StepDot>
         </div>
         <div className="w-16" />
       </div>
+
+      <ModeSwitch mode={journeyMode} onChange={switchJourneyMode} />
 
       {step === 'outline' && (
         <div>
@@ -420,8 +451,22 @@ export default function SetupPage() {
         </div>
       )}
 
-      {step === 'strict' && (
+      {step === 'strict' && journeyMode === 'adventure' && (
         <StrictCustomEditor />
+      )}
+
+      {step === 'strict' && journeyMode === 'author' && (
+        <StrictCustomEditor
+          title="严格自定义模式"
+          description="面向强自定义旅程的独立提示词链路。执笔模式默认每回合都由玩家自由输入；当前版本先复制原严格自定义链路，后续可在这里继续加入专属模型、伏笔、填坑与逻辑审校。"
+          config={authorDraft}
+          update={authorMode.update}
+          reset={authorMode.reset}
+          addDirective={authorMode.addDirective}
+          updateDirective={authorMode.updateDirective}
+          removeDirective={authorMode.removeDirective}
+          showEnableToggle={false}
+        />
       )}
 
       {step === 'config' && selectedOutline && selectedBackground && (
@@ -437,7 +482,7 @@ export default function SetupPage() {
               maxLength={20}
             />
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className={journeyMode === 'author' ? 'grid grid-cols-2 md:grid-cols-3 gap-4' : 'grid grid-cols-2 md:grid-cols-4 gap-4'}>
               <div>
                 <span className="block text-sm text-gold-light mb-1 tracking-wide">总回合数</span>
                 <input
@@ -459,15 +504,17 @@ export default function SetupPage() {
                   <span className={infiniteMode ? 'text-gold-light font-semibold' : ''}>无尽模式 ∞</span>
                 </label>
               </div>
-              <Input
-                label="手动输入频率"
-                type="number"
-                min={1}
-                max={50}
-                value={manualInputEvery}
-                onChange={(e) => setManualInputEvery(Number(e.target.value) || 5)}
-                hint="每 N 回合"
-              />
+              {journeyMode === 'adventure' && (
+                <Input
+                  label="手动输入频率"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={manualInputEvery}
+                  onChange={(e) => setManualInputEvery(Number(e.target.value) || 5)}
+                  hint="每 N 回合"
+                />
+              )}
               <Input
                 label="刷新决策频率"
                 type="number"
@@ -488,6 +535,7 @@ export default function SetupPage() {
               />
             </div>
 
+            {journeyMode === 'adventure' ? (
             <Card className={strictCustomDraft.enabled ? 'mt-4 border-gold/70 shadow-glow-sm' : 'mt-4'}>
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -510,6 +558,27 @@ export default function SetupPage() {
                 </Button>
               </div>
             </Card>
+            ) : (
+              <Card className="mt-4 border-gold/70 shadow-glow-sm">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 mb-1">
+                      <SlidersHorizontal size={16} /> 严格自定义模式
+                      <span className="text-[10px] text-gold/80 tracking-[0.25em] uppercase">每回合自由行动</span>
+                    </CardTitle>
+                    <CardMeta>
+                      使用独立提示词链路与详细大纲草稿；当前版本先复制原严格自定义链路，后续可扩展专属模型。
+                    </CardMeta>
+                    <div className="text-xs text-parchment-200/70">
+                      详细大纲 {authorDetailCount} 项 · 将随新旅程固化
+                    </div>
+                  </div>
+                  <Button variant="outline" onClick={() => setStep('strict')}>
+                    编辑
+                  </Button>
+                </div>
+              </Card>
+            )}
 
             <OrnateDivider>世界书</OrnateDivider>
             <div className="text-xs text-parchment-200/70 mb-2">
@@ -561,6 +630,8 @@ export default function SetupPage() {
               )}
             </div>
 
+            {SHOW_RANDOM_EVENTS && (
+              <>
             <OrnateDivider>随机事件</OrnateDivider>
             <div className="text-xs text-parchment-200/70 mb-2">
               每个勾选的事件都有机会在合适的回合被模型自然融入故事。可按下方按钮让模型根据当前故事设定生成一批专属事件。
@@ -656,6 +727,8 @@ export default function SetupPage() {
                 </div>
               )}
             </div>
+              </>
+            )}
           </div>
 
           <aside className="md:col-span-2">
@@ -722,7 +795,7 @@ export default function SetupPage() {
           <div className="text-xs text-parchment-200/60 font-serif hidden sm:block">
             {step === 'outline' && '一 · 选择故事'}
             {step === 'background' && '二 · 选择出身'}
-            {step === 'config' && '三 · 启程'}
+            {step === 'config' && (journeyMode === 'author' ? '三 · 执笔启程' : '三 · 启程')}
             {step === 'strict' && '三 · 严格自定义'}
           </div>
           <Button
@@ -733,6 +806,54 @@ export default function SetupPage() {
             {nextLabel} {step !== 'config' && <ChevronRight size={16} />}
           </Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ModeSwitch({ mode, onChange }: { mode: JourneyMode; onChange: (mode: JourneyMode) => void }) {
+  const options: Array<{
+    value: JourneyMode;
+    title: string;
+    desc: string;
+  }> = [
+    {
+      value: 'adventure',
+      title: '游历模式',
+      desc: '保留当前随机性与选项制流程',
+    },
+    {
+      value: 'author',
+      title: '执笔模式',
+      desc: '独立提示词链路 · 每回合自由行动',
+    },
+  ];
+
+  return (
+    <div className="mb-6 rounded-xl border border-parchment-600/40 bg-parchment-800/50 p-1.5">
+      <div className="grid grid-cols-2 gap-1">
+        {options.map((item) => {
+          const active = mode === item.value;
+          return (
+            <button
+              key={item.value}
+              type="button"
+              onClick={() => onChange(item.value)}
+              className={`rounded-lg px-4 py-3 text-left transition-all ${
+                active
+                  ? 'border border-gold/70 bg-parchment-900/70 shadow-glow-sm'
+                  : 'border border-transparent hover:border-gold/40 hover:bg-parchment-900/30'
+              }`}
+            >
+              <div className={`font-serif text-sm ${active ? 'text-gold-light' : 'text-parchment-100'}`}>
+                {item.title}
+              </div>
+              <div className="mt-0.5 text-xs text-parchment-200/60">
+                {item.desc}
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

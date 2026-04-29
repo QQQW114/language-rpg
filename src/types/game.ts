@@ -1,6 +1,8 @@
 import type { StrictCustomConfig } from './custom';
 import type { StoryStyleSettings } from './settings';
 
+export type JourneyMode = 'adventure' | 'author';
+
 export type MessageRole = 'system' | 'user' | 'assistant';
 
 export interface Message {
@@ -51,7 +53,9 @@ export interface GameContent {
   worldBookIds: string[];     // 激活的世界书 id
   eventIds: string[];         // 启用的随机事件 id
   characterName?: string;     // 玩家为角色起的名字
+  mode?: JourneyMode;         // 启程模式：默认游历；author 为执笔模式
   strictCustom?: StrictCustomConfig; // 严格自定义模式配置（创建存档时固化）
+  authorCustom?: StrictCustomConfig; // 执笔模式独立提示词链路（创建存档时固化）
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 

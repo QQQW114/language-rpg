@@ -27,9 +27,17 @@ import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
 import { maybeCompress } from '@/services/contextCompressor';
 import type { Choice, GameSave, Item, Message, SceneRef } from '@/types/game';
+import type { GameContent } from '@/types/game';
+import type { StrictCustomConfig } from '@/types/custom';
 import { buildJourneyPackage } from '@/lib/journeyPackage';
 
 const RECENT_TEXT_WINDOW = 2400;
+
+function getPromptConfig(content: GameContent): StrictCustomConfig | undefined {
+  return content.mode === 'author'
+    ? content.authorCustom
+    : content.strictCustom;
+}
 
 function safeFileName(name: string): string {
   const cleaned = name
@@ -174,7 +182,7 @@ export default function GamePage() {
       recent: current.state.history.slice(-8),
       currentSceneName: current.state.currentScene?.name,
       currentScene: current.state.currentScene,
-      strictCustom: current.content.strictCustom,
+      strictCustom: getPromptConfig(current.content),
       includeChoices,
       signal,
     });
@@ -282,7 +290,7 @@ export default function GamePage() {
         npcs: state.npcs,
         anchors: state.anchors,
         currentScene: state.currentScene,
-        strictCustom: content.strictCustom,
+        strictCustom: getPromptConfig(content),
         summarizedUntilIndex: state.summarizedUntilIndex,
         finalizeRequested: !!state.finalizeRequested,
         onDelta: (t) => setStreaming((prev) => prev + t),
