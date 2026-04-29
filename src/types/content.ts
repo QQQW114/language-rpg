@@ -1,5 +1,7 @@
 // 可导入/导出的内容资源类型：世界书、大纲、出身、随机事件
 
+import type { StoryArc } from './game';
+
 export interface WorldBookEntry {
   id: string;
   name: string;
@@ -44,6 +46,8 @@ export interface RandomEvent {
   minRound?: number;
   cooldown?: number;          // 冷却轮数
   once?: boolean;             // 只触发一次
+  tags?: string[];
+  arc?: StoryArc;             // 动态生成的长线事件弧（可作为书库素材保存）
 }
 
 // 导入包：用户一次性粘贴多种资源

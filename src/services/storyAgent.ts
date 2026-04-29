@@ -1,6 +1,6 @@
 // 故事 Agent：负责拼装 prompt 并流式请求故事模型
 
-import type { Message, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
+import type { AuthorNarrativeState, AuthorRandomEventState, Message, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
 import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
@@ -27,6 +27,8 @@ export interface StoryRequest {
   npcs?: Npc[];
   anchors?: MemoryAnchor[];
   currentScene?: SceneRef;
+  authorNarrative?: AuthorNarrativeState;
+  authorRandomEventState?: AuthorRandomEventState;
   strictCustom?: StrictCustomConfig;
   summarizedUntilIndex?: number;
   finalizeRequested?: boolean;
@@ -53,6 +55,8 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     npcs: p.npcs,
     anchors: p.anchors,
     currentScene: p.currentScene,
+    authorNarrative: p.authorNarrative,
+    authorRandomEventState: p.authorRandomEventState,
     strictCustom: p.strictCustom,
     finalizeRequested: p.finalizeRequested,
     lengthHint: p.settings.storyLength,

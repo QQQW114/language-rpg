@@ -2,9 +2,10 @@
 // 导出一个函数而非静态字符串，方便根据世界书/随机事件/回合动态拼装。
 
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
-import type { Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
+import type { AuthorNarrativeState, AuthorRandomEventState, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
 import { formatItemsForPrompt } from '@/lib/items';
+import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import {
   buildStrictCustomStoryBlock,
   getStorySystemTemplate,
@@ -26,6 +27,8 @@ export interface BuildStorySystemParams {
   npcs?: Npc[];
   anchors?: MemoryAnchor[];
   currentScene?: SceneRef;
+  authorNarrative?: AuthorNarrativeState;
+  authorRandomEventState?: AuthorRandomEventState;
   finalizeRequested?: boolean;  // 无尽模式下玩家要求本回合收束
   lengthHint?: 'short' | 'standard' | 'long';
   styleAddendum?: string;
@@ -85,7 +88,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const {
     outline, background, characterName, activeWorldBookEntries,
     summary, longTermMemory, currentRound, totalRounds, triggeredEvent, backpack, usedItems, npcs, anchors, currentScene,
-    finalizeRequested, lengthHint, styleAddendum, strictCustom,
+    authorNarrative, authorRandomEventState, finalizeRequested, lengthHint, styleAddendum, strictCustom,
   } = p;
 
   const isInfinite = !totalRounds || totalRounds <= 0;
@@ -114,6 +117,54 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     const actPlanBlock = buildActPlanBlock(outline.acts, nextRound, totalRounds, finalizeRequested);
     if (actPlanBlock) outlineLines.push('', actPlanBlock);
   }
+
+  const arcLines: string[] = [];
+  const activeNarrativeArcs = authorNarrative?.activeArcs ?? [];
+  const activeEventArcs = authorRandomEventState?.activeEvents ?? [];
+  const pendingEventArc = authorRandomEventState?.pendingForRound === currentRound
+    ? authorRandomEventState?.pendingEvent
+    : undefined;
+  const arcs = [
+    ...(pendingEventArc ? [pendingEventArc] : []),
+    ...activeEventArcs,
+    ...activeNarrativeArcs,
+  ];
+  if (arcs.length) {
+    arcLines.push(
+      '【执笔模式 · 叙事弧 / 长线事件】',
+      '以下内容是多回合剧情框架，优先级高于普通随机事件；请让本回合服务于当前阶段，但只写玩家当前能感知到的剧情，不要直接剧透幕后真实意图。',
+    );
+    for (const arc of arcs.slice(0, 8)) {
+      arcLines.push(formatStoryArcForPrompt(arc, currentRound));
+    }
+    arcLines.push('执行规则：若事件弧标注了目标结束回合，请在该回合前后自然收束；不要无故遗忘、跳过或提前解决。');
+  }
+  const storyArcBlock = arcLines.join('\n');
+
+  const plan = authorNarrative?.plan;
+  const narrativePlanBlock = plan
+    ? [
+      '【执笔模式 · 当前叙事导演计划】',
+      plan.currentAct ? `当前幕：${plan.currentAct}` : '',
+      plan.currentStage ? `当前阶段：${plan.currentStage}` : '',
+      plan.stageGoal ? `阶段目标：${plan.stageGoal}` : '',
+      plan.stageStartRound || plan.stageTargetEndRound
+        ? `阶段范围：第 ${plan.stageStartRound ?? '?'}-${plan.stageTargetEndRound ?? '?'} 回合`
+        : '',
+      plan.nextRoundFocus ? `下一回合焦点：${plan.nextRoundFocus}` : '',
+      plan.nextFewRoundsPlan?.length
+        ? [
+          '接下来若干回合方向：',
+          ...plan.nextFewRoundsPlan.slice(0, 6).map((item) =>
+            `· 第 ${item.startRound}-${item.endRound} 回合：${item.goal}${item.requiredBeats?.length ? `；必达：${item.requiredBeats.join('、')}` : ''}${item.avoidBeats?.length ? `；避免：${item.avoidBeats.join('、')}` : ''}`,
+          ),
+        ].join('\n')
+        : '',
+      plan.outlineAlignment ? `大纲贴合：${plan.outlineAlignment}` : '',
+      plan.pacingAdvice ? `节奏建议：${plan.pacingAdvice}` : '',
+      plan.riskNotes?.length ? `风险提醒：${plan.riskNotes.join('；')}` : '',
+    ].filter(Boolean).join('\n')
+    : '';
 
   const backgroundBlock = background
     ? [
@@ -244,11 +295,13 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     remainingAfter: isInfinite ? '无尽' : remainingAfter,
     roundInfo,
     outlineBlock: outlineLines.join('\n'),
+    storyArcBlock,
     backgroundBlock,
     worldBookAlwaysBlock,
     worldBookTriggeredBlock,
     summaryBlock,
     memoryBlock,
+    narrativePlanBlock,
     npcsBlock: npcLines.join('\n'),
     anchorsBlock: anchorLines.join('\n'),
     backpackBlock,
@@ -259,8 +312,9 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     styleAddendumBlock,
     specialBlock,
   });
-  if (memoryBlock && !rendered.includes('【长期一致性记忆】')) {
-    return [rendered, memoryBlock].join('\n\n');
-  }
-  return rendered;
+  const fallbackBlocks: string[] = [];
+  if (storyArcBlock && !rendered.includes('【执笔模式 · 叙事弧 / 长线事件】')) fallbackBlocks.push(storyArcBlock);
+  if (memoryBlock && !rendered.includes('【长期一致性记忆】')) fallbackBlocks.push(memoryBlock);
+  if (narrativePlanBlock && !rendered.includes('【执笔模式 · 当前叙事导演计划】')) fallbackBlocks.push(narrativePlanBlock);
+  return fallbackBlocks.length ? [rendered, ...fallbackBlocks].join('\n\n') : rendered;
 }

@@ -4,11 +4,13 @@ import { DECISION_SYSTEM } from '@/prompts/decisionSystem';
 export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动小说主持人（TRPG GM），正在与玩家共同完成一段长篇角色扮演。
 {{roundInfo}}
 {{outlineBlock}}
+{{storyArcBlock}}
 {{backgroundBlock}}
 {{worldBookAlwaysBlock}}
 {{worldBookTriggeredBlock}}
 {{summaryBlock}}
 {{memoryBlock}}
+{{narrativePlanBlock}}
 {{npcsBlock}}
 {{anchorsBlock}}
 {{backpackBlock}}

@@ -1,7 +1,105 @@
 import type { StrictCustomConfig } from './custom';
+import type { RandomEvent } from './content';
 import type { StoryStyleSettings } from './settings';
 
 export type JourneyMode = 'adventure' | 'author';
+export type AuthorRandomEventMode = 'off' | 'pool' | 'dynamic';
+
+export interface GuaranteedRoundRange {
+  id: string;
+  startRound: number;
+  endRound: number;
+  consumed?: boolean;
+}
+
+export interface AuthorRandomEventConfig {
+  mode: AuthorRandomEventMode;
+  poolEventIds: string[];
+  poolOverrides: Record<string, Partial<RandomEvent>>;
+  dynamic: {
+    enabled: boolean;
+    startRound: number;
+    guaranteedRanges: GuaranteedRoundRange[];
+    cooldownRounds: number;
+    baseProbability: number;
+    missProbabilityBonus: number;
+    maxProbability: number;
+    generatorPrompt: string;
+    preferencePrompt: string;
+    referenceEventIds: string[];
+  };
+}
+
+export interface StoryArcStage {
+  id: string;
+  startRound: number;
+  endRound: number;
+  title: string;
+  goal: string;
+  requiredBeats: string[];
+  avoid?: string;
+}
+
+export interface StoryArc {
+  id: string;
+  type: 'main' | 'relationship' | 'randomEvent' | 'foreshadowing' | 'custom';
+  title: string;
+  summary: string;
+  directive: string;
+  hiddenIntent?: string;
+  involvedNpcIds: string[];
+  involvedNpcNames?: string[];
+  tags: string[];
+  startRound: number;
+  targetEndRound?: number;
+  currentStageIndex: number;
+  stages: StoryArcStage[];
+  status: 'pending' | 'active' | 'completed' | 'cancelled';
+  progressNote?: string;
+  createdAt: number;
+  updatedAtRound: number;
+}
+
+export interface AuthorRandomEventState {
+  pendingEvent?: StoryArc;
+  pendingForRound?: number;
+  activeEvents: StoryArc[];
+  completedEvents: StoryArc[];
+  cooldownUntilRound?: number;
+  currentProbability?: number;
+  lastCheckedRound?: number;
+  lastError?: string;
+}
+
+export interface NarrativePlanState {
+  currentAct?: string;
+  currentStage?: string;
+  stageGoal?: string;
+  stageStartRound?: number;
+  stageTargetEndRound?: number;
+  nextRoundFocus?: string;
+  nextFewRoundsPlan: Array<{
+    id: string;
+    startRound: number;
+    endRound: number;
+    goal: string;
+    requiredBeats: string[];
+    avoidBeats?: string[];
+    revealPolicy?: string;
+  }>;
+  outlineAlignment?: string;
+  pacingAdvice?: string;
+  riskNotes?: string[];
+  updatedAtRound: number;
+}
+
+export interface AuthorNarrativeState {
+  plan?: NarrativePlanState;
+  activeArcs: StoryArc[];
+  completedArcs: StoryArc[];
+  lastDirectorRound?: number;
+  lastLogicCheckRound?: number;
+}
 
 export type MessageRole = 'system' | 'user' | 'assistant';
 
@@ -56,6 +154,7 @@ export interface GameContent {
   mode?: JourneyMode;         // 启程模式：默认游历；author 为执笔模式
   strictCustom?: StrictCustomConfig; // 严格自定义模式配置（创建存档时固化）
   authorCustom?: StrictCustomConfig; // 执笔模式独立提示词链路（创建存档时固化）
+  authorRandomEvent?: AuthorRandomEventConfig; // 执笔模式随机事件/动态事件弧配置
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 
@@ -126,6 +225,8 @@ export interface GameState {
   currentScene?: SceneRef;                  // 玩家所在的场景
   availableScenes: SceneRef[];              // 可前往的场景（由决策模型每轮更新）
   sceneHistory: SceneRef[];                 // 历史见过/去过的场景，用于快速回访
+  authorNarrative?: AuthorNarrativeState;    // 执笔模式叙事导演状态
+  authorRandomEventState?: AuthorRandomEventState; // 执笔模式动态随机事件运行态
   finalizeRequested?: boolean;              // 无尽模式下玩家主动触发"下一回合即最终回合"
 }
 

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  BookOpen,
   ChevronRight,
   Dices,
   Pencil,
+  Plus,
   Save,
   SlidersHorizontal,
   Sparkles,
@@ -25,12 +27,12 @@ import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { useAuthorModeStore } from '@/store/useAuthorModeStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
+import { DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, normalizeAuthorRandomEventConfig } from '@/lib/authorMode';
 import type { RandomEvent } from '@/types/content';
-import type { JourneyMode } from '@/types/game';
+import type { AuthorRandomEventConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
-const SHOW_RANDOM_EVENTS = false;
 
 export default function SetupPage() {
   const nav = useNavigate();
@@ -57,7 +59,10 @@ export default function SetupPage() {
   const [refreshChoiceEvery, setRefreshChoiceEvery] = useState(3);
   const [itemCapacity, setItemCapacity] = useState(8);
   const [worldBookIds, setWorldBookIds] = useState<string[]>([]);
-  const [eventIds, setEventIds] = useState<string[]>(SHOW_RANDOM_EVENTS ? events.map((e) => e.id) : []);
+  const [eventIds, setEventIds] = useState<string[]>([]);
+  const [authorRandomEvent, setAuthorRandomEvent] = useState<AuthorRandomEventConfig>(() =>
+    normalizeAuthorRandomEventConfig(DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG),
+  );
   const [customStartScene, setCustomStartScene] = useState<string | undefined>();
   const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
   const [genError, setGenError] = useState<string | undefined>();
@@ -68,6 +73,9 @@ export default function SetupPage() {
   const [worldBookHint, setWorldBookHint] = useState('');
   const [hiddenEventIds, setHiddenEventIds] = useState<string[]>([]);
   const [editingEvent, setEditingEvent] = useState<RandomEvent | null>(null);
+  const [showAdventureEventLibrary, setShowAdventureEventLibrary] = useState(false);
+  const [showAuthorPoolLibrary, setShowAuthorPoolLibrary] = useState(false);
+  const [showAuthorReferenceLibrary, setShowAuthorReferenceLibrary] = useState(false);
 
   const addOutline = useContentStore((s) => s.addOutline);
   const addBackground = useContentStore((s) => s.addBackground);
@@ -162,7 +170,7 @@ export default function SetupPage() {
     }
   }
 
-  async function genRandomEvents() {
+  async function genRandomEvents(target: 'adventure' | 'authorPool' | 'authorReference' = 'adventure') {
     if (!ensureApi() || !selectedOutline) return;
     setGenError(undefined);
     setGenBusy('events');
@@ -177,7 +185,28 @@ export default function SetupPage() {
         6,
       );
       for (const ev of evs) addEvent(ev);
-      setEventIds((prev) => Array.from(new Set([...prev, ...evs.map((e) => e.id)])));
+      const ids = evs.map((e) => e.id);
+      if (target === 'authorPool') {
+        setAuthorRandomEvent((prev) =>
+          normalizeAuthorRandomEventConfig({
+            ...prev,
+            mode: prev.mode === 'off' ? 'pool' : prev.mode,
+            poolEventIds: Array.from(new Set([...prev.poolEventIds, ...ids])),
+          }),
+        );
+      } else if (target === 'authorReference') {
+        setAuthorRandomEvent((prev) =>
+          normalizeAuthorRandomEventConfig({
+            ...prev,
+            dynamic: {
+              ...prev.dynamic,
+              referenceEventIds: Array.from(new Set([...prev.dynamic.referenceEventIds, ...ids])),
+            },
+          }),
+        );
+      } else {
+        setEventIds((prev) => Array.from(new Set([...prev, ...ids])));
+      }
     } catch (err: any) {
       setGenError(err?.message ?? String(err));
     } finally {
@@ -249,6 +278,40 @@ export default function SetupPage() {
   const toggle = (list: string[], id: string): string[] =>
     list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
 
+  const updateAuthorRandomEvent = (patch: Partial<AuthorRandomEventConfig>) => {
+    setAuthorRandomEvent((prev) => normalizeAuthorRandomEventConfig({ ...prev, ...patch }));
+  };
+
+  const updateAuthorDynamic = (patch: Partial<AuthorRandomEventConfig['dynamic']>) => {
+    setAuthorRandomEvent((prev) =>
+      normalizeAuthorRandomEventConfig({
+        ...prev,
+        dynamic: { ...prev.dynamic, ...patch },
+      }),
+    );
+  };
+
+  const toggleAuthorPoolEvent = (id: string) => {
+    setAuthorRandomEvent((prev) =>
+      normalizeAuthorRandomEventConfig({
+        ...prev,
+        poolEventIds: toggle(prev.poolEventIds, id),
+      }),
+    );
+  };
+
+  const toggleAuthorReferenceEvent = (id: string) => {
+    setAuthorRandomEvent((prev) =>
+      normalizeAuthorRandomEventConfig({
+        ...prev,
+        dynamic: {
+          ...prev.dynamic,
+          referenceEventIds: toggle(prev.dynamic.referenceEventIds, id),
+        },
+      }),
+    );
+  };
+
   const startEventEdit = (event: RandomEvent) => {
     setEditingEvent({ ...event });
   };
@@ -264,6 +327,16 @@ export default function SetupPage() {
   const deleteEventFromSetup = (event: RandomEvent) => {
     const isGeneratedOrImported = !PRESET_EVENTS.some((item) => item.id === event.id);
     setEventIds((prev) => prev.filter((id) => id !== event.id));
+    setAuthorRandomEvent((prev) =>
+      normalizeAuthorRandomEventConfig({
+        ...prev,
+        poolEventIds: prev.poolEventIds.filter((id) => id !== event.id),
+        dynamic: {
+          ...prev.dynamic,
+          referenceEventIds: prev.dynamic.referenceEventIds.filter((id) => id !== event.id),
+        },
+      }),
+    );
     setHiddenEventIds((prev) => Array.from(new Set([...prev, event.id])));
     if (isGeneratedOrImported) removeEvent(event.id);
     if (editingEvent?.id === event.id) setEditingEvent(null);
@@ -280,6 +353,11 @@ export default function SetupPage() {
     const strictCustom = normalizeStrictCustomConfig(strictCustomDraft);
     const authorCustom = normalizeStrictCustomConfig({ ...authorDraft, enabled: true });
     const isAuthorMode = journeyMode === 'author';
+    const normalizedAuthorRandomEvent = normalizeAuthorRandomEventConfig(authorRandomEvent);
+    const authorEventResourceIds = Array.from(new Set([
+      ...normalizedAuthorRandomEvent.poolEventIds,
+      ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
+    ]));
     const saveId = createSave({
       name: saveName,
       config: {
@@ -292,11 +370,12 @@ export default function SetupPage() {
         outlineId,
         backgroundId,
         worldBookIds,
-        eventIds,
+        eventIds: isAuthorMode ? authorEventResourceIds : eventIds,
         characterName: characterName.trim() || undefined,
         mode: journeyMode,
         strictCustom: strictCustom.enabled ? strictCustom : undefined,
         authorCustom: isAuthorMode ? authorCustom : undefined,
+        authorRandomEvent: isAuthorMode ? normalizedAuthorRandomEvent : undefined,
         storyStyle: {
           storyLength: settings.storyLength,
           storyStyleAddendum: settings.storyStyleAddendum,
@@ -630,104 +709,77 @@ export default function SetupPage() {
               )}
             </div>
 
-            {SHOW_RANDOM_EVENTS && (
+            {journeyMode === 'adventure' && (
               <>
-            <OrnateDivider>随机事件</OrnateDivider>
-            <div className="text-xs text-parchment-200/70 mb-2">
-              每个勾选的事件都有机会在合适的回合被模型自然融入故事。可按下方按钮让模型根据当前故事设定生成一批专属事件。
-            </div>
-            <div className="flex items-start gap-2 mb-2">
-              <textarea
-                value={eventsHint}
-                onChange={(e) => setEventsHint(e.target.value)}
-                placeholder={'（可选）事件偏好，可写得详细。例如：\n- 基调：偏日常温情 / 偏突发转折\n- 要求：必含一次误会、一次失而复得、一次雨夜、一次三人共处\n- 禁忌：不要流血暴力；不要生离死别'}
-                className="flex-1 bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-3 py-1.5 font-serif text-xs focus:outline-none focus:border-gold/60 resize-y min-h-[60px] leading-relaxed"
-                rows={3}
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={genRandomEvents}
-                loading={genBusy === 'events'}
-                disabled={genBusy !== null}
-              >
-                <Wand2 size={14} /> 随机事件池
-              </Button>
-            </div>
-            <div className="grid gap-2 md:grid-cols-2">
-              {visibleEvents.map((e) => {
-                const isEditing = editingEvent?.id === e.id;
-                return (
-                  <div
-                    key={e.id}
-                    role={isEditing ? undefined : 'checkbox'}
-                    aria-checked={isEditing ? undefined : eventIds.includes(e.id)}
-                    tabIndex={isEditing ? undefined : 0}
-                    onClick={isEditing ? undefined : () => setEventIds(toggle(eventIds, e.id))}
-                    onKeyDown={isEditing ? undefined : (ev) => {
-                      if (ev.key === 'Enter' || ev.key === ' ') {
-                        ev.preventDefault();
-                        setEventIds(toggle(eventIds, e.id));
-                      }
-                    }}
-                    className={`bg-parchment-800/60 border border-parchment-600/40 rounded px-3 py-2 hover:border-gold/60 ${
-                      isEditing ? '' : 'cursor-pointer'
-                    }`}
-                  >
-                    {isEditing && editingEvent ? (
-                      <SetupEventEditForm
-                        value={editingEvent}
-                        onChange={setEditingEvent}
-                        onCancel={() => setEditingEvent(null)}
-                        onSave={saveEventEdit}
-                      />
-                    ) : (
-                      <div className="flex items-start gap-2">
-                        <input
-                          type="checkbox"
-                          checked={eventIds.includes(e.id)}
-                          readOnly
-                          className="mt-1 accent-gold pointer-events-none"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-parchment-100 text-sm flex items-center gap-2">
-                            <Dices size={12} className="text-gold/70" /> {e.name}
-                            {e.id.startsWith('gen_ev') && <span className="text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
-                          </div>
-                          <div className="text-xs text-parchment-200/60">
-                            概率 {Math.round(e.probability * 100)}%
-                            {e.minRound ? ` · 第 ${e.minRound} 回合起` : ''}
-                            {e.cooldown ? ` · 冷却 ${e.cooldown}` : ''}
-                            {e.once ? ' · 仅触发一次' : ''}
-                          </div>
-                          <div className="text-xs text-parchment-200/50 mt-1 line-clamp-2">
-                            {e.directive}
-                          </div>
-                        </div>
-                        <div
-                          className="shrink-0 flex flex-col gap-1"
-                          onClick={(ev) => ev.stopPropagation()}
-                          onKeyDown={(ev) => ev.stopPropagation()}
-                        >
-                          <Button size="sm" variant="outline" onClick={() => startEventEdit(e)} title="编辑事件">
-                            <Pencil size={12} />
-                          </Button>
-                          <Button size="sm" variant="danger" onClick={() => deleteEventFromSetup(e)} title="删除事件">
-                            <Trash2 size={12} />
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {visibleEvents.length === 0 && (
-                <div className="text-sm text-parchment-200/60">
-                  当前没有随机事件。可以用上方按钮生成一批新事件。
+                <OrnateDivider>随机事件</OrnateDivider>
+                <div className="text-xs text-parchment-200/70 mb-2">
+                  默认不启用书库事件；可先随机生成一批专属事件，或点击“从书库导入”后把旧事件加入本次旅程。
                 </div>
-              )}
-            </div>
+                <div className="flex items-start gap-2 mb-2">
+                  <textarea
+                    value={eventsHint}
+                    onChange={(e) => setEventsHint(e.target.value)}
+                    placeholder={'（可选）事件偏好，可写得详细。例如：\n- 基调：偏日常温情 / 偏突发转折\n- 要求：必含一次误会、一次失而复得、一次雨夜、一次三人共处\n- 禁忌：不要流血暴力；不要生离死别'}
+                    className="flex-1 bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-3 py-1.5 font-serif text-xs focus:outline-none focus:border-gold/60 resize-y min-h-[60px] leading-relaxed"
+                    rows={3}
+                  />
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => genRandomEvents('adventure')}
+                      loading={genBusy === 'events'}
+                      disabled={genBusy !== null}
+                    >
+                      <Wand2 size={14} /> 随机事件池
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={showAdventureEventLibrary ? 'primary' : 'outline'}
+                      onClick={() => setShowAdventureEventLibrary((v) => !v)}
+                    >
+                      <BookOpen size={14} /> {showAdventureEventLibrary ? '收起书库' : '从书库导入'}
+                    </Button>
+                  </div>
+                </div>
+                <SetupEventList
+                  events={visibleEvents}
+                  selectedIds={eventIds}
+                  showLibrary={showAdventureEventLibrary}
+                  emptyText="尚未导入随机事件。你可以随机生成，或点“从书库导入”选择旧事件。"
+                  onToggle={(id) => setEventIds(toggle(eventIds, id))}
+                  editingEvent={editingEvent}
+                  setEditingEvent={setEditingEvent}
+                  onStartEdit={startEventEdit}
+                  onSaveEdit={saveEventEdit}
+                  onDelete={deleteEventFromSetup}
+                />
               </>
+            )}
+
+            {journeyMode === 'author' && (
+              <AuthorRandomEventSection
+                config={authorRandomEvent}
+                events={visibleEvents}
+                eventsHint={eventsHint}
+                setEventsHint={setEventsHint}
+                genBusy={genBusy}
+                onGeneratePool={() => genRandomEvents('authorPool')}
+                onGenerateReference={() => genRandomEvents('authorReference')}
+                onConfigChange={updateAuthorRandomEvent}
+                onDynamicChange={updateAuthorDynamic}
+                showPoolLibrary={showAuthorPoolLibrary}
+                setShowPoolLibrary={setShowAuthorPoolLibrary}
+                showReferenceLibrary={showAuthorReferenceLibrary}
+                setShowReferenceLibrary={setShowAuthorReferenceLibrary}
+                onTogglePool={toggleAuthorPoolEvent}
+                onToggleReference={toggleAuthorReferenceEvent}
+                editingEvent={editingEvent}
+                setEditingEvent={setEditingEvent}
+                onStartEdit={startEventEdit}
+                onSaveEdit={saveEventEdit}
+                onDelete={deleteEventFromSetup}
+              />
             )}
           </div>
 
@@ -872,6 +924,374 @@ function StepDot({ active, done, children }: { active?: boolean; done?: boolean;
     >
       {children}
     </span>
+  );
+}
+
+function SetupEventList({
+  events,
+  selectedIds,
+  showLibrary,
+  emptyText,
+  onToggle,
+  editingEvent,
+  setEditingEvent,
+  onStartEdit,
+  onSaveEdit,
+  onDelete,
+}: {
+  events: RandomEvent[];
+  selectedIds: string[];
+  showLibrary: boolean;
+  emptyText: string;
+  onToggle: (id: string) => void;
+  editingEvent: RandomEvent | null;
+  setEditingEvent: (event: RandomEvent | null) => void;
+  onStartEdit: (event: RandomEvent) => void;
+  onSaveEdit: () => void;
+  onDelete: (event: RandomEvent) => void;
+}) {
+  const list = showLibrary ? events : events.filter((e) => selectedIds.includes(e.id));
+  return (
+    <div className="grid gap-2 md:grid-cols-2">
+      {list.map((e) => {
+        const selected = selectedIds.includes(e.id);
+        const isEditing = editingEvent?.id === e.id;
+        return (
+          <div
+            key={e.id}
+            role={isEditing ? undefined : 'checkbox'}
+            aria-checked={isEditing ? undefined : selected}
+            tabIndex={isEditing ? undefined : 0}
+            onClick={isEditing ? undefined : () => onToggle(e.id)}
+            onKeyDown={isEditing ? undefined : (ev) => {
+              if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                onToggle(e.id);
+              }
+            }}
+            className={`bg-parchment-800/60 border rounded px-3 py-2 hover:border-gold/60 ${
+              selected ? 'border-gold/70 shadow-glow-sm' : 'border-parchment-600/40'
+            } ${isEditing ? '' : 'cursor-pointer'}`}
+          >
+            {isEditing && editingEvent ? (
+              <SetupEventEditForm
+                value={editingEvent}
+                onChange={setEditingEvent}
+                onCancel={() => setEditingEvent(null)}
+                onSave={onSaveEdit}
+              />
+            ) : (
+              <div className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  readOnly
+                  className="mt-1 accent-gold pointer-events-none"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="text-parchment-100 text-sm flex items-center gap-2">
+                    <Dices size={12} className="text-gold/70" /> {e.name}
+                    {e.id.startsWith('gen_ev') && <span className="text-[10px] text-gold/70 tracking-wider uppercase">· 随机 ·</span>}
+                    {e.arc && <span className="text-[10px] text-gold/70 tracking-wider uppercase">· 长线 ·</span>}
+                  </div>
+                  <div className="text-xs text-parchment-200/60">
+                    概率 {Math.round(e.probability * 100)}%
+                    {e.minRound ? ` · 第 ${e.minRound} 回合起` : ''}
+                    {e.cooldown ? ` · 冷却 ${e.cooldown}` : ''}
+                    {e.once ? ' · 仅触发一次' : ''}
+                  </div>
+                  <div className="text-xs text-parchment-200/50 mt-1 line-clamp-2">
+                    {e.directive}
+                  </div>
+                </div>
+                <div
+                  className="shrink-0 flex flex-col gap-1"
+                  onClick={(ev) => ev.stopPropagation()}
+                  onKeyDown={(ev) => ev.stopPropagation()}
+                >
+                  <Button size="sm" variant="outline" onClick={() => onStartEdit(e)} title="编辑事件">
+                    <Pencil size={12} />
+                  </Button>
+                  <Button size="sm" variant="danger" onClick={() => onDelete(e)} title="删除事件">
+                    <Trash2 size={12} />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {list.length === 0 && (
+        <div className="text-sm text-parchment-200/60 md:col-span-2">
+          {showLibrary ? '书库中暂无可用随机事件。可以用上方按钮生成一批新事件。' : emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuthorRandomEventSection({
+  config,
+  events,
+  eventsHint,
+  setEventsHint,
+  genBusy,
+  onGeneratePool,
+  onGenerateReference,
+  onConfigChange,
+  onDynamicChange,
+  showPoolLibrary,
+  setShowPoolLibrary,
+  showReferenceLibrary,
+  setShowReferenceLibrary,
+  onTogglePool,
+  onToggleReference,
+  editingEvent,
+  setEditingEvent,
+  onStartEdit,
+  onSaveEdit,
+  onDelete,
+}: {
+  config: AuthorRandomEventConfig;
+  events: RandomEvent[];
+  eventsHint: string;
+  setEventsHint: (value: string) => void;
+  genBusy: 'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null;
+  onGeneratePool: () => void;
+  onGenerateReference: () => void;
+  onConfigChange: (patch: Partial<AuthorRandomEventConfig>) => void;
+  onDynamicChange: (patch: Partial<AuthorRandomEventConfig['dynamic']>) => void;
+  showPoolLibrary: boolean;
+  setShowPoolLibrary: (updater: (value: boolean) => boolean) => void;
+  showReferenceLibrary: boolean;
+  setShowReferenceLibrary: (updater: (value: boolean) => boolean) => void;
+  onTogglePool: (id: string) => void;
+  onToggleReference: (id: string) => void;
+  editingEvent: RandomEvent | null;
+  setEditingEvent: (event: RandomEvent | null) => void;
+  onStartEdit: (event: RandomEvent) => void;
+  onSaveEdit: () => void;
+  onDelete: (event: RandomEvent) => void;
+}) {
+  const modeButton = (mode: AuthorRandomEventConfig['mode'], title: string, desc: string) => {
+    const active = config.mode === mode;
+    return (
+      <button
+        type="button"
+        onClick={() => onConfigChange({ mode })}
+        className={`rounded-lg border px-3 py-2 text-left transition-all ${
+          active
+            ? 'border-gold/70 bg-parchment-900/70 shadow-glow-sm'
+            : 'border-parchment-600/40 bg-parchment-800/50 hover:border-gold/50'
+        }`}
+      >
+        <div className={active ? 'text-gold-light font-serif text-sm' : 'text-parchment-100 font-serif text-sm'}>{title}</div>
+        <div className="text-xs text-parchment-200/60 mt-0.5">{desc}</div>
+      </button>
+    );
+  };
+
+  const addGuaranteedRange = () => {
+    const last = config.dynamic.guaranteedRanges.at(-1);
+    const start = last ? last.endRound + 1 : Math.max(1, config.dynamic.startRound);
+    onDynamicChange({
+      guaranteedRanges: [
+        ...config.dynamic.guaranteedRanges,
+        { id: `range_${Date.now().toString(36)}`, startRound: start, endRound: start + 2 },
+      ],
+    });
+  };
+
+  const updateGuaranteedRange = (id: string, patch: Partial<{ startRound: number; endRound: number }>) => {
+    onDynamicChange({
+      guaranteedRanges: config.dynamic.guaranteedRanges.map((item) =>
+        item.id === id ? { ...item, ...patch, consumed: false } : item,
+      ),
+    });
+  };
+
+  const removeGuaranteedRange = (id: string) => {
+    onDynamicChange({
+      guaranteedRanges: config.dynamic.guaranteedRanges.filter((item) => item.id !== id),
+    });
+  };
+
+  return (
+    <>
+      <OrnateDivider>执笔随机事件</OrnateDivider>
+      <div className="text-xs text-parchment-200/70 mb-3">
+        执笔模式默认不套用书库随机事件。你可以关闭、使用手工事件池，或让模型根据剧情生成多回合长线事件。
+      </div>
+      <div className="grid gap-2 md:grid-cols-3 mb-4">
+        {modeButton('off', '关闭', '完全不注入随机事件')}
+        {modeButton('pool', '事件池', '使用你导入/生成的事件')}
+        {modeButton('dynamic', '剧情驱动', '模型判断并生成长线事件')}
+      </div>
+
+      {config.mode === 'pool' && (
+        <Card className="mb-4">
+          <CardTitle className="text-base">事件池</CardTitle>
+          <CardMeta>点击整张卡即可导入或取消；按钮区只负责编辑/删除。</CardMeta>
+          <div className="flex items-start gap-2 mb-2">
+            <textarea
+              value={eventsHint}
+              onChange={(e) => setEventsHint(e.target.value)}
+              placeholder="（可选）生成事件池偏好，例如：恋爱日常、关系升温、误会澄清、不要暴力。"
+              className="flex-1 bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-3 py-1.5 font-serif text-xs focus:outline-none focus:border-gold/60 resize-y min-h-[58px] leading-relaxed"
+            />
+            <div className="flex flex-col gap-2">
+              <Button size="sm" variant="outline" onClick={onGeneratePool} loading={genBusy === 'events'} disabled={genBusy !== null}>
+                <Wand2 size={14} /> 生成
+              </Button>
+              <Button size="sm" variant={showPoolLibrary ? 'primary' : 'outline'} onClick={() => setShowPoolLibrary((v) => !v)}>
+                <BookOpen size={14} /> {showPoolLibrary ? '收起' : '导入'}
+              </Button>
+            </div>
+          </div>
+          <SetupEventList
+            events={events}
+            selectedIds={config.poolEventIds}
+            showLibrary={showPoolLibrary}
+            emptyText="尚未导入事件池。可生成新事件，或从书库导入。"
+            onToggle={onTogglePool}
+            editingEvent={editingEvent}
+            setEditingEvent={setEditingEvent}
+            onStartEdit={onStartEdit}
+            onSaveEdit={onSaveEdit}
+            onDelete={onDelete}
+          />
+        </Card>
+      )}
+
+      {config.mode === 'dynamic' && (
+        <Card className="mb-4 border-gold/60">
+          <CardTitle className="text-base">剧情驱动长线事件</CardTitle>
+          <CardMeta>
+            每回合故事和状态追踪完成后，系统会按概率/必定区间检查下一回合是否生成一个多回合事件弧。
+          </CardMeta>
+          <div className="grid gap-3 md:grid-cols-3">
+            <Input
+              label="开始检查回合"
+              type="number"
+              min={1}
+              value={config.dynamic.startRound}
+              onChange={(e) => onDynamicChange({ startRound: Number(e.target.value) || 1 })}
+            />
+            <Input
+              label="触发后冷却"
+              type="number"
+              min={0}
+              value={config.dynamic.cooldownRounds}
+              onChange={(e) => onDynamicChange({ cooldownRounds: Number(e.target.value) || 0 })}
+              hint="回合"
+            />
+            <Input
+              label="默认概率（%）"
+              type="number"
+              min={0}
+              max={100}
+              value={Math.round(config.dynamic.baseProbability * 100)}
+              onChange={(e) => onDynamicChange({ baseProbability: clampSetup01((Number(e.target.value) || 0) / 100) })}
+            />
+            <Input
+              label="未触发递增（%）"
+              type="number"
+              min={0}
+              max={100}
+              value={Math.round(config.dynamic.missProbabilityBonus * 100)}
+              onChange={(e) => onDynamicChange({ missProbabilityBonus: clampSetup01((Number(e.target.value) || 0) / 100) })}
+            />
+            <Input
+              label="概率上限（%）"
+              type="number"
+              min={0}
+              max={100}
+              value={Math.round(config.dynamic.maxProbability * 100)}
+              onChange={(e) => onDynamicChange({ maxProbability: clampSetup01((Number(e.target.value) || 0) / 100) })}
+            />
+          </div>
+
+          <div className="mt-2">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm text-gold-light font-serif">必定触发区间</div>
+              <Button size="sm" variant="outline" onClick={addGuaranteedRange}>
+                <Plus size={14} /> 添加
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {config.dynamic.guaranteedRanges.map((range) => (
+                <div key={range.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                  <Input
+                    label="起始"
+                    type="number"
+                    min={1}
+                    value={range.startRound}
+                    onChange={(e) => updateGuaranteedRange(range.id, { startRound: Number(e.target.value) || 1 })}
+                  />
+                  <Input
+                    label="结束"
+                    type="number"
+                    min={1}
+                    value={range.endRound}
+                    onChange={(e) => updateGuaranteedRange(range.id, { endRound: Number(e.target.value) || range.startRound })}
+                  />
+                  <Button size="sm" variant="danger" onClick={() => removeGuaranteedRange(range.id)} title="删除区间">
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
+              ))}
+              {!config.dynamic.guaranteedRanges.length && (
+                <div className="text-xs text-parchment-200/60">未设置必定触发区间；系统只按概率检查。</div>
+              )}
+            </div>
+          </div>
+
+          <Textarea
+            label="触发随机事件的提示词"
+            value={config.dynamic.generatorPrompt}
+            onChange={(e) => onDynamicChange({ generatorPrompt: e.target.value })}
+            rows={4}
+            hint="例如：优先参照上文出现的人物、关系、承诺、地点。"
+          />
+          <Textarea
+            label="事件偏好提示词"
+            value={config.dynamic.preferencePrompt}
+            onChange={(e) => onDynamicChange({ preferencePrompt: e.target.value })}
+            rows={4}
+            hint="例如：恋爱对象主动邀约、误会澄清、阶段性收束，不要突兀危机。"
+          />
+
+          <div className="flex items-start gap-2 mb-2">
+            <textarea
+              value={eventsHint}
+              onChange={(e) => setEventsHint(e.target.value)}
+              placeholder="（可选）生成参考事件偏好；参考事件会发给动态事件模型，但不直接作为旧式随机事件触发。"
+              className="flex-1 bg-parchment-900/60 text-parchment-100 placeholder-parchment-200/40 border border-parchment-600/40 rounded px-3 py-1.5 font-serif text-xs focus:outline-none focus:border-gold/60 resize-y min-h-[58px] leading-relaxed"
+            />
+            <div className="flex flex-col gap-2">
+              <Button size="sm" variant="outline" onClick={onGenerateReference} loading={genBusy === 'events'} disabled={genBusy !== null}>
+                <Wand2 size={14} /> 生成参考
+              </Button>
+              <Button size="sm" variant={showReferenceLibrary ? 'primary' : 'outline'} onClick={() => setShowReferenceLibrary((v) => !v)}>
+                <BookOpen size={14} /> {showReferenceLibrary ? '收起' : '导入参考'}
+              </Button>
+            </div>
+          </div>
+          <SetupEventList
+            events={events}
+            selectedIds={config.dynamic.referenceEventIds}
+            showLibrary={showReferenceLibrary}
+            emptyText="尚未导入参考事件。动态模型仍可只根据上下文生成。"
+            onToggle={onToggleReference}
+            editingEvent={editingEvent}
+            setEditingEvent={setEditingEvent}
+            onStartEdit={onStartEdit}
+            onSaveEdit={onSaveEdit}
+            onDelete={onDelete}
+          />
+        </Card>
+      )}
+    </>
   );
 }
 

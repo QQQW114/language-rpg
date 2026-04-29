@@ -1,6 +1,6 @@
 import type { AppSettings, StoryStyleSettings } from '@/types/settings';
 import type { Background, ImportBundle, RandomEvent, StoryOutline, WorldBook } from '@/types/content';
-import type { GameSave } from '@/types/game';
+import type { GameSave, StoryArc } from '@/types/game';
 import { genId } from '@/lib/utils';
 
 export const JOURNEY_PACKAGE_KIND = 'language-rpg.journey-package';
@@ -164,11 +164,23 @@ export function instantiateJourneyPackage(pkg: JourneyPackage): InstantiatedJour
   const events = uniqueById(pkg.resources.events).map((event) => ({
     ...clone(event),
     id: mapId(event.id, 'imp_ev')!,
+    arc: event.arc
+      ? {
+        ...clone(event.arc),
+        id: mapId(event.arc.id, 'imp_ev') ?? event.arc.id,
+      }
+      : undefined,
   }));
 
   const save = clone(pkg.save);
   const now = Date.now();
   const originalName = save.name || '旅程';
+  const remapArc = (arc: StoryArc): StoryArc => ({
+    ...arc,
+    id: idMap.get(arc.id) ?? arc.id,
+  });
+  const remapArcList = (arcs: StoryArc[] | undefined): StoryArc[] =>
+    (arcs ?? []).map(remapArc);
   save.id = genId('save');
   save.name = originalName.endsWith('（导入）') ? originalName : `${originalName}（导入）`;
   save.createdAt = save.createdAt || now;
@@ -179,6 +191,16 @@ export function instantiateJourneyPackage(pkg: JourneyPackage): InstantiatedJour
     backgroundId: idMap.get(save.content.backgroundId ?? '') ?? save.content.backgroundId,
     worldBookIds: (save.content.worldBookIds ?? []).map((id) => idMap.get(id) ?? id),
     eventIds: (save.content.eventIds ?? []).map((id) => idMap.get(id) ?? id),
+    authorRandomEvent: save.content.authorRandomEvent
+      ? {
+        ...save.content.authorRandomEvent,
+        poolEventIds: (save.content.authorRandomEvent.poolEventIds ?? []).map((id) => idMap.get(id) ?? id),
+        dynamic: {
+          ...save.content.authorRandomEvent.dynamic,
+          referenceEventIds: (save.content.authorRandomEvent.dynamic?.referenceEventIds ?? []).map((id) => idMap.get(id) ?? id),
+        },
+      }
+      : undefined,
     storyStyle: save.content.storyStyle ?? pkg.storyStyle,
   };
   save.state = {
@@ -187,6 +209,23 @@ export function instantiateJourneyPackage(pkg: JourneyPackage): InstantiatedJour
       ...item,
       id: idMap.get(item.id) ?? item.id,
     })),
+    authorNarrative: save.state.authorNarrative
+      ? {
+        ...save.state.authorNarrative,
+        activeArcs: remapArcList(save.state.authorNarrative.activeArcs),
+        completedArcs: remapArcList(save.state.authorNarrative.completedArcs),
+      }
+      : save.state.authorNarrative,
+    authorRandomEventState: save.state.authorRandomEventState
+      ? {
+        ...save.state.authorRandomEventState,
+        pendingEvent: save.state.authorRandomEventState.pendingEvent
+          ? remapArc(save.state.authorRandomEventState.pendingEvent)
+          : undefined,
+        activeEvents: remapArcList(save.state.authorRandomEventState.activeEvents),
+        completedEvents: remapArcList(save.state.authorRandomEventState.completedEvents),
+      }
+      : save.state.authorRandomEventState,
   };
 
   return {

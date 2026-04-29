@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { GameSave, GameState, GameConfig, GameContent, Message, Choice, GamePhase, Item, AdventureReview, Npc, NpcUpdateRaw, MemoryAnchor, SceneRef } from '@/types/game';
+import type { GameSave, GameState, GameConfig, GameContent, Message, Choice, GamePhase, Item, AdventureReview, Npc, NpcUpdateRaw, MemoryAnchor, SceneRef, AuthorNarrativeState, AuthorRandomEventState, StoryArc } from '@/types/game';
 import { clamp, genId, nowMs } from '@/lib/utils';
 import { createItem, type RawGrant, type RawDestroy, type RawItemPatch } from '@/lib/items';
 
@@ -19,6 +19,7 @@ interface GameStoreState {
   setActive: (id: string | undefined) => void;
   deleteSave: (id: string) => void;
   renameSave: (id: string, name: string) => void;
+  updateContentOf: (id: string, patch: Partial<GameContent>) => void;
   updateStateOf: (id: string, patch: Partial<GameState>) => void;
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
   setLongTermMemory: (id: string, memory: string, round: number) => void;
@@ -57,6 +58,15 @@ interface GameStoreState {
 
   // ---- 场景 ----
   setScenes: (id: string, current: SceneRef | undefined, available: SceneRef[]) => void;
+
+  // ---- 执笔模式 · 叙事弧 / 动态事件弧 ----
+  setAuthorNarrativeState: (id: string, state: AuthorNarrativeState) => void;
+  setAuthorRandomEventState: (id: string, state: AuthorRandomEventState) => void;
+  setPendingAuthorEvent: (id: string, arc: StoryArc, pendingForRound: number, resetProbability?: number) => void;
+  activatePendingAuthorEvent: (id: string, round: number) => StoryArc | undefined;
+  upsertAuthorArc: (id: string, arc: StoryArc) => void;
+  completeAuthorArc: (id: string, arcId: string, round?: number) => void;
+  advanceAuthorArcs: (id: string, currentRound: number) => void;
 
   // ---- 记忆锚点 ----
   addAnchor: (id: string, anchor: Omit<MemoryAnchor, 'id' | 'createdAt'>) => void;
@@ -264,6 +274,121 @@ function normalizeAnchors(rawAnchors: unknown, history: Message[] | undefined): 
   return out;
 }
 
+function emptyAuthorNarrativeState(): AuthorNarrativeState {
+  return {
+    activeArcs: [],
+    completedArcs: [],
+  };
+}
+
+function emptyAuthorRandomEventState(): AuthorRandomEventState {
+  return {
+    activeEvents: [],
+    completedEvents: [],
+    currentProbability: 0,
+  };
+}
+
+function normalizeStoryArc(raw: unknown): StoryArc | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<StoryArc>;
+  const title = obj.title?.trim();
+  const summary = obj.summary?.trim();
+  const directive = obj.directive?.trim();
+  if (!title || !directive) return undefined;
+  const startRound = Math.max(1, Math.floor(Number(obj.startRound) || 1));
+  const targetEndRound = Number.isFinite(obj.targetEndRound)
+    ? Math.max(startRound, Math.floor(Number(obj.targetEndRound)))
+    : undefined;
+  const stages: StoryArc['stages'] = [];
+  if (Array.isArray(obj.stages)) {
+    obj.stages.forEach((st, index) => {
+      if (!st || typeof st !== 'object') return;
+      const item = st as StoryArc['stages'][number];
+      const stStart = Math.max(startRound, Math.floor(Number(item.startRound) || startRound));
+      const stEnd = Math.max(stStart, Math.floor(Number(item.endRound) || targetEndRound || stStart));
+      const goal = item.goal?.trim().slice(0, 300) || directive.slice(0, 300);
+      if (!goal) return;
+      stages.push({
+        id: item.id || genId('stage'),
+        startRound: stStart,
+        endRound: stEnd,
+        title: item.title?.trim().slice(0, 60) || `阶段 ${index + 1}`,
+        goal,
+        requiredBeats: Array.isArray(item.requiredBeats)
+          ? item.requiredBeats.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+          : [],
+        avoid: item.avoid?.trim().slice(0, 300) || undefined,
+      });
+    });
+  }
+  return {
+    id: obj.id || genId('arc'),
+    type: obj.type === 'main' || obj.type === 'relationship' || obj.type === 'randomEvent' || obj.type === 'foreshadowing' || obj.type === 'custom'
+      ? obj.type
+      : 'custom',
+    title: title.slice(0, 80),
+    summary: (summary || title).slice(0, 500),
+    directive: directive.slice(0, 1200),
+    hiddenIntent: obj.hiddenIntent?.trim().slice(0, 800) || undefined,
+    involvedNpcIds: Array.isArray(obj.involvedNpcIds)
+      ? obj.involvedNpcIds.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 10)
+      : [],
+    involvedNpcNames: Array.isArray(obj.involvedNpcNames)
+      ? obj.involvedNpcNames.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 10)
+      : undefined,
+    tags: Array.isArray(obj.tags)
+      ? obj.tags.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 12)
+      : [],
+    startRound,
+    targetEndRound,
+    currentStageIndex: Math.max(0, Math.floor(Number(obj.currentStageIndex) || 0)),
+    stages,
+    status: obj.status === 'pending' || obj.status === 'active' || obj.status === 'completed' || obj.status === 'cancelled'
+      ? obj.status
+      : 'active',
+    progressNote: obj.progressNote?.trim().slice(0, 500) || undefined,
+    createdAt: Number(obj.createdAt) || nowMs(),
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || startRound)),
+  };
+}
+
+function normalizeStoryArcList(raw: unknown): StoryArc[] {
+  if (!Array.isArray(raw)) return [];
+  const out: StoryArc[] = [];
+  for (const item of raw) {
+    const arc = normalizeStoryArc(item);
+    if (arc) out.push(arc);
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+
+function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
+  const obj = (raw ?? {}) as Partial<AuthorNarrativeState>;
+  return {
+    plan: obj.plan,
+    activeArcs: normalizeStoryArcList(obj.activeArcs),
+    completedArcs: normalizeStoryArcList(obj.completedArcs),
+    lastDirectorRound: obj.lastDirectorRound,
+    lastLogicCheckRound: obj.lastLogicCheckRound,
+  };
+}
+
+function normalizeAuthorRandomEventState(raw: unknown): AuthorRandomEventState {
+  const obj = (raw ?? {}) as Partial<AuthorRandomEventState>;
+  return {
+    pendingEvent: normalizeStoryArc(obj.pendingEvent),
+    pendingForRound: obj.pendingForRound,
+    activeEvents: normalizeStoryArcList(obj.activeEvents),
+    completedEvents: normalizeStoryArcList(obj.completedEvents),
+    cooldownUntilRound: obj.cooldownUntilRound,
+    currentProbability: Number.isFinite(obj.currentProbability) ? obj.currentProbability : 0,
+    lastCheckedRound: obj.lastCheckedRound,
+    lastError: obj.lastError,
+  };
+}
+
 export const useGameStore = create<GameStoreState>()(
   persist(
     (set, get) => ({
@@ -302,6 +427,8 @@ export const useGameStore = create<GameStoreState>()(
             anchors: [],
             sceneHistory: [],
             availableScenes: [],
+            authorNarrative: emptyAuthorNarrativeState(),
+            authorRandomEventState: emptyAuthorRandomEventState(),
           },
         };
         set((s) => ({
@@ -344,6 +471,15 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           return { saves: { ...s.saves, [id]: touch(save, { name }) } };
+        }),
+
+      updateContentOf: (id, patch) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          return {
+            saves: { ...s.saves, [id]: touch(save, { content: { ...save.content, ...patch } }) },
+          };
         }),
 
       updateStateOf: (id, patch) =>
@@ -793,6 +929,178 @@ export const useGameStore = create<GameStoreState>()(
           };
         }),
 
+      setAuthorNarrativeState: (id, state) =>
+        get().updateStateOf(id, { authorNarrative: normalizeAuthorNarrativeState(state) }),
+
+      setAuthorRandomEventState: (id, state) =>
+        get().updateStateOf(id, { authorRandomEventState: normalizeAuthorRandomEventState(state) }),
+
+      setPendingAuthorEvent: (id, arc, pendingForRound, resetProbability) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const prev = normalizeAuthorRandomEventState(save.state.authorRandomEventState);
+          const pending = normalizeStoryArc({
+            ...arc,
+            status: 'pending',
+            startRound: pendingForRound,
+            updatedAtRound: pendingForRound,
+          });
+          if (!pending) return s;
+          const state: GameState = {
+            ...save.state,
+            authorRandomEventState: {
+              ...prev,
+              pendingEvent: pending,
+              pendingForRound,
+              currentProbability: Number.isFinite(resetProbability) ? resetProbability : prev.currentProbability,
+              lastCheckedRound: pendingForRound,
+              lastError: undefined,
+            },
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      activatePendingAuthorEvent: (id, round) => {
+        let activated: StoryArc | undefined;
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const prev = normalizeAuthorRandomEventState(save.state.authorRandomEventState);
+          if (!prev.pendingEvent || prev.pendingForRound !== round) return s;
+          activated = {
+            ...prev.pendingEvent,
+            status: 'active',
+            startRound: prev.pendingEvent.startRound || round,
+            updatedAtRound: round,
+          };
+          const state: GameState = {
+            ...save.state,
+            authorRandomEventState: {
+              ...prev,
+              pendingEvent: undefined,
+              pendingForRound: undefined,
+              activeEvents: [...prev.activeEvents.filter((ev) => ev.id !== activated!.id), activated],
+              lastError: undefined,
+            },
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        });
+        return activated;
+      },
+
+      upsertAuthorArc: (id, arc) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const prev = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const normalized = normalizeStoryArc(arc);
+          if (!normalized) return s;
+          const activeArc: StoryArc = {
+            ...normalized,
+            status: normalized.status === 'completed' ? 'completed' : 'active',
+          };
+          const activeArcs: StoryArc[] = [
+            ...prev.activeArcs.filter((item) => item.id !== normalized.id),
+            activeArc,
+          ];
+          const state: GameState = {
+            ...save.state,
+            authorNarrative: {
+              ...prev,
+              activeArcs,
+            },
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      completeAuthorArc: (id, arcId, round) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const events = normalizeAuthorRandomEventState(save.state.authorRandomEventState);
+          const completedAt = Math.max(0, Math.floor(Number(round) || save.state.currentRound));
+          const complete = (arc: StoryArc): StoryArc => ({
+            ...arc,
+            status: 'completed',
+            updatedAtRound: completedAt,
+            progressNote: arc.progressNote || `已在第 ${completedAt} 回合后结束。`,
+          });
+          const targetNarrative = narrative.activeArcs.find((arc) => arc.id === arcId);
+          const targetEvent = events.activeEvents.find((arc) => arc.id === arcId);
+          if (!targetNarrative && !targetEvent) return s;
+          const state: GameState = {
+            ...save.state,
+            authorNarrative: targetNarrative
+              ? {
+                ...narrative,
+                activeArcs: narrative.activeArcs.filter((arc) => arc.id !== arcId),
+                completedArcs: [...narrative.completedArcs.filter((arc) => arc.id !== arcId), complete(targetNarrative)],
+              }
+              : save.state.authorNarrative,
+            authorRandomEventState: targetEvent
+              ? {
+                ...events,
+                activeEvents: events.activeEvents.filter((arc) => arc.id !== arcId),
+                completedEvents: [...events.completedEvents.filter((arc) => arc.id !== arcId), complete(targetEvent)],
+              }
+              : save.state.authorRandomEventState,
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      advanceAuthorArcs: (id, currentRound) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const events = normalizeAuthorRandomEventState(save.state.authorRandomEventState);
+          const round = Math.max(0, Math.floor(Number(currentRound) || save.state.currentRound));
+          const advance = (arc: StoryArc): StoryArc => {
+            const idx = arc.stages.findIndex((stage) => round >= stage.startRound && round <= stage.endRound);
+            return idx >= 0 && idx !== arc.currentStageIndex
+              ? { ...arc, currentStageIndex: idx, updatedAtRound: round }
+              : arc;
+          };
+          const closeExpired = (arc: StoryArc) =>
+            arc.targetEndRound !== undefined && round > arc.targetEndRound;
+          const completed = (arc: StoryArc): StoryArc => ({
+            ...arc,
+            status: 'completed',
+            updatedAtRound: round,
+            progressNote: arc.progressNote || `已在第 ${round} 回合后自然结束。`,
+          });
+          let changed = false;
+          const activeArcs = narrative.activeArcs.map((arc) => {
+            const next = advance(arc);
+            if (next !== arc) changed = true;
+            return next;
+          });
+          const activeEvents = events.activeEvents.map((arc) => {
+            const next = advance(arc);
+            if (next !== arc) changed = true;
+            return next;
+          });
+          const expiredArcs = activeArcs.filter(closeExpired).map(completed);
+          const expiredEvents = activeEvents.filter(closeExpired).map(completed);
+          if (!changed && !expiredArcs.length && !expiredEvents.length) return s;
+          const state: GameState = {
+            ...save.state,
+            authorNarrative: {
+              ...narrative,
+              activeArcs: activeArcs.filter((arc) => !closeExpired(arc)),
+              completedArcs: [...narrative.completedArcs, ...expiredArcs],
+            },
+            authorRandomEventState: {
+              ...events,
+              activeEvents: activeEvents.filter((arc) => !closeExpired(arc)),
+              completedEvents: [...events.completedEvents, ...expiredEvents],
+            },
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
       addAnchor: (id, anchor) =>
         set((s) => {
           const save = s.saves[id];
@@ -868,6 +1176,8 @@ export const useGameStore = create<GameStoreState>()(
               sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],
               availableScenes: Array.isArray((sv.state as any)?.availableScenes) ? (sv.state as any).availableScenes : [],
               currentScene: (sv.state as any)?.currentScene,
+              authorNarrative: normalizeAuthorNarrativeState((sv.state as any)?.authorNarrative),
+              authorRandomEventState: normalizeAuthorRandomEventState((sv.state as any)?.authorRandomEventState),
             },
           };
         }

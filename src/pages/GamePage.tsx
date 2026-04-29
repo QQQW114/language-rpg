@@ -23,13 +23,15 @@ import { requestStory } from '@/services/storyAgent';
 import { requestChoices } from '@/services/decisionAgent';
 import { requestMemoryUpdate } from '@/services/memoryAgent';
 import { requestReview } from '@/services/reviewAgent';
+import { requestAuthorRandomEvent, storyArcToRandomEvent } from '@/services/authorRandomEventAgent';
 import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
 import { maybeCompress } from '@/services/contextCompressor';
-import type { Choice, GameSave, Item, Message, SceneRef } from '@/types/game';
+import type { AuthorRandomEventConfig, Choice, GameSave, Item, Message, SceneRef, StoryArc } from '@/types/game';
 import type { GameContent } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
 import { buildJourneyPackage } from '@/lib/journeyPackage';
+import { AuthorArcPanel } from '@/components/AuthorArcPanel';
 
 const RECENT_TEXT_WINDOW = 2400;
 
@@ -37,6 +39,35 @@ function getPromptConfig(content: GameContent): StrictCustomConfig | undefined {
   return content.mode === 'author'
     ? content.authorCustom
     : content.strictCustom;
+}
+
+function getScheduledEventIds(content: GameContent): string[] {
+  if (content.mode !== 'author') return content.eventIds ?? [];
+  const cfg = content.authorRandomEvent;
+  return cfg?.mode === 'pool' ? cfg.poolEventIds : [];
+}
+
+function getPendingAuthorArcForCurrentRound(save: GameSave): StoryArc | undefined {
+  const eventState = save.state.authorRandomEventState;
+  if (save.content.mode !== 'author') return undefined;
+  if (!eventState?.pendingEvent) return undefined;
+  return eventState.pendingForRound === save.state.currentRound ? eventState.pendingEvent : undefined;
+}
+
+function consumeGuaranteedRangeIfNeeded(
+  config: AuthorRandomEventConfig,
+  rangeId: string | undefined,
+): AuthorRandomEventConfig {
+  if (!rangeId) return config;
+  return {
+    ...config,
+    dynamic: {
+      ...config.dynamic,
+      guaranteedRanges: config.dynamic.guaranteedRanges.map((range) =>
+        range.id === rangeId ? { ...range, consumed: true } : range,
+      ),
+    },
+  };
 }
 
 function safeFileName(name: string): string {
@@ -131,6 +162,7 @@ export default function GamePage() {
   const backgrounds = useContentStore(selectAllBackgrounds);
   const worldBooks = useContentStore(selectAllWorldBooks);
   const allEvents = useContentStore(selectAllEvents);
+  const addEventToLibrary = useContentStore((s) => s.addEvent);
 
   const [streaming, setStreaming] = useState('');
   const [busy, setBusy] = useState(false);
@@ -231,12 +263,123 @@ export default function GamePage() {
     }
   }, [settings]);
 
+  const maybePrepareAuthorRandomEvent = useCallback(async (
+    saveId: string,
+    latestStory: string,
+    signal?: AbortSignal,
+  ) => {
+    const actions = useGameStore.getState();
+    let current = actions.saves[saveId];
+    if (!current || current.content.mode !== 'author') return;
+
+    const config = current.content.authorRandomEvent;
+    if (!config || config.mode !== 'dynamic' || !config.dynamic.enabled) return;
+
+    actions.advanceAuthorArcs(saveId, current.state.currentRound);
+    current = useGameStore.getState().saves[saveId] ?? current;
+
+    const eventState = current.state.authorRandomEventState ?? {
+      activeEvents: [],
+      completedEvents: [],
+      currentProbability: config.dynamic.baseProbability,
+    };
+    const nextRound = current.state.currentRound;
+    if (eventState.pendingEvent) return;
+    if (eventState.lastCheckedRound === nextRound) return;
+    if (nextRound < config.dynamic.startRound) return;
+    if (eventState.cooldownUntilRound !== undefined && nextRound < eventState.cooldownUntilRound) return;
+    if ((eventState.activeEvents ?? []).some((arc) => !arc.targetEndRound || nextRound <= arc.targetEndRound)) return;
+
+    const guaranteed =
+      config.dynamic.guaranteedRanges.find((range) =>
+        !range.consumed && nextRound >= range.startRound && nextRound <= range.endRound,
+      )
+      ?? config.dynamic.guaranteedRanges.find((range) =>
+        !range.consumed && nextRound > range.endRound,
+      );
+    const mustTrigger = !!guaranteed;
+    const baseProbability = config.dynamic.baseProbability;
+    const currentProbability = Math.max(baseProbability, eventState.currentProbability ?? baseProbability);
+    const missProbability = Math.min(
+      config.dynamic.maxProbability,
+      currentProbability + config.dynamic.missProbabilityBonus,
+    );
+
+    if (!mustTrigger && Math.random() >= currentProbability) {
+      actions.setAuthorRandomEventState(saveId, {
+        ...eventState,
+        currentProbability: missProbability,
+        lastCheckedRound: nextRound,
+        lastError: undefined,
+      });
+      return;
+    }
+
+    const referenceEvents = allEvents.filter((event) => config.dynamic.referenceEventIds.includes(event.id));
+    const scheduleReason = guaranteed
+      ? `第 ${nextRound} 回合处于必定触发区间 ${guaranteed.startRound}-${guaranteed.endRound}`
+      : `概率检查命中，当前概率 ${Math.round(currentProbability * 100)}%`;
+
+    const result = await requestAuthorRandomEvent({
+      settings,
+      outline,
+      background,
+      characterName: current.content.characterName,
+      currentRound: Math.max(0, nextRound - 1),
+      nextRound,
+      totalRounds: current.config.totalRounds,
+      mustTrigger,
+      scheduleReason,
+      config,
+      summary: current.state.summary,
+      longTermMemory: current.state.longTermMemory,
+      latestStory,
+      recent: current.state.history.slice(-8),
+      npcs: current.state.npcs ?? [],
+      currentScene: current.state.currentScene,
+      referenceEvents,
+      signal,
+    });
+
+    if (result.trigger && result.arc) {
+      const arc = result.arc;
+      actions.setPendingAuthorEvent(saveId, arc, nextRound, baseProbability);
+      const latest = useGameStore.getState().saves[saveId] ?? current;
+      const nextConfig = consumeGuaranteedRangeIfNeeded(config, guaranteed?.id);
+      actions.updateContentOf(saveId, {
+        authorRandomEvent: nextConfig,
+        eventIds: Array.from(new Set([...(latest.content.eventIds ?? []), arc.id])),
+      });
+      const latestEventState = useGameStore.getState().saves[saveId]?.state.authorRandomEventState ?? eventState;
+      actions.setAuthorRandomEventState(saveId, {
+        ...latestEventState,
+        currentProbability: baseProbability,
+        cooldownUntilRound: nextRound + Math.max(0, config.dynamic.cooldownRounds),
+        lastCheckedRound: nextRound,
+        lastError: undefined,
+      });
+      addEventToLibrary(storyArcToRandomEvent(arc));
+    } else {
+      actions.setAuthorRandomEventState(saveId, {
+        ...eventState,
+        currentProbability: missProbability,
+        lastCheckedRound: nextRound,
+        lastError: result.reason,
+      });
+    }
+  }, [settings, outline, background, allEvents, addEventToLibrary]);
+
   // ----- 异步任务：故事 -----
   const runStory = useCallback(async () => {
-    const s = getSave();
-    if (!s) return;
+    const initial = getSave();
+    if (!initial) return;
     const actions = useGameStore.getState();
+    if (initial.content.mode === 'author') {
+      actions.advanceAuthorArcs(initial.id, initial.state.currentRound);
+    }
+    const s = useGameStore.getState().saves[initial.id] ?? initial;
     const { state, config, content } = s;
+    const pendingAuthorArc = getPendingAuthorArcForCurrentRound(s);
 
     setBusy(true);
     setErrorMsg(undefined);
@@ -253,7 +396,8 @@ export default function GamePage() {
       currentInput: state.lastPlayerInput,
     });
 
-    const eventCandidates = allEvents.filter((e) => content.eventIds.includes(e.id));
+    const scheduledEventIds = getScheduledEventIds(content);
+    const eventCandidates = allEvents.filter((e) => scheduledEventIds.includes(e.id));
     const triggeredEvent = pickRandomEvent({
       candidates: eventCandidates,
       currentRound: state.currentRound,
@@ -290,6 +434,8 @@ export default function GamePage() {
         npcs: state.npcs,
         anchors: state.anchors,
         currentScene: state.currentScene,
+        authorNarrative: content.mode === 'author' ? state.authorNarrative : undefined,
+        authorRandomEventState: content.mode === 'author' ? state.authorRandomEventState : undefined,
         strictCustom: getPromptConfig(content),
         summarizedUntilIndex: state.summarizedUntilIndex,
         finalizeRequested: !!state.finalizeRequested,
@@ -312,6 +458,10 @@ export default function GamePage() {
       actions.clearSelectedItems(s.id);
 
       if (triggeredEvent) actions.addTriggeredEvent(s.id, triggeredEvent.id, state.currentRound);
+      if (pendingAuthorArc) {
+        const activated = actions.activatePendingAuthorEvent(s.id, state.currentRound);
+        if (activated) actions.addTriggeredEvent(s.id, activated.id, state.currentRound);
+      }
 
       const afterRound = state.currentRound + 1;
       const isInfinite = !config.totalRounds || config.totalRounds <= 0;
@@ -330,10 +480,11 @@ export default function GamePage() {
         if (shouldEnterManual) {
           try {
             await applyDecisionForStory(s, full, false, abort.signal);
+            await maybePrepareAuthorRandomEvent(s.id, full, abort.signal);
           } catch (err: any) {
             if (err?.name === 'AbortError') throw err;
             const msg = err?.message ?? String(err);
-            console.warn('[decisionAgent] tracking-only update failed', err);
+            console.warn('[decisionAgent/authorRandomEvent] tracking update failed', err);
             setErrorMsg(msg);
           }
           actions.setPhase(s.id, 'manual');
@@ -369,7 +520,7 @@ export default function GamePage() {
       setBusy(false);
       abortRef.current = null;
     }
-  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory]);
+  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent]);
 
   // ----- 异步任务：选项 + 给予/销毁道具 -----
   const runChoices = useCallback(async () => {
@@ -382,13 +533,14 @@ export default function GamePage() {
     setErrorMsg(undefined);
     try {
       await applyDecisionForStory(s, lastAssistant.content, true);
+      await maybePrepareAuthorRandomEvent(s.id, lastAssistant.content);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       setErrorMsg(msg);
     } finally {
       setBusy(false);
     }
-  }, [getSave, applyDecisionForStory]);
+  }, [getSave, applyDecisionForStory, maybePrepareAuthorRandomEvent]);
 
   // ----- 异步任务：评分 -----
   const runReview = useCallback(async () => {
@@ -831,6 +983,12 @@ export default function GamePage() {
               refreshesLeft={refreshesLeft}
               itemCount={backpack.length}
             />
+            {save.content.mode === 'author' && (
+              <AuthorArcPanel
+                narrative={save.state.authorNarrative}
+                randomEventState={save.state.authorRandomEventState}
+              />
+            )}
             <SceneMap
               current={save.state.currentScene}
               available={save.state.availableScenes ?? []}
