@@ -4,6 +4,8 @@ import { DECISION_SYSTEM } from '@/prompts/decisionSystem';
 export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动小说主持人（TRPG GM），正在与玩家共同完成一段长篇角色扮演。
 {{roundInfo}}
 {{outlineBlock}}
+{{masterArcBlock}}
+{{stageJudgeBlock}}
 {{storyArcBlock}}
 {{backgroundBlock}}
 {{worldBookAlwaysBlock}}
@@ -40,11 +42,13 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 {{npcJsonBlock}}
 {{anchorsBlock}}
 {{currentSceneBlock}}
+{{stageNarrativeBlock}}
 {{narrativePlanBlock}}
 {{activeArcsBlock}}
 {{strictCustomDecisionBlock}}
 请按协议输出 JSON。注意：
 - choices 应服务于上方【当前导演计划】的下一回合焦点和【进行中事件弧】的当前阶段（若有）；与计划无关的随性 choices 应避免；
+- 若存在【阶段化叙事 / 玩家节奏】，choices 必须贴合其中的本回合聚焦；玩家处于沉浸/探索节奏时，选项应更微观，不要催促跳阶段；
 - grants 不要与背包重名；
 - 修改/删除已有道具时优先使用【当前背包 JSON】里的 id；新物品才放 grants；
 - destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；

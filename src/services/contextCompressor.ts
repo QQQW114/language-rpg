@@ -2,6 +2,7 @@
 // 不再从 state.history 中删除消息 —— history 保留全量以便玩家随时回看。
 
 import type { Message } from '@/types/game';
+import type { StoryOutline } from '@/types/content';
 import type { AppSettings } from '@/types/settings';
 import { chatJSON } from './llmClient';
 import { SUMMARIZER_SYSTEM, buildSummarizerUser } from '@/prompts/summarizer';
@@ -18,6 +19,7 @@ export interface CompressInput {
   summarizedUntilIndex: number;   // history 中已被摘要覆盖的前缀 index
   maxMessages: number;            // 未摘要消息超过该阈值触发压缩
   keepTail: number;               // 保留最近 N 条不压缩
+  outline?: StoryOutline;
 }
 
 function historyToText(msgs: Message[]): string {
@@ -30,7 +32,7 @@ function historyToText(msgs: Message[]): string {
 }
 
 export async function maybeCompress(p: CompressInput): Promise<CompressResult | null> {
-  const { settings, history, summary, summarizedUntilIndex, maxMessages, keepTail } = p;
+  const { settings, history, summary, summarizedUntilIndex, maxMessages, keepTail, outline } = p;
   const unsummarized = history.slice(summarizedUntilIndex);
   if (unsummarized.length <= maxMessages) return null;
 
@@ -52,7 +54,7 @@ export async function maybeCompress(p: CompressInput): Promise<CompressResult | 
         temperature: 0.3,
         messages: [
           { role: 'system', content: SUMMARIZER_SYSTEM },
-          { role: 'user', content: buildSummarizerUser(summary, text) },
+          { role: 'user', content: buildSummarizerUser(summary, text, outline) },
         ],
       },
     );

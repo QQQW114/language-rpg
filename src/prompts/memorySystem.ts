@@ -8,8 +8,10 @@ export const MEMORY_SYSTEM = `你是文字 RPG 的长期一致性记忆整理助
 3. 区分临时状态与稳定设定：例如"上次见面穿 JK 服"和"常常穿 JK 服"不能混淆；只有多次证据才写"常常"。
 4. 新信息与旧记忆冲突时，用新信息更新旧记忆；已解决、失效或不再重要的条目应删除。
 5. 玩家通过【玩家标记的关键记忆】明确标记的内容必须保留——除非它本身已被推翻或自然解决——并优先以"主角承诺/计划/未解线索"形式落入条目，永不静默丢弃。
-6. 尽量短句、可引用、可执行；不要复述整段剧情，不要写文学化正文。
-7. 输出总长度必须不超过用户给定的上限。`;
+6. ★ **世界书一致性**：若提供【世界书 · 硬设定】，记忆里涉及相关机制（如能力规则、世界基调）的描述**必须与之兼容**；不要把"主动施用"误录为"被动反应"，不要把已明确的世界规则写成"似乎/可能"。
+7. ★ **大纲对齐**：若提供【故事大纲】，记忆应当把已发生的剧情**对应到大纲幕次**（例：可在条目末尾轻标"（呼应第一幕'觉醒'）"），便于下游故事模型对齐主线；但不要剧透未发生的幕次。
+8. 尽量短句、可引用、可执行；不要复述整段剧情，不要写文学化正文。
+9. 输出总长度必须不超过用户给定的上限。`;
 
 export function buildMemoryUser(p: {
   previousMemory?: string;
@@ -19,6 +21,8 @@ export function buildMemoryUser(p: {
   backpackText: string;
   currentSceneText: string;
   anchorsText?: string;
+  outlineText?: string;
+  worldBookText?: string;
   maxChars: number;
 }): string {
   const lines: string[] = [
@@ -30,6 +34,14 @@ export function buildMemoryUser(p: {
     '- 线索/物品：银钥匙来自地下室，尚未试过三楼铁门。',
     '- 场景/时间：当前是雨夜，主角在校门口附近。',
     '',
+  ];
+  if (p.outlineText?.trim()) {
+    lines.push('【故事大纲】（仅作对齐参考，不要剧透未来幕次）', p.outlineText.trim(), '');
+  }
+  if (p.worldBookText?.trim()) {
+    lines.push('【世界书 · 硬设定】（记忆描述涉及这些机制时必须兼容）', p.worldBookText.trim(), '');
+  }
+  lines.push(
     '【上一版长期记忆】',
     p.previousMemory?.trim() || '（无）',
     '',
@@ -48,7 +60,7 @@ export function buildMemoryUser(p: {
     '【当前场景】',
     p.currentSceneText.trim() || '（不明）',
     '',
-  ];
+  );
   if (p.anchorsText?.trim()) {
     lines.push(
       '【玩家标记的关键记忆】（必须保留并以承诺/计划/未解线索/伏笔等形式落地）',

@@ -164,15 +164,93 @@ export interface SettingGuardState {
   lastError?: string;
 }
 
+// ====== 阶段化叙事 ======
+// 详见 docs/stage-narrative.md。stages 不绑回合数；推进由剧情条件 + stageJudge 决定。
+
+export interface NarrativeStageBeat {
+  id: string;
+  description: string;
+  status: 'pending' | 'achieved' | 'skipped';
+  achievedAtRound?: number;        // 仅记录，不约束
+}
+
+export interface NarrativeStage {
+  id: string;
+  name: string;                    // ≤16 字
+  description: string;             // ≤220 字
+  enterConditions: string[];       // ≤4 条 ≤60 字
+  completionConditions: string[];  // ≤5 条 ≤80 字
+  expectedBeats: NarrativeStageBeat[];
+  status: 'pending' | 'active' | 'completed' | 'skipped';
+  enteredAtRound?: number;
+  exitedAtRound?: number;
+}
+
+export interface AuthorMasterArcConfig {
+  enabled: boolean;
+  stageHint: string;               // 玩家给主弧生成模型的偏好
+  expectedStageCount?: number;     // 期望阶段数（默认从 outline.acts.length 推导）
+}
+
+export interface MasterArcState {
+  title: string;                   // ≤24 字
+  summary: string;                 // ≤220 字
+  stages: NarrativeStage[];        // 通常 3-6 个
+  currentStageIndex: number;
+  generatedAtRound: number;
+  updatedAtRound: number;
+  generationConfig?: AuthorMasterArcConfig;
+}
+
+export type PlayerPace = 'immersive' | 'exploratory' | 'progressing' | 'hurrying';
+
+export interface PlayerIntent {
+  primary: string;                 // ≤80 字
+  secondary?: string[];            // ≤3 条 ≤60 字
+  implicit?: string;               // ≤80 字
+}
+
+export interface StageJudgeStatus {
+  currentStageId?: string;
+  completion: number;              // 0-100
+  newlyAchievedBeats: string[];    // 当前 stage 下 expectedBeats[].id 子集
+  shouldAdvance: boolean;
+  advanceReasoning?: string;       // ≤120 字
+}
+
+export interface StageJudgeFocus {
+  thisRound: string;               // ≤140 字 故事模型本回合应聚焦的一件事
+  avoid?: string[];                // ≤4 条 ≤80 字
+}
+
+export interface StageJudgeState {
+  updatedAtRound: number;
+  playerIntent: PlayerIntent;
+  playerPace: PlayerPace;
+  paceReasoning?: string;          // ≤140 字
+  stageStatus: StageJudgeStatus;
+  storyFocus: StageJudgeFocus;
+  lastError?: string;
+}
+
+export interface AuthorStageJudgeConfig {
+  enabled: boolean;
+  prompt: string;                  // 玩家给阶段判断模型的偏好
+  autoAdvance: boolean;            // 是否自动推进阶段（默认 true）
+}
+
 export interface AuthorNarrativeState {
   plan?: NarrativePlanState;
   logicReview?: AuthorLogicReviewState;
   settingGuard?: SettingGuardState;
+  masterArc?: MasterArcState;
+  stageJudge?: StageJudgeState;
   activeArcs: StoryArc[];
   completedArcs: StoryArc[];
   lastDirectorRound?: number;
   lastLogicCheckRound?: number;
   lastSettingGuardRound?: number;
+  lastStageJudgeRound?: number;
 }
 
 export interface AuthorLogicIssue {
@@ -248,6 +326,8 @@ export interface GameContent {
   authorRandomEvent?: AuthorRandomEventConfig; // 执笔模式随机事件/动态事件弧配置
   authorDirector?: AuthorDirectorConfig; // 执笔模式叙事导演/大纲映射配置
   authorLogicCheck?: AuthorLogicCheckConfig; // 执笔模式逻辑/一致性审校配置
+  authorMasterArc?: AuthorMasterArcConfig;   // 执笔模式主弧生成配置（阶段化叙事）
+  authorStageJudge?: AuthorStageJudgeConfig; // 执笔模式阶段判断模型配置
   authorSettingGuard?: AuthorSettingGuardConfig; // 执笔模式设定守护者配置
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }

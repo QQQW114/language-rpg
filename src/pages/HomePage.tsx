@@ -104,13 +104,18 @@ export default function HomePage() {
 
       <Dialog open={showSaves} onClose={() => setShowSaves(false)} title="选择要继续的旅程">
         <div className="flex flex-col gap-2">
-          {saveList.map((s) => (
+          {saveList.map((s) => {
+            const legacy = s.content.mode === 'author' && !s.state.authorNarrative?.masterArc;
+            return (
             <div
               key={s.id}
               className="flex items-center gap-3 p-3 rounded border border-parchment-600/40 hover:border-gold/60 hover:bg-parchment-900/40 transition-all"
             >
               <div className="flex-1 min-w-0">
-                <div className="text-parchment-50 font-serif truncate">{s.name}</div>
+                <div className="text-parchment-50 font-serif truncate">
+                  {s.name}
+                  {legacy && <span className="ml-2 text-[10px] text-blood/80">旧版 · 不可继续</span>}
+                </div>
                 <div className="text-xs text-parchment-200/60">
                   第 {s.state.currentRound} / {s.config.totalRounds} 回合 ·
                   {' '}
@@ -122,6 +127,10 @@ export default function HomePage() {
               <Button
                 size="sm"
                 onClick={() => {
+                  if (legacy) {
+                    alert('此存档创建于阶段化叙事之前，不再支持继续游玩。请创建新旅程。');
+                    return;
+                  }
                   setActive(s.id);
                   setShowSaves(false);
                   nav('/game');
@@ -141,7 +150,8 @@ export default function HomePage() {
                 <Trash2 size={14} />
               </Button>
             </div>
-          ))}
+          );
+          })}
           {saveList.length === 0 && (
             <div className="text-center text-parchment-200/60 py-6">暂无旅程。</div>
           )}

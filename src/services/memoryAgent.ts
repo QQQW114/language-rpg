@@ -1,4 +1,5 @@
 import type { AppSettings } from '@/types/settings';
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type { Choice, Item, MemoryAnchor, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import type { RawDestroy, RawGrant, RawItemPatch } from '@/lib/items';
 import { formatItemsForPrompt } from '@/lib/items';
@@ -24,6 +25,9 @@ export interface MemoryUpdateRequest {
   backpack: Item[];
   currentScene?: SceneRef;
   anchors?: MemoryAnchor[];
+  outline?: StoryOutline;
+  background?: Background;
+  worldBookEntries?: WorldBookEntry[];
   maxChars: number;
   signal?: AbortSignal;
 }
@@ -100,6 +104,24 @@ function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
   return lines.join('\n');
 }
 
+function formatOutlineForMemory(outline: StoryOutline | undefined): string {
+  if (!outline) return '';
+  const lines = [`标题：${outline.title}`, `梗概：${outline.synopsis}`];
+  if (outline.acts?.length) lines.push(`阶段：${outline.acts.map((a) => a.split(/[：:【】]/)[0]?.trim() || '').filter(Boolean).join(' / ')}`);
+  return lines.join('\n');
+}
+
+function formatAlwaysActiveWorldBook(entries: WorldBookEntry[] | undefined): string {
+  const always = (entries ?? []).filter((e) => e.alwaysActive);
+  if (!always.length) return '';
+  const lines: string[] = [];
+  for (const e of always.slice(0, 6)) {
+    const content = e.content.length > 200 ? `${e.content.slice(0, 200)}…` : e.content;
+    lines.push(`· ${e.name}：${content}`);
+  }
+  return lines.join('\n');
+}
+
 export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<string | null> {
   const maxChars = clampMaxChars(p.maxChars);
   const model = p.settings.memoryModel?.trim() || p.settings.summaryModel?.trim() || p.settings.storyModel;
@@ -121,6 +143,8 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<strin
               backpackText: formatItemsForPrompt(p.backpack ?? []),
               currentSceneText: formatScene(p.currentScene),
               anchorsText: formatAnchors(p.anchors),
+              outlineText: formatOutlineForMemory(p.outline),
+              worldBookText: formatAlwaysActiveWorldBook(p.worldBookEntries),
               maxChars,
             }),
           },

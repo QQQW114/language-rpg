@@ -1,9 +1,11 @@
 import type {
   AuthorDirectorConfig,
   AuthorLogicCheckConfig,
+  AuthorMasterArcConfig,
   AuthorRandomEventConfig,
   AuthorRandomEventMode,
   AuthorSettingGuardConfig,
+  AuthorStageJudgeConfig,
   GuaranteedRoundRange,
   StoryArc,
   StoryArcStage,
@@ -51,6 +53,19 @@ export const DEFAULT_AUTHOR_SETTING_GUARD_CONFIG: AuthorSettingGuardConfig = {
     '重点检查故事模型是否会违反 alwaysActive 世界书条目；优先抓"瞎发挥"的设定盲区（餐饮、出行、社交礼仪、校园规则、行业规则等）；玩家偏好画像应贴近最近 5 回合的实际选择，不要过度概括。',
   candidatesAutoAccept: false,
   ambientBeatsEnabled: true,
+};
+
+export const DEFAULT_AUTHOR_MASTER_ARC_CONFIG: AuthorMasterArcConfig = {
+  enabled: true,
+  stageHint: '',
+  expectedStageCount: undefined,
+};
+
+export const DEFAULT_AUTHOR_STAGE_JUDGE_CONFIG: AuthorStageJudgeConfig = {
+  enabled: true,
+  prompt:
+    '优先尊重玩家当下节奏；当玩家在观察、犹豫、内心独白或试探环境时，判定为 immersive/exploratory，并要求故事模型每回合只推进一个微节拍。',
+  autoAdvance: true,
 };
 
 function positiveInt(value: unknown, fallback: number, min = 1, max = 999): number {
@@ -154,6 +169,31 @@ export function normalizeAuthorSettingGuardConfig(
   };
 }
 
+export function normalizeAuthorMasterArcConfig(
+  input?: Partial<AuthorMasterArcConfig>,
+): AuthorMasterArcConfig {
+  const base = DEFAULT_AUTHOR_MASTER_ARC_CONFIG;
+  const expectedStageCount = input?.expectedStageCount === undefined || input.expectedStageCount === null
+    ? undefined
+    : positiveInt(input.expectedStageCount, 0, 0, 8) || undefined;
+  return {
+    enabled: input?.enabled !== false,
+    stageHint: (input?.stageHint ?? base.stageHint).trim().slice(0, 3000),
+    expectedStageCount,
+  };
+}
+
+export function normalizeAuthorStageJudgeConfig(
+  input?: Partial<AuthorStageJudgeConfig>,
+): AuthorStageJudgeConfig {
+  const base = DEFAULT_AUTHOR_STAGE_JUDGE_CONFIG;
+  return {
+    enabled: input?.enabled !== false,
+    prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
+    autoAdvance: input?.autoAdvance !== false,
+  };
+}
+
 export function currentStageForRound(arc: StoryArc, round: number): StoryArcStage | undefined {
   return arc.stages.find((stage) => round >= stage.startRound && round <= stage.endRound)
     ?? arc.stages[arc.currentStageIndex]
@@ -162,7 +202,9 @@ export function currentStageForRound(arc: StoryArc, round: number): StoryArcStag
 
 export function formatStoryArcForPrompt(arc: StoryArc, round: number): string {
   const stage = currentStageForRound(arc, round);
-  const range = arc.targetEndRound ? `第 ${arc.startRound}-${arc.targetEndRound} 回合` : `第 ${arc.startRound} 回合起`;
+  const range = arc.targetEndRound
+    ? `调度参考：从记录回合 ${arc.startRound} 起，预计在 ${arc.targetEndRound} 前后自然收束（非硬性剧情期限）`
+    : `调度参考：记录回合 ${arc.startRound} 起（非硬性剧情期限）`;
   const npcNames = arc.involvedNpcNames?.length ? `；涉及人物：${arc.involvedNpcNames.join('、')}` : '';
   const tags = arc.tags?.length ? `；标签：${arc.tags.join('、')}` : '';
   const lines = [
@@ -174,7 +216,7 @@ export function formatStoryArcForPrompt(arc: StoryArc, round: number): string {
     lines.push(`  幕后真实意图：${arc.hiddenIntent}（仅供规划，不得在玩家未发现前直接剧透）`);
   }
   if (stage) {
-    lines.push(`  当前阶段：第 ${stage.startRound}-${stage.endRound} 回合「${stage.title}」——${stage.goal}`);
+    lines.push(`  当前事件阶段：「${stage.title}」——${stage.goal}`);
     if (stage.requiredBeats?.length) lines.push(`  必达节拍：${stage.requiredBeats.join('；')}`);
     if (stage.avoid) lines.push(`  避免：${stage.avoid}`);
   }

@@ -296,16 +296,20 @@
 | 0 | 现状缺陷清单 + 调优建议 | ☑ 完成（A/B/C/D 分类，见下文） |
 | 0 | prompt 调优实施(优先级 1) | ☑ 完成（13 文件，构建通过，待用户手测） |
 | 0 | 用户手测长流程（21 回合样本） | ☑ 完成（暴露设定违反 + details 爆表 + 审校 severity 偏低） |
-| 0 | NPC.details 上限 + 淘汰（store 层） | ☐ 进行中 |
-| 0 | 审校 severity 判定标准 + 例子 | ☐ 进行中 |
+| 0 | NPC.details 上限 + 淘汰（store 层） | ☑ 完成 |
+| 0 | 审校 severity 判定标准 + 例子 | ☑ 完成 |
 | 0 | prompt 调优实施(优先级 2) | ☐ 块优先级 / horizonRounds / 结局伏笔收束 |
-| 0 | prompt 调优实施(优先级 3) | ☐ 决策 arcProgress 协议（→ Phase 1.5） |
-| **1.0** | **设定守护者**（新增；规范见 `docs/setting-guard.md`） | **☑ 维护模型初版完成（构建通过，待浏览器手测）** |
-| 1.1 | 主弧 | ☐ |
+| 0 | **prompt 输入长度治理 / 长流程稳定性** | ☐ 用户反馈：故事模型后期"越聊越糟"。需要：块优先级 + 长度预算、NPC 列表按"最近活跃"精简、记忆上限按长流程动态扩、已修复审校 issue 自动清空、历史滚动更激进 |
+| 0 | **删除/编辑消息后模型仍携带被删记录（bug）** | ☐ 用户反馈：在前端删除聊天消息或重做某轮后，下次模型调用（故事/决策/各 author agent）的 `recent` / `latestStory` / `summary` 等输入仍然包含已删除的记录。检查 useGameStore 的 `deleteMessage` / `updateMessage` / `regenerateAssistantMessage` 是否完整清理：summary（若被删消息已包含在 summarizedUntilIndex 内）、longTermMemory（若已纳入）、stageJudge.previous（含旧的 storyFocus）、settingGuard 状态（patches/preference 可能基于已删剧情）。可能需要：删除消息时同步清掉对应已固化的衍生状态，并在下次调度前强制刷新 |
+| 0 | 主弧生成模型补世界书输入 | ☑ 完成（用户测试发现主弧 stages 把"念头即变 / 灌入知识"擅自简化为"情绪驱动"——根因是主弧生成 prompt 未读 worldBook；已修） |
+| 0 | prompt 调优实施(优先级 3) | 合并入 Phase 1.5 |
+| **1.0** | **设定守护者**（已实现，规范见 `docs/setting-guard.md`） | ☑ 完成 |
+| **1.0.5** | **阶段化叙事 + 玩家节奏感知**（覆盖原 1.1，规范见 `docs/stage-narrative.md`） | **☑ 基础闭环完成**（主弧生成 + stageJudge 调度 + 故事/守护/决策/导演/审校/随机事件注入；剩余"事件弧数据层彻底去回合化 / 主弧编辑器"放后续迭代） |
+| 1.1 | 主弧（合并入 1.0.5，不再单独存在） | — |
 | 1.2 | 关系分析 | ☐ |
 | 1.3 | 时间线 / 场景连续性 | ☐ |
 | 1.4 | 伏笔追踪 | ☐ |
-| 1.5 | 事件弧进度更新 | ☐ |
+| 1.5 | 事件弧进度更新（含 decision arcProgress） | ☐ |
 | 2 | 可调试 UI | ☐ |
 | 3 | 可定制与性能 | ☐ |
 | 4 | 边缘 | ☐ |

@@ -1,5 +1,7 @@
 // 历史压缩器：将早期的若干轮对话压缩为一段精炼的摘要
 
+import type { StoryOutline } from '@/types/content';
+
 export const SUMMARIZER_SYSTEM = `你是一个严谨的故事编辑助手。你的任务是把一段文字冒险的早期对话压缩为一段精炼的中文摘要，供后续回合的主持人参考。
 
 要求：
@@ -7,11 +9,16 @@ export const SUMMARIZER_SYSTEM = `你是一个严谨的故事编辑助手。你�
 2. 必须保留：关键事件顺序、玩家做出的重要决定、角色状态变化（伤病/物品/能力/情感）、登场且可能再出现的 NPC（姓名+一句话特征）、未解悬念与伏笔。
 3. 省略：重复的环境描写、无关闲聊、详细动作描写。
 4. 不要添加推测或杜撰，不要剧透未发生的剧情。
-5. 不要输出"摘要："这类前缀；直接输出正文。`;
+5. 不要输出"摘要："这类前缀；直接输出正文。
+6. ★ 若用户消息提供了【故事大纲】，摘要应当对齐其阶段方向：标记当前已抵达的幕（如适合，可在结尾轻提一句"剧情已推进至第 X 幕中段"），但不要剧透未发生的幕次。
+7. ★ **伏笔保护**：未解的承诺、可能回收的细节（如某 NPC 的怪异举动、未试过的钥匙、特定时间的约定）必须**显式保留**——这些是后续故事模型最需要的回收弹药；不要因"压缩"而丢失。`;
 
-export function buildSummarizerUser(existingSummary: string, historyText: string): string {
+export function buildSummarizerUser(existingSummary: string, historyText: string, outline?: StoryOutline): string {
+  const outlineBlock = outline
+    ? `参考用大纲（仅供阶段对齐，不要剧透未发生的幕次）：\n《${outline.title}》：${outline.synopsis}\n阶段：${(outline.acts ?? []).join(' / ')}\n\n`
+    : '';
   const existing = existingSummary.trim()
     ? `以下是此前已整理的旧摘要（可并入最新摘要，避免重复）：\n"""\n${existingSummary.trim()}\n"""\n\n`
     : '';
-  return `${existing}以下是这次需要压缩的对话历史（按时间先后）：\n"""\n${historyText}\n"""\n\n请输出更新后的整体摘要。`;
+  return `${outlineBlock}${existing}以下是这次需要压缩的对话历史（按时间先后）：\n"""\n${historyText}\n"""\n\n请输出更新后的整体摘要。`;
 }

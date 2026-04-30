@@ -19,6 +19,7 @@ import { DECISION_TRACKING_SYSTEM, buildDecisionTrackingUser, buildDecisionUser 
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
+import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 import {
   buildStrictCustomDecisionBlock,
   getDecisionSystemTemplate,
@@ -308,13 +309,22 @@ function formatNpcJson(npcs: Npc[]): string {
 
 function appendMachineStateIfMissing(
   text: string,
-  blocks: { backpackJsonBlock: string; npcJsonBlock: string; longTermMemoryBlock: string; anchorsBlock: string; narrativePlanBlock: string; activeArcsBlock: string },
+  blocks: {
+    backpackJsonBlock: string;
+    npcJsonBlock: string;
+    longTermMemoryBlock: string;
+    anchorsBlock: string;
+    stageNarrativeBlock: string;
+    narrativePlanBlock: string;
+    activeArcsBlock: string;
+  },
 ): string {
   const additions: string[] = [];
   if (blocks.backpackJsonBlock && !text.includes('【当前背包 JSON】')) additions.push(blocks.backpackJsonBlock);
   if (blocks.npcJsonBlock && !text.includes('【当前已知 NPC JSON】')) additions.push(blocks.npcJsonBlock);
   if (blocks.longTermMemoryBlock && !text.includes('【长期一致性记忆】')) additions.push(blocks.longTermMemoryBlock);
   if (blocks.anchorsBlock && !text.includes('【玩家标记的关键记忆】')) additions.push(blocks.anchorsBlock);
+  if (blocks.stageNarrativeBlock && !text.includes('【阶段化叙事 / 玩家节奏】')) additions.push(blocks.stageNarrativeBlock);
   if (blocks.narrativePlanBlock && !text.includes('【当前叙事导演计划】')) additions.push(blocks.narrativePlanBlock);
   if (blocks.activeArcsBlock && !text.includes('【进行中的事件弧 / 长线事件】')) additions.push(blocks.activeArcsBlock);
   if (!additions.length) return text;
@@ -388,6 +398,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const npcJsonBlock = ['【当前已知 NPC JSON】', formatNpcJson(npcs)].join('\n');
   const longTermMemoryBlock = formatLongTermMemoryBlock(p.longTermMemory);
   const anchorsBlock = formatAnchorsBlock(p.anchors);
+  const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   const narrativePlanBlock = formatNarrativePlanBlock(p.narrative);
   const arcRound = p.currentRound ?? recent?.[recent.length - 1]?.round ?? 0;
   const activeArcsBlock = formatActiveArcsBlock(p.narrative, p.randomEventState, arcRound);
@@ -428,6 +439,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     strictCustomDecisionBlock,
     longTermMemory: p.longTermMemory,
     anchorsBlock,
+    stageNarrativeBlock,
     narrativePlanBlock,
     activeArcsBlock,
   }) : buildDecisionTrackingUser({
@@ -442,6 +454,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     currentSceneContext: currentSceneContextText,
     longTermMemory: p.longTermMemory,
     anchorsBlock,
+    stageNarrativeBlock,
     narrativePlanBlock,
     activeArcsBlock,
   });
@@ -458,6 +471,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       strictCustomDecisionBlock,
       longTermMemoryBlock,
       anchorsBlock,
+      stageNarrativeBlock,
       narrativePlanBlock,
       activeArcsBlock,
       defaultDecisionUserPrompt,
@@ -470,6 +484,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       npcJsonBlock,
       longTermMemoryBlock,
       anchorsBlock,
+      stageNarrativeBlock,
       narrativePlanBlock,
       activeArcsBlock,
     },

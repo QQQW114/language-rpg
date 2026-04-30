@@ -2,7 +2,7 @@
 // 导出一个函数而非静态字符串，方便根据世界书/随机事件/回合动态拼装。
 
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
-import type { AuthorLogicIssue, AuthorNarrativeState, AuthorRandomEventState, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
+import type { AuthorLogicIssue, AuthorNarrativeState, AuthorRandomEventState, Item, Npc, MemoryAnchor, PlayerPace, SceneRef } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
@@ -35,53 +35,17 @@ export interface BuildStorySystemParams {
   strictCustom?: StrictCustomConfig;
 }
 
-function buildActPlanBlock(
-  acts: string[] | undefined,
-  nextRound: number,
-  totalRounds: number,
-  finalizeRequested?: boolean,
-): string {
-  const cleanActs = (acts ?? []).map((a) => a.trim()).filter(Boolean);
-  if (!cleanActs.length) return '';
-
-  const isInfinite = !totalRounds || totalRounds <= 0;
-  const lines = [
-    '【阶段路线图】（这是长期剧情骨架，必须纳入规划；不要在正文中直接剧透给玩家）',
-  ];
-
-  if (isInfinite) {
-    cleanActs.forEach((act, index) => {
-      lines.push(`· 第 ${index + 1} 阶段：${act}`);
-    });
-    if (finalizeRequested) {
-      lines.push(`当前阶段参考：玩家已要求完结，请服务于最终阶段：${cleanActs[cleanActs.length - 1]}`);
-    } else {
-      lines.push(
-        '当前阶段参考：无尽模式没有固定回合配比；请结合历史摘要与最近对话判断已经完成到哪一阶段，优先推进尚未充分完成的最早阶段，不要自由脱纲或提前跳到后续幕。',
-      );
-    }
-  } else {
-    const ratio = Math.max(0, Math.min(0.999, (nextRound - 1) / Math.max(totalRounds, 1)));
-    const currentIndex = finalizeRequested
-      ? cleanActs.length - 1
-      : Math.min(cleanActs.length - 1, Math.floor(ratio * cleanActs.length));
-
-    cleanActs.forEach((act, index) => {
-      const start = Math.floor((index * totalRounds) / cleanActs.length) + 1;
-      const end = Math.max(start, Math.floor(((index + 1) * totalRounds) / cleanActs.length));
-      lines.push(`· 第 ${index + 1} 阶段（约第 ${start}-${end} 回合）：${act}`);
-    });
-    lines.push(`当前阶段参考：第 ${nextRound} 回合应服务于第 ${currentIndex + 1} 阶段：${cleanActs[currentIndex]}`);
-  }
-
-  lines.push(
-    '执行规则：允许因玩家选择微调顺序，但不要无故抛弃路线图；每回合只推进一个清晰 beat，不要在一个回合内跨越多个阶段。',
-  );
-  return lines.join('\n');
-}
-
 function anchorContent(a: MemoryAnchor): string {
   return (a.content?.trim() || a.excerpt?.trim() || '').trim();
+}
+
+function paceToHumanReadable(pace: PlayerPace): string {
+  switch (pace) {
+    case 'immersive': return 'immersive — 玩家在细致体验，每回合只推进一个微节拍，多写感官与心境';
+    case 'exploratory': return 'exploratory — 玩家在试探，每回合一个动作 + NPC 即时反应';
+    case 'progressing': return 'progressing — 玩家在主动推进，正常推进一个剧情节拍';
+    case 'hurrying': return 'hurrying — 玩家明确想跳过，可压缩多步但仍要点出关键变化';
+  }
 }
 
 export function buildStorySystem(p: BuildStorySystemParams): string {
@@ -98,8 +62,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const nearEnd = !isInfinite && !isFinal && remainingAfter <= 2;
 
   const roundInfo = isInfinite
-    ? `这是【无尽模式】：故事没有预设的总回合数，玩家会在合适的时刻主动触发结局。当前即将开始第 ${nextRound} 回合。`
-    : `整段故事规划为 ${totalRounds} 回合。当前即将开始第 ${nextRound} 回合（已完成 ${currentRound} 回合，本回合结束后还剩 ${remainingAfter} 回合）。`;
+    ? `【回合软参考】无尽模式；当前即将开始第 ${nextRound} 回合。回合数只用于记录，不用于强行判断剧情阶段。`
+    : `【回合软参考】总回合约 ${totalRounds}；当前即将开始第 ${nextRound} 回合，已完成 ${currentRound} 回合。回合数只作节奏参考，不可按回合数硬推进阶段。`;
 
   const outlineLines: string[] = [];
   if (outline) {
@@ -114,9 +78,62 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
         '（请严格遵循上述文风与题材：恋爱故事的张力主要来自人物关系与情绪流动；推理/悬疑故事来自未解谜团与线索拼合；成长/治愈来自内心抉择与日常细节；动作冒险来自外部对抗与抉择代价。让冲突与张力源于该题材自然生长出的可能性，不要为了戏剧性强行混入与题材相悖的元素。）',
       );
     }
-    const actPlanBlock = buildActPlanBlock(outline.acts, nextRound, totalRounds, finalizeRequested);
-    if (actPlanBlock) outlineLines.push('', actPlanBlock);
   }
+
+  const masterArc = authorNarrative?.masterArc;
+  const masterArcBlock = (() => {
+    if (!masterArc) return '';
+    const current = masterArc.stages[masterArc.currentStageIndex];
+    if (!current) return '';
+    const lines = [
+      '【执笔模式 · 主弧】',
+      `主弧：${masterArc.title}`,
+      `走向：${masterArc.summary}`,
+      '',
+      `当前阶段：${current.name}`,
+      `阶段目标：${current.description}`,
+    ];
+    if (current.completionConditions?.length) {
+      lines.push('完成条件：');
+      current.completionConditions.forEach((c) => lines.push(`· ${c}`));
+    }
+    const pendingBeats = current.expectedBeats?.filter((b) => b.status === 'pending') ?? [];
+    if (pendingBeats.length) {
+      lines.push('', '本阶段待完成的节拍（不要一回合压多个）：');
+      pendingBeats.slice(0, 8).forEach((b) => lines.push(`· ${b.description}`));
+    }
+    const next = masterArc.stages[masterArc.currentStageIndex + 1];
+    if (next) {
+      lines.push('', `下一阶段（仅供参考，不要主动推进过去）：${next.name} —— ${next.description.slice(0, 60)}`);
+    }
+    return lines.join('\n');
+  })();
+
+  const stageJudge = authorNarrative?.stageJudge;
+  const stageJudgeBlock = (() => {
+    if (!stageJudge) return '';
+    const lines = [
+      '【执笔模式 · 本回合玩家意图与节奏】（最高优先级，必须遵守）',
+      `玩家想做：${stageJudge.playerIntent.primary}`,
+    ];
+    if (stageJudge.playerIntent.secondary?.length) {
+      lines.push(`顺带诉求：${stageJudge.playerIntent.secondary.join('；')}`);
+    }
+    if (stageJudge.playerIntent.implicit) {
+      lines.push(`隐含意图：${stageJudge.playerIntent.implicit}`);
+    }
+    lines.push(`节奏：${paceToHumanReadable(stageJudge.playerPace)}`);
+    if (stageJudge.paceReasoning) lines.push(`节奏依据：${stageJudge.paceReasoning}`);
+    lines.push(`本回合聚焦：${stageJudge.storyFocus.thisRound}`);
+    if (stageJudge.storyFocus.avoid?.length) {
+      lines.push('本回合刻意避免：');
+      stageJudge.storyFocus.avoid.forEach((a) => lines.push(`· ${a}`));
+    }
+    if (stageJudge.stageStatus.advanceReasoning) {
+      lines.push(`阶段判断：${stageJudge.stageStatus.advanceReasoning}`);
+    }
+    return lines.join('\n');
+  })();
 
   const arcLines: string[] = [];
   const activeNarrativeArcs = authorNarrative?.activeArcs ?? [];
@@ -137,7 +154,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     for (const arc of arcs.slice(0, 8)) {
       arcLines.push(formatStoryArcForPrompt(arc, currentRound));
     }
-    arcLines.push('执行规则：若事件弧标注了目标结束回合，请在该回合前后自然收束；不要无故遗忘、跳过或提前解决。');
+    arcLines.push('执行规则：长线事件只提供多回合框架；本回合仍必须服从【本回合玩家意图与节奏】，不要为追事件进度压缩多个动作。');
   }
   const storyArcBlock = arcLines.join('\n');
 
@@ -148,15 +165,12 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
       plan.currentAct ? `当前幕：${plan.currentAct}` : '',
       plan.currentStage ? `当前阶段：${plan.currentStage}` : '',
       plan.stageGoal ? `阶段目标：${plan.stageGoal}` : '',
-      plan.stageStartRound || plan.stageTargetEndRound
-        ? `阶段范围：第 ${plan.stageStartRound ?? '?'}-${plan.stageTargetEndRound ?? '?'} 回合`
-        : '',
       plan.nextRoundFocus ? `下一回合焦点：${plan.nextRoundFocus}` : '',
       plan.nextFewRoundsPlan?.length
         ? [
-          '接下来若干回合方向：',
+          '近期方向：',
           ...plan.nextFewRoundsPlan.slice(0, 6).map((item) =>
-            `· 第 ${item.startRound}-${item.endRound} 回合：${item.goal}${item.requiredBeats?.length ? `；必达：${item.requiredBeats.join('、')}` : ''}${item.avoidBeats?.length ? `；避免：${item.avoidBeats.join('、')}` : ''}`,
+            `· ${item.goal}${item.requiredBeats?.length ? `；必达：${item.requiredBeats.join('、')}` : ''}${item.avoidBeats?.length ? `；避免：${item.avoidBeats.join('、')}` : ''}`,
           ),
         ].join('\n')
         : '',
@@ -197,8 +211,17 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     const beats = (settingGuard.pendingAmbientBeats ?? [])
       .filter((b) => !b.consumed && b.suggestedAtRound >= currentRound - 3);
     if (beats.length) {
+      // 按 playerPace 调节环境侧建议数量：沉浸 / 探索时少打扰
+      const judgePace = authorNarrative?.stageJudge?.playerPace;
+      const beatLimit =
+        judgePace === 'immersive' ? 1
+        : judgePace === 'exploratory' ? 2
+        : 3;
       lines.push('', '【环境侧主动反应建议】（可选演绎，不强制全部纳入）：');
-      beats.slice(0, 4).forEach((b) => {
+      const filtered = judgePace === 'immersive'
+        ? beats.filter((b) => b.optional)
+        : beats;
+      filtered.slice(0, beatLimit).forEach((b) => {
         const tag = b.optional ? '' : '【强烈建议】';
         lines.push(`· ${tag}${b.source} · ${b.trigger}：${b.beat}`);
       });
@@ -229,15 +252,15 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     if (logicReview.overall) lines.push(`总体：${logicReview.overall}`);
     if (critical.length) {
       lines.push('', '⚠ 必须修复（严重一致性问题，本回合或下回合内必须自然处理）：');
-      critical.slice(0, 6).forEach((i) => lines.push(formatIssue(i)));
+      critical.slice(0, 4).forEach((i) => lines.push(formatIssue(i)));
     }
     if (warning.length) {
       lines.push('', '建议修复（明显风险，尽快通过剧情自然修补）：');
-      warning.slice(0, 6).forEach((i) => lines.push(formatIssue(i)));
+      warning.slice(0, 3).forEach((i) => lines.push(formatIssue(i)));
     }
     if (info.length) {
       lines.push('', '参考（轻度提示，写作时留意即可）：');
-      info.slice(0, 4).forEach((i) => lines.push(formatIssue(i)));
+      info.slice(0, 2).forEach((i) => lines.push(formatIssue(i)));
     }
     if (logicReview.repairDirectives?.length) {
       lines.push('', `后续修复指令：${logicReview.repairDirectives.join('；')}`);
@@ -285,14 +308,24 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
 
   const npcLines: string[] = [];
   if (npcs && npcs.length) {
-    npcLines.push('【已登场人物】（请保持人物一致性：姓名、外形、性格不得与以下记录冲突）');
-    for (const n of npcs.slice(0, 12)) {
+    // 按 lastRound 倒序 + appearances 兜底排序，优先保留最近活跃的 NPC
+    const sortedNpcs = [...npcs].sort((a, b) => {
+      const aLast = a.lastRound ?? 0;
+      const bLast = b.lastRound ?? 0;
+      if (aLast !== bLast) return bLast - aLast;
+      return (b.appearances ?? 0) - (a.appearances ?? 0);
+    });
+    npcLines.push('【已登场人物】（按最近活跃度排序，请保持人物一致性：姓名、外形、性格不得与以下记录冲突）');
+    for (const n of sortedNpcs.slice(0, 10)) {
       const aff = n.affinity > 0 ? `+${n.affinity}` : `${n.affinity}`;
       const role = n.role ? `【${n.role}】` : '';
       const desc = n.description ? ` —— ${n.description}` : '';
-      const details = n.details?.length ? `；细节：${n.details.slice(0, 8).join('、')}` : '';
+      const details = n.details?.length ? `；细节：${n.details.slice(0, 5).join('、')}` : '';
       const note = n.recentNote ? `（最近：${n.recentNote}）` : '';
       npcLines.push(`· ${n.name}${role}（好感 ${aff}）${desc}${details}${note}`);
+    }
+    if (sortedNpcs.length > 10) {
+      npcLines.push(`（另有 ${sortedNpcs.length - 10} 位较少出场的人物未在此列出，必要时参考长期记忆）`);
     }
   }
 
@@ -303,7 +336,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
       const note = a.note ? `【${a.note}】` : '';
       const content = anchorContent(a);
       if (!content) continue;
-      anchorLines.push(`· 第 ${a.round} 回合${note}：${content}`);
+      const trimmed = content.length > 200 ? `${content.slice(0, 200)}…` : content;
+      anchorLines.push(`· 第 ${a.round} 回合${note}：${trimmed}`);
     }
   }
 
@@ -345,6 +379,19 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     '5. 允许使用 Markdown：**人名/关键地点/物品** 以粗体强调；*内心独白/感官细节* 以斜体表现。',
     '6. 避免陈词滥调的"突然"、"仿佛一切都慢了下来"之类套话。写感官细节、矛盾张力、角色心境。',
     '7. 严禁剧透结局；严禁元叙述（"这是 AI 编写的故事"）。',
+    '8. 节奏纪律（最高优先级）：本回合只完成上方【本回合聚焦】指明的一件事。绝不为了"追阶段进度"而把多步动作压在一回合（如：变身 + 走路 + 换装 + 对话 + 反思）。即使玩家输入提到多个动作，也要按 playerPace 对应的纪律拆分——如果玩家是 immersive 或 exploratory，挑最关键的第一步写完即可，停在自然的下一选择点。',
+    '9. 阶段纪律：当前阶段未完成时，不要主动让主角触发下一阶段标志性事件。完成条件由【本回合玩家意图与节奏】判断，不是由你判断。',
+    '10. 信息优先级（当上方各块出现冲突时按此顺序取舍）：',
+    '   ① 本回合玩家意图与节奏（stageJudge）—— 决定本回合做什么、做多少',
+    '   ② 当前阶段（masterArc.currentStage）的完成条件与待完成节拍',
+    '   ③ 设定守护"必须遵守"补丁 + 偏离风险',
+    '   ④ alwaysActive 世界书条目（能力规则、世界基调等硬设定）',
+    '   ⑤ 玩家标记的关键记忆（anchors）',
+    '   ⑥ 长期一致性记忆 + 已登场人物的细节',
+    '   ⑦ 进行中的事件弧、导演计划、审校建议',
+    '   ⑧ 历史摘要、当前场景、背包',
+    '   下方块（如长期记忆）若与上方块冲突，以上方块为准；但同样级别的"硬设定"不要互相覆盖。',
+    '11. 如发现【已登场人物】与【长期一致性记忆】对同一人物的描述重复，以更具体、更近期的为准；不要因冗余信息而对人物画像产生分裂。',
   ].join('\n');
 
   const styleAddendumBlock = styleAddendum?.trim()
@@ -381,6 +428,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     remainingAfter: isInfinite ? '无尽' : remainingAfter,
     roundInfo,
     outlineBlock: outlineLines.join('\n'),
+    masterArcBlock,
+    stageJudgeBlock,
     storyArcBlock,
     backgroundBlock,
     worldBookAlwaysBlock,
@@ -402,6 +451,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   });
   const fallbackBlocks: string[] = [];
   if (storyArcBlock && !rendered.includes('【执笔模式 · 叙事弧 / 长线事件】')) fallbackBlocks.push(storyArcBlock);
+  if (masterArcBlock && !rendered.includes('【执笔模式 · 主弧】')) fallbackBlocks.push(masterArcBlock);
+  if (stageJudgeBlock && !rendered.includes('【执笔模式 · 本回合玩家意图与节奏】')) fallbackBlocks.push(stageJudgeBlock);
   if (memoryBlock && !rendered.includes('【长期一致性记忆】')) fallbackBlocks.push(memoryBlock);
   if (narrativePlanBlock && !rendered.includes('【执笔模式 · 当前叙事导演计划】')) fallbackBlocks.push(narrativePlanBlock);
   if (

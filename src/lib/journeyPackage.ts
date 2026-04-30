@@ -122,6 +122,9 @@ export function parseJourneyPackage(text: string): JourneyPackage {
 }
 
 export function instantiateJourneyPackage(pkg: JourneyPackage): InstantiatedJourneyPackage {
+  if (pkg.save?.content?.mode === 'author' && !pkg.save.state?.authorNarrative?.masterArc) {
+    throw new Error('此旅程包来自不兼容的旧版本（无主弧数据）。请使用新版重新创建旅程。');
+  }
   const idMap = new Map<string, string>();
   const mapId = (oldId: string | undefined, prefix: string): string | undefined => {
     if (!oldId) return undefined;

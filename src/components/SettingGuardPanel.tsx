@@ -1,4 +1,5 @@
 import { AlertTriangle, BookPlus, Check, ChevronDown, ShieldCheck, X } from 'lucide-react';
+import { useState } from 'react';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGameStore } from '@/store/useGameStore';
@@ -36,6 +37,7 @@ export function SettingGuardPanel({
   const candidates = (guard?.candidates ?? []).filter((c) => c.status === 'pending');
   const beats = (guard?.pendingAmbientBeats ?? []).filter((b) => !b.consumed);
   const preference = guard?.preference?.confidence !== 'low' ? guard?.preference : undefined;
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const hasAny = !!guard && (
     patches.length > 0
     || candidates.length > 0
@@ -46,6 +48,15 @@ export function SettingGuardPanel({
   );
 
   const actions = useGameStore.getState();
+
+  const handleAccept = (candidateId: string) => {
+    if (acceptingId) return;
+    setAcceptingId(candidateId);
+    window.setTimeout(() => {
+      actions.acceptSettingCandidate(saveId, candidateId);
+      setAcceptingId(null);
+    }, 1500);
+  };
 
   return (
     <Card>
@@ -103,34 +114,50 @@ export function SettingGuardPanel({
             候选世界书 · {candidates.length}
           </summary>
           <div className="mt-2 space-y-2">
-            {candidates.map((candidate) => (
-              <div key={candidate.id} className="rounded border border-parchment-600/35 bg-parchment-900/35 px-3 py-2">
-                <div className="text-sm font-serif text-parchment-50">{candidate.name}</div>
-                {!!candidate.keywords.length && (
-                  <div className="mt-0.5 text-[11px] text-gold/70">
-                    {candidate.keywords.join('、')}
-                  </div>
-                )}
-                <div className="mt-1 text-xs leading-relaxed text-parchment-200/75">{candidate.content}</div>
-                <div className="mt-1 text-[11px] leading-relaxed text-parchment-200/50">{candidate.rationale}</div>
-                <div className="mt-2 flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => actions.acceptSettingCandidate(saveId, candidate.id)}
-                  >
-                    <BookPlus size={12} /> 加入书库
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => actions.rejectSettingCandidate(saveId, candidate.id)}
-                  >
-                    <X size={12} /> 忽略
-                  </Button>
+            {candidates.map((candidate) => {
+              const isAccepting = acceptingId === candidate.id;
+              return (
+                <div
+                  key={candidate.id}
+                  className={`rounded border border-parchment-600/35 bg-parchment-900/35 px-3 py-2 transition-all duration-500 ${
+                    isAccepting ? 'border-gold/60 bg-gold/15 opacity-90' : ''
+                  }`}
+                >
+                  {isAccepting ? (
+                    <div className="flex items-center gap-2 py-2 text-sm font-serif text-gold-light animate-fade-in">
+                      <Check size={14} /> 已沉淀至书库 ·「{candidate.name}」
+                    </div>
+                  ) : (
+                    <>
+                      <div className="text-sm font-serif text-parchment-50">{candidate.name}</div>
+                      {!!candidate.keywords.length && (
+                        <div className="mt-0.5 text-[11px] text-gold/70">
+                          {candidate.keywords.join('、')}
+                        </div>
+                      )}
+                      <div className="mt-1 text-xs leading-relaxed text-parchment-200/75">{candidate.content}</div>
+                      <div className="mt-1 text-[11px] leading-relaxed text-parchment-200/50">{candidate.rationale}</div>
+                      <div className="mt-2 flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleAccept(candidate.id)}
+                        >
+                          <BookPlus size={12} /> 加入书库
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => actions.rejectSettingCandidate(saveId, candidate.id)}
+                        >
+                          <X size={12} /> 忽略
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </details>
       )}

@@ -82,7 +82,11 @@ function sanitizePlan(raw: unknown, p: AuthorDirectorRequest): NarrativePlanStat
     maxRound,
   );
 
-  const rawPlans = Array.isArray(obj.nextFewRoundsPlan) ? obj.nextFewRoundsPlan : [];
+  const rawPlans = Array.isArray(obj.nextFewBeats)
+    ? obj.nextFewBeats
+    : Array.isArray(obj.nextFewRoundsPlan)
+      ? obj.nextFewRoundsPlan
+      : [];
   const nextFewRoundsPlan: NarrativePlanState['nextFewRoundsPlan'] = [];
   rawPlans.forEach((item, index) => {
     if (!item || typeof item !== 'object' || nextFewRoundsPlan.length >= 6) return;

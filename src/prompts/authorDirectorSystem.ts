@@ -12,12 +12,13 @@ import type {
 import type { StrictCustomConfig } from '@/types/custom';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
+import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
 export const AUTHOR_DIRECTOR_SYSTEM = `你是互动小说的"叙事导演 / 小说编辑"。你不写正文，不生成玩家选项，只为后续故事模型制定可执行的短期叙事计划。
 
 目标：
 - 让故事像一部有逻辑的小说：有阶段目标、短期目标、承上启下、人物关系推进和统一设定。
-- 将大纲、详细大纲、已发生剧情、当前人物关系、场景、长期记忆和正在进行的事件弧映射为接下来若干回合的方向。
+- 将主弧阶段、阶段判断、详细大纲、已发生剧情、当前人物关系、场景、长期记忆和正在进行的事件弧映射为接下来若干叙事节拍的方向。
 - 若玩家偏离大纲，不要强行否定玩家；应提出能自然接回主线或让偏离转化为新因果的计划。
 
 输出协议：
@@ -27,14 +28,10 @@ export const AUTHOR_DIRECTOR_SYSTEM = `你是互动小说的"叙事导演 / 小�
   "currentAct":"当前所处大纲幕/阶段，≤40字",
   "currentStage":"更具体的当前章节阶段，≤40字",
   "stageGoal":"本阶段总体目标，≤160字",
-  "stageStartRound":3,
-  "stageTargetEndRound":8,
-  "nextRoundFocus":"下一回合最应该服务的单一焦点，≤120字",
-  "nextFewRoundsPlan":[
+  "nextRoundFocus":"下一节拍最应该服务的单一焦点，≤120字",
+  "nextFewBeats":[
     {
-      "startRound":3,
-      "endRound":4,
-      "goal":"这几回合的短目标，≤160字",
+      "goal":"接下来一个短节拍目标，≤160字",
       "requiredBeats":["必须出现/推进的情节点"],
       "avoidBeats":["不要做的事"],
       "revealPolicy":"隐藏信息揭示策略，≤120字"
@@ -46,8 +43,9 @@ export const AUTHOR_DIRECTOR_SYSTEM = `你是互动小说的"叙事导演 / 小�
 }
 
 规则：
-- nextFewRoundsPlan 覆盖从【下一回合】开始的未来若干回合，通常拆成 2~5 段。
-- 每段只定方向和必达节拍，不替玩家决定关键行动。
+- nextFewBeats 覆盖从【下一节拍】开始的未来 2~5 个短期方向，不绑定具体回合数。
+- 每个 beat 只定方向和必达节拍，不替玩家决定关键行动。
+- 必须尊重【阶段化叙事 / 玩家节奏】：若 playerPace=immersive/exploratory，计划更细；不要为了追大纲把多个动作压进同一节拍。
 - 计划必须尊重玩家已做出的行动、已建立的人物细节、时间天气、背包和 NPC 已知状态。
 - 对隐藏真相只能写揭示策略，不要要求故事模型直接剧透。
 - 如果正在进行长线随机事件，应把它纳入节奏，而不是另起炉灶。`;
@@ -84,7 +82,7 @@ function formatStrictOutline(config?: StrictCustomConfig): string {
   if (!items.length) return '（无）';
   return items
     .slice(0, 20)
-    .map((item) => `· 第 ${item.startRound}-${item.endRound} 回合：${item.prompt}`)
+    .map((item, index) => `· 详细方向 ${index + 1}（原建议区间仅作软参考）：${item.prompt}`)
     .join('\n');
 }
 
@@ -164,10 +162,11 @@ export function buildAuthorDirectorUser(p: {
   const worldBookBlock = formatWorldBook(p.worldBookEntries);
   const anchorsBlock = formatAnchors(p.anchors);
   const backpackBlock = formatBackpack(p.backpack);
+  const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   return [
-    `【规划任务】请为第 ${p.nextRound} 回合开始后的未来 ${p.config.horizonRounds} 回合制定叙事导演计划。`,
+    `【规划任务】请为第 ${p.nextRound} 回合开始后的未来若干叙事节拍制定导演计划。`,
     `已完成回合：${p.currentRound}`,
-    `总回合：${isInfinite ? '无尽模式' : p.totalRounds}`,
+    `总回合（软参考，不得硬卡阶段）：${isInfinite ? '无尽模式' : p.totalRounds}`,
     '',
     '【故事大纲】',
     p.outline
@@ -200,6 +199,8 @@ export function buildAuthorDirectorUser(p: {
     '【当前场景】',
     formatScene(p.currentScene),
     '',
+    stageNarrativeBlock,
+    stageNarrativeBlock ? '' : '',
     '【正在进行的叙事弧 / 长线事件】',
     formatArcs({
       narrative: p.narrative,
@@ -210,6 +211,6 @@ export function buildAuthorDirectorUser(p: {
     '【玩家给叙事导演的额外要求】',
     p.config.prompt || '（无）',
     '',
-    '请输出 JSON。注意：下一回合焦点必须是单一可执行方向；不要写正文，不要生成选项。',
+    '请输出 JSON。注意：nextRoundFocus 必须是单一可执行节拍；不要输出 stageStartRound / stageTargetEndRound / startRound / endRound；不要写正文，不要生成选项。',
   ].filter(Boolean).join('\n');
 }

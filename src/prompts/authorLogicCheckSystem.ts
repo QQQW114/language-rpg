@@ -11,6 +11,7 @@ import type {
 } from '@/types/game';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatItemsForPrompt } from '@/lib/items';
+import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
 export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是互动小说的"逻辑审校 / 连续性编辑"。你不写正文，不生成玩家选项，只检查当前故事的连续性风险，并输出未来修复指令。
 
@@ -18,7 +19,7 @@ export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是互动小说的"逻辑审校 / �
 - 人物：姓名、关系、好感、外观服装、承诺、主角已知/未知信息是否冲突。
 - 场景：当前位置、可达地点、时间、天气、行动阻力是否跳变。
 - 道具：背包中物品获得/消耗/损毁是否与正文矛盾。
-- 大纲/节奏：是否偏离当前阶段，是否提前剧透、跳过关键 beat、无故新增支线。
+- 大纲/节奏：是否偏离当前主弧阶段，是否违反阶段判断的 playerPace/storyFocus，是否提前剧透、跳过关键 beat、无故新增支线。
 - 记忆/伏笔：长期记忆、玩家标记、叙事弧是否被遗忘或反复改写。
 - ★ 世界书违反：故事是否擅自重写或绕过 alwaysActive 世界书条目（如能力规则被改写、世界基调被打破）——这是最高优先级检查项。
 
@@ -54,6 +55,8 @@ severity 判定标准（必须严格执行，不要为了"不打扰"统一标 in
   · 时间/天气在没有过场的情况下突变（例：刚刚深夜，下一句突然下午）
   · 道具状态与正文不符（例：明明已损毁的道具又出现）
   · 阶段跳过当前导演计划要求的关键 beat
+  · 违反 playerPace：在玩家沉浸/探索节奏下，一回合推进多个空间转移、重大决定或阶段事件
+  · stageJudge.shouldAdvance=false 时强行触发下一阶段标志性事件
   · 与刚刚发生剧情的因果脱节
 
 - info：轻度提示，不修复也不破坏阅读：
@@ -118,6 +121,21 @@ function formatArcs(p: {
   return arcs.slice(0, 10).map((arc) => formatStoryArcForPrompt(arc, p.currentRound)).join('\n');
 }
 
+function formatNarrativePlan(narrative: AuthorNarrativeState | undefined): string {
+  const plan = narrative?.plan;
+  if (!plan) return '（无）';
+  return [
+    plan.currentAct ? `当前幕：${plan.currentAct}` : '',
+    plan.currentStage ? `当前阶段：${plan.currentStage}` : '',
+    plan.stageGoal ? `阶段目标：${plan.stageGoal}` : '',
+    plan.nextRoundFocus ? `下一节拍焦点：${plan.nextRoundFocus}` : '',
+    plan.nextFewRoundsPlan?.length
+      ? `近期方向：${plan.nextFewRoundsPlan.map((x) => x.goal).join('；')}`
+      : '',
+    plan.pacingAdvice ? `节奏建议：${plan.pacingAdvice}` : '',
+  ].filter(Boolean).join('\n') || '（无）';
+}
+
 function formatWorldBook(entries: WorldBookEntry[] | undefined): string {
   if (!entries?.length) return '';
   const always = entries.filter((e) => e.alwaysActive);
@@ -170,9 +188,9 @@ export function buildAuthorLogicCheckUser(p: {
   worldBookEntries?: WorldBookEntry[];
   anchors?: MemoryAnchor[];
 }): string {
-  const plan = p.narrative?.plan;
   const worldBookBlock = formatWorldBook(p.worldBookEntries);
   const anchorsBlock = formatAnchors(p.anchors);
+  const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   return [
     `【审校任务】检查截至第 ${p.currentRound} 回合后的连续性与逻辑风险。`,
     `总回合：${!p.totalRounds || p.totalRounds <= 0 ? '无尽模式' : p.totalRounds}`,
@@ -206,16 +224,10 @@ export function buildAuthorLogicCheckUser(p: {
     '【场景状态】',
     formatScene(p.currentScene, p.availableScenes),
     '',
+    stageNarrativeBlock,
+    stageNarrativeBlock ? '' : '',
     '【当前叙事导演计划】',
-    plan
-      ? [
-        plan.currentAct ? `当前幕：${plan.currentAct}` : '',
-        plan.currentStage ? `当前阶段：${plan.currentStage}` : '',
-        plan.stageGoal ? `阶段目标：${plan.stageGoal}` : '',
-        plan.nextRoundFocus ? `下一回合焦点：${plan.nextRoundFocus}` : '',
-        plan.nextFewRoundsPlan?.length ? `未来计划：${plan.nextFewRoundsPlan.map((x) => `第${x.startRound}-${x.endRound}回合 ${x.goal}`).join('；')}` : '',
-      ].filter(Boolean).join('\n')
-      : '（无）',
+    formatNarrativePlan(p.narrative),
     '',
     '【正在进行的叙事弧 / 长线事件】',
     formatArcs({ narrative: p.narrative, randomEventState: p.randomEventState, currentRound: p.currentRound }),

@@ -27,10 +27,24 @@ import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { useAuthorModeStore } from '@/store/useAuthorModeStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
-import { DEFAULT_AUTHOR_DIRECTOR_CONFIG, DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG, DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, DEFAULT_AUTHOR_SETTING_GUARD_CONFIG, normalizeAuthorDirectorConfig, normalizeAuthorLogicCheckConfig, normalizeAuthorRandomEventConfig, normalizeAuthorSettingGuardConfig } from '@/lib/authorMode';
+import {
+  DEFAULT_AUTHOR_DIRECTOR_CONFIG,
+  DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG,
+  DEFAULT_AUTHOR_MASTER_ARC_CONFIG,
+  DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG,
+  DEFAULT_AUTHOR_SETTING_GUARD_CONFIG,
+  DEFAULT_AUTHOR_STAGE_JUDGE_CONFIG,
+  normalizeAuthorDirectorConfig,
+  normalizeAuthorLogicCheckConfig,
+  normalizeAuthorMasterArcConfig,
+  normalizeAuthorRandomEventConfig,
+  normalizeAuthorSettingGuardConfig,
+  normalizeAuthorStageJudgeConfig,
+} from '@/lib/authorMode';
 import type { RandomEvent } from '@/types/content';
-import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorRandomEventConfig, AuthorSettingGuardConfig, JourneyMode } from '@/types/game';
+import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorMasterArcConfig, AuthorRandomEventConfig, AuthorSettingGuardConfig, AuthorStageJudgeConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
+import { fallbackMasterArcFromOutline, requestMasterArc } from '@/services/authorMasterArcAgent';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
 
@@ -69,10 +83,17 @@ export default function SetupPage() {
   const [authorLogicCheck, setAuthorLogicCheck] = useState<AuthorLogicCheckConfig>(() =>
     normalizeAuthorLogicCheckConfig(DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG),
   );
+  const [authorMasterArc, setAuthorMasterArc] = useState<AuthorMasterArcConfig>(() =>
+    normalizeAuthorMasterArcConfig(DEFAULT_AUTHOR_MASTER_ARC_CONFIG),
+  );
+  const [authorStageJudge, setAuthorStageJudge] = useState<AuthorStageJudgeConfig>(() =>
+    normalizeAuthorStageJudgeConfig(DEFAULT_AUTHOR_STAGE_JUDGE_CONFIG),
+  );
   const [authorSettingGuard, setAuthorSettingGuard] = useState<AuthorSettingGuardConfig>(() =>
     normalizeAuthorSettingGuardConfig(DEFAULT_AUTHOR_SETTING_GUARD_CONFIG),
   );
   const [customStartScene, setCustomStartScene] = useState<string | undefined>();
+  const [startBusy, setStartBusy] = useState(false);
   const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
   const [genError, setGenError] = useState<string | undefined>();
   const [outlineHint, setOutlineHint] = useState('');
@@ -269,7 +290,7 @@ export default function SetupPage() {
     step === 'outline' ? !!outlineId
       : step === 'background' ? !!backgroundId
       : step === 'strict' ? true
-      : !!canStart;
+      : !!canStart && !startBusy;
 
   const nextLabel =
     step === 'config' ? '启程'
@@ -306,6 +327,14 @@ export default function SetupPage() {
 
   const updateAuthorLogicCheck = (patch: Partial<AuthorLogicCheckConfig>) => {
     setAuthorLogicCheck((prev) => normalizeAuthorLogicCheckConfig({ ...prev, ...patch }));
+  };
+
+  const updateAuthorMasterArc = (patch: Partial<AuthorMasterArcConfig>) => {
+    setAuthorMasterArc((prev) => normalizeAuthorMasterArcConfig({ ...prev, ...patch }));
+  };
+
+  const updateAuthorStageJudge = (patch: Partial<AuthorStageJudgeConfig>) => {
+    setAuthorStageJudge((prev) => normalizeAuthorStageJudgeConfig({ ...prev, ...patch }));
   };
 
   const updateAuthorSettingGuard = (patch: Partial<AuthorSettingGuardConfig>) => {
@@ -363,13 +392,16 @@ export default function SetupPage() {
     if (editingEvent?.id === event.id) setEditingEvent(null);
   };
 
-  const start = () => {
+  const start = async () => {
+    if (startBusy) return;
     if (!settings.apiKey) {
       if (!confirm('尚未配置 API Key，无法调用模型。是否先前往设置页面？')) return;
       nav('/settings');
       return;
     }
     if (!selectedOutline || !selectedBackground) return;
+    setStartBusy(true);
+    setGenError(undefined);
     const saveName = `${characterName || '旅人'} · ${selectedOutline.title}`;
     const strictCustom = normalizeStrictCustomConfig(strictCustomDraft);
     const authorCustom = normalizeStrictCustomConfig({ ...authorDraft, enabled: true });
@@ -377,47 +409,76 @@ export default function SetupPage() {
     const normalizedAuthorRandomEvent = normalizeAuthorRandomEventConfig(authorRandomEvent);
     const normalizedAuthorDirector = normalizeAuthorDirectorConfig(authorDirector);
     const normalizedAuthorLogicCheck = normalizeAuthorLogicCheckConfig(authorLogicCheck);
+    const normalizedAuthorMasterArc = normalizeAuthorMasterArcConfig(authorMasterArc);
+    const normalizedAuthorStageJudge = normalizeAuthorStageJudgeConfig(authorStageJudge);
     const normalizedAuthorSettingGuard = normalizeAuthorSettingGuardConfig(authorSettingGuard);
     const authorEventResourceIds = Array.from(new Set([
       ...normalizedAuthorRandomEvent.poolEventIds,
       ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
     ]));
-    const saveId = createSave({
-      name: saveName,
-      config: {
-        totalRounds: infiniteMode ? 0 : totalRounds,
-        manualInputEvery: isAuthorMode ? 1 : manualInputEvery,
-        refreshChoiceEvery,
-        itemCapacity,
-      },
-      content: {
-        outlineId,
-        backgroundId,
-        worldBookIds,
-        eventIds: isAuthorMode ? authorEventResourceIds : eventIds,
-        characterName: characterName.trim() || undefined,
-        mode: journeyMode,
-        strictCustom: strictCustom.enabled ? strictCustom : undefined,
-        authorCustom: isAuthorMode ? authorCustom : undefined,
-        authorRandomEvent: isAuthorMode ? normalizedAuthorRandomEvent : undefined,
-        authorDirector: isAuthorMode ? normalizedAuthorDirector : undefined,
-        authorLogicCheck: isAuthorMode ? normalizedAuthorLogicCheck : undefined,
-        authorSettingGuard: isAuthorMode ? normalizedAuthorSettingGuard : undefined,
-        storyStyle: {
-          storyLength: settings.storyLength,
-          storyStyleAddendum: settings.storyStyleAddendum,
+    try {
+      let masterArc = undefined;
+      if (isAuthorMode && normalizedAuthorMasterArc.enabled) {
+        masterArc = await requestMasterArc({
+          settings,
+          outline: selectedOutline,
+          background: selectedBackground,
+          characterName: characterName.trim() || undefined,
+          config: normalizedAuthorMasterArc,
+          worldBookEntries: flattenWorldBookEntries(worldBooks, worldBookIds),
+        });
+      }
+      if (isAuthorMode && !masterArc) {
+        masterArc = fallbackMasterArcFromOutline(selectedOutline, normalizedAuthorMasterArc);
+      }
+      const saveId = createSave({
+        name: saveName,
+        config: {
+          totalRounds: infiniteMode ? 0 : totalRounds,
+          manualInputEvery: isAuthorMode ? 1 : manualInputEvery,
+          refreshChoiceEvery,
+          itemCapacity,
         },
-      },
-      initialScene: (customStartScene?.trim() || selectedBackground.startScene),
-      initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),
-    });
-    if (isAuthorMode) {
-      useGameStore.getState().updateStateOf(saveId, {
-        phase: 'manual',
-        lastChoices: undefined,
+        content: {
+          outlineId,
+          backgroundId,
+          worldBookIds,
+          eventIds: isAuthorMode ? authorEventResourceIds : eventIds,
+          characterName: characterName.trim() || undefined,
+          mode: journeyMode,
+          strictCustom: strictCustom.enabled ? strictCustom : undefined,
+          authorCustom: isAuthorMode ? authorCustom : undefined,
+          authorRandomEvent: isAuthorMode ? normalizedAuthorRandomEvent : undefined,
+          authorDirector: isAuthorMode ? normalizedAuthorDirector : undefined,
+          authorLogicCheck: isAuthorMode ? normalizedAuthorLogicCheck : undefined,
+          authorMasterArc: isAuthorMode ? normalizedAuthorMasterArc : undefined,
+          authorStageJudge: isAuthorMode ? normalizedAuthorStageJudge : undefined,
+          authorSettingGuard: isAuthorMode ? normalizedAuthorSettingGuard : undefined,
+          storyStyle: {
+            storyLength: settings.storyLength,
+            storyStyleAddendum: settings.storyStyleAddendum,
+          },
+        },
+        initialScene: (customStartScene?.trim() || selectedBackground.startScene),
+        initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),
       });
+      if (isAuthorMode) {
+        useGameStore.getState().updateStateOf(saveId, {
+          phase: 'manual',
+          lastChoices: undefined,
+          authorNarrative: {
+            activeArcs: [],
+            completedArcs: [],
+            masterArc,
+          },
+        });
+      }
+      nav('/game');
+    } catch (err: any) {
+      setGenError(err?.message ?? String(err));
+    } finally {
+      setStartBusy(false);
     }
-    nav('/game');
   };
 
   return (
@@ -786,6 +847,14 @@ export default function SetupPage() {
 
             {journeyMode === 'author' && (
               <>
+              <AuthorMasterArcSection
+                config={authorMasterArc}
+                onChange={updateAuthorMasterArc}
+              />
+              <AuthorStageJudgeSection
+                config={authorStageJudge}
+                onChange={updateAuthorStageJudge}
+              />
               <AuthorDirectorSection
                 config={authorDirector}
                 onChange={updateAuthorDirector}
@@ -894,6 +963,7 @@ export default function SetupPage() {
           <Button
             size="lg"
             disabled={!canGoNext}
+            loading={step === 'config' && startBusy}
             onClick={handleNext}
           >
             {nextLabel} {step !== 'config' && <ChevronRight size={16} />}
@@ -1068,6 +1138,110 @@ function SetupEventList({
         </div>
       )}
     </div>
+  );
+}
+
+function AuthorMasterArcSection({
+  config,
+  onChange,
+}: {
+  config: AuthorMasterArcConfig;
+  onChange: (patch: Partial<AuthorMasterArcConfig>) => void;
+}) {
+  return (
+    <>
+      <OrnateDivider>阶段化叙事</OrnateDivider>
+      <Card className={config.enabled ? 'mb-4 border-gold/60 shadow-glow-sm' : 'mb-4'}>
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div>
+            <CardTitle className="text-base">主弧自动生成</CardTitle>
+            <CardMeta>
+              开始旅程前生成不绑定回合的阶段主弧，用完成条件和节拍推进故事，而不是按第几回合硬追进度。
+            </CardMeta>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.enabled}
+              onChange={(e) => onChange({ enabled: e.target.checked })}
+              className="accent-gold"
+            />
+            启用
+          </label>
+        </div>
+        <Input
+          label="期望阶段数"
+          type="number"
+          min={0}
+          max={8}
+          value={config.expectedStageCount ?? 0}
+          disabled={!config.enabled}
+          onChange={(e) => onChange({ expectedStageCount: Number(e.target.value) || undefined })}
+          hint="填 0 表示根据故事大纲自动推导；通常 3-6 个阶段。"
+        />
+        <Textarea
+          label="主弧偏好"
+          value={config.stageHint}
+          disabled={!config.enabled}
+          onChange={(e) => onChange({ stageHint: e.target.value })}
+          rows={4}
+          hint="例如：阶段要更慢热；不要把觉醒、脱困、建立身份压在同一阶段；恋爱线优先。"
+        />
+      </Card>
+    </>
+  );
+}
+
+function AuthorStageJudgeSection({
+  config,
+  onChange,
+}: {
+  config: AuthorStageJudgeConfig;
+  onChange: (patch: Partial<AuthorStageJudgeConfig>) => void;
+}) {
+  return (
+    <Card className={config.enabled ? 'mb-4 border-gold/50' : 'mb-4'}>
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div>
+          <CardTitle className="text-base">阶段判断 / 玩家节奏</CardTitle>
+          <CardMeta>
+            每回合故事生成前先判断玩家意图、节奏和当前阶段完成度，避免一回合压缩多个动作。
+          </CardMeta>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={config.enabled}
+            onChange={(e) => onChange({ enabled: e.target.checked })}
+            className="accent-gold"
+          />
+          启用
+        </label>
+      </div>
+      <label className="mb-3 flex items-start gap-2 rounded border border-parchment-600/40 bg-parchment-900/30 px-3 py-2 text-sm text-parchment-200/80 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={config.autoAdvance}
+          disabled={!config.enabled}
+          onChange={(e) => onChange({ autoAdvance: e.target.checked })}
+          className="mt-1 accent-gold"
+        />
+        <span>
+          自动推进阶段
+          <span className="mt-1 block text-xs text-parchment-200/50">
+            阶段判断认为完成条件满足时自动进入下一阶段；关闭后仅记录判断结果。
+          </span>
+        </span>
+      </label>
+      <Textarea
+        label="阶段判断提示词"
+        value={config.prompt}
+        disabled={!config.enabled}
+        onChange={(e) => onChange({ prompt: e.target.value })}
+        rows={4}
+        hint="用于强调你希望怎样识别玩家节奏，例如更慢、更沉浸、少快进。"
+      />
+    </Card>
   );
 }
 

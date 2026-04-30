@@ -81,6 +81,7 @@ export const AUTHOR_SETTING_GUARD_SYSTEM = `你是互动小说的"设定守护�
    - 不能凭空捏造从未在故事中提到的人物或事件
    - "optional=false" 仅用于"主角承诺即将到期 / 已知 NPC 与主角有未解决冲突 / 长期一致性记忆里的待办即将触发"
    - 数量上限：3 条/回合
+   - 若提供 playerPace：immersive 最多 1 条且必须 optional=true；exploratory 最多 2 条；progressing / hurrying 最多 3 条
 
 5. memoryUrgency 判定：
    - "high"：长期记忆与新故事产生重大冲突 / 出现稳定新事实（外貌、关系、能力规则、长期承诺）
@@ -190,10 +191,30 @@ function formatNarrativePlan(narrative?: AuthorNarrativeState): string {
     plan.stageGoal ? `阶段目标：${plan.stageGoal}` : '',
     plan.nextRoundFocus ? `下一回合焦点：${plan.nextRoundFocus}` : '',
     plan.nextFewRoundsPlan?.length
-      ? `未来计划：${plan.nextFewRoundsPlan.map((x) => `第${x.startRound}-${x.endRound}回合 ${x.goal}`).join('；')}`
+      ? `近期方向：${plan.nextFewRoundsPlan.map((x) => x.goal).join('；')}`
       : '',
     plan.outlineAlignment ? `大纲贴合：${plan.outlineAlignment}` : '',
   ].filter(Boolean).join('\n') || '（无）';
+}
+
+function formatStageContext(narrative?: AuthorNarrativeState): string {
+  const masterArc = narrative?.masterArc;
+  const current = masterArc?.stages[masterArc.currentStageIndex];
+  const judge = narrative?.stageJudge;
+  const lines: string[] = [];
+  if (current) {
+    lines.push(`当前阶段：${current.name}（${current.id}）`);
+    lines.push(`阶段目标：${current.description}`);
+    if (current.completionConditions?.length) {
+      lines.push(`完成条件：${current.completionConditions.join('；')}`);
+    }
+  }
+  if (judge) {
+    lines.push(`玩家节奏：${judge.playerPace}`);
+    lines.push(`玩家意图：${judge.playerIntent.primary}`);
+    lines.push(`本回合聚焦：${judge.storyFocus.thisRound}`);
+  }
+  return lines.length ? lines.join('\n') : '（无）';
 }
 
 function formatActiveArcs(p: {
@@ -268,6 +289,9 @@ export function buildSettingGuardUser(p: {
     '',
     '【当前场景】',
     formatScene(p.currentScene),
+    '',
+    '【阶段化叙事 / 玩家节奏】',
+    formatStageContext(p.narrative),
     '',
     '【当前导演计划】（参考用，不要替导演决策）',
     formatNarrativePlan(p.narrative),

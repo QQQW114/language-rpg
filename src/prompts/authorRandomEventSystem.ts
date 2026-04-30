@@ -10,6 +10,7 @@ import type {
 } from '@/types/game';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
+import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
 export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是互动小说的"动态长线事件导演"。你的任务不是续写正文，而是判断下一回合是否应该引入一个贴合上下文的长线事件，并在需要时生成事件弧 JSON。
 
@@ -39,7 +40,8 @@ export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是互动小说的"动态长线事
 
 生成原则：
 - 优先使用上文已经出现的人物、承诺、关系、地点、未解情绪和长期记忆；不要凭空扔入与题材无关的大危机。
-- 事件要像小说支线/章节弧：有明面目标、隐藏意图、阶段推进和目标结束回合。
+- 事件要像小说支线/章节弧：有明面目标、隐藏意图、阶段推进和收束方向；回合字段只作调度参考，不得迫使故事模型压缩剧情。
+- 必须尊重【阶段化叙事 / 玩家节奏】：事件触发应服务当前主弧阶段；如果玩家正处于沉浸/探索节奏，不要生成会立刻把剧情推到下一阶段的大事件。
 - 每个阶段只规定方向与必达节拍，不要替玩家决定关键行动。
 - 若是恋爱/关系线，事件应由现有关系状态自然触发，例如主动邀约、误会澄清、共同完成一件事。
 - 若上下文不适合引入新事件，且本轮不是"必须触发"，应 trigger=false。`;
@@ -128,7 +130,7 @@ function formatNarrativePlan(narrative: AuthorNarrativeState | undefined): strin
   if (plan.nextFewRoundsPlan?.length) {
     lines.push('近期计划：');
     plan.nextFewRoundsPlan.slice(0, 4).forEach((item) => {
-      lines.push(`· 第 ${item.startRound}-${item.endRound} 回合：${item.goal}`);
+      lines.push(`· ${item.goal}`);
     });
   }
   if (plan.pacingAdvice) lines.push(`节奏建议：${plan.pacingAdvice}`);
@@ -174,6 +176,7 @@ export function buildAuthorRandomEventUser(p: {
   const backpackBlock = formatBackpack(p.backpack);
   const planBlock = formatNarrativePlan(p.narrative);
   const activeArcsBlock = formatActiveArcs(p.narrative, p.currentRound);
+  const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   return [
     p.mustTrigger
       ? '【调度要求】本轮处于必定触发区间。除非上下文完全无法成立，否则必须输出 trigger=true 并生成事件弧。'
@@ -209,6 +212,8 @@ export function buildAuthorRandomEventUser(p: {
     '【当前场景】',
     formatScene(p.currentScene),
     '',
+    stageNarrativeBlock,
+    stageNarrativeBlock ? '' : '',
     planBlock,
     planBlock ? '' : '',
     activeArcsBlock,

@@ -25,12 +25,21 @@ import type {
   SettingGuardPreference,
   SettingGuardState,
   SettingPatch,
+  MasterArcState,
+  NarrativeStage,
+  NarrativeStageBeat,
+  StageJudgeState,
 } from '@/types/game';
 import type { SettingGuardResult } from '@/services/authorSettingGuardAgent';
+import type { StageJudgeResult } from '@/services/authorStageJudgeAgent';
 import { clamp, genId, nowMs } from '@/lib/utils';
 import { createItem, type RawGrant, type RawDestroy, type RawItemPatch } from '@/lib/items';
 import { useContentStore } from '@/store/useContentStore';
-import { normalizeAuthorSettingGuardConfig } from '@/lib/authorMode';
+import {
+  normalizeAuthorMasterArcConfig,
+  normalizeAuthorSettingGuardConfig,
+  normalizeAuthorStageJudgeConfig,
+} from '@/lib/authorMode';
 
 interface GameStoreState {
   saves: Record<string, GameSave>;
@@ -103,6 +112,11 @@ interface GameStoreState {
   expireOldAmbientBeats: (id: string, currentRound: number, maxAge?: number) => void;
   clearSettingGuardDeviation: (id: string) => void;
   setSettingGuardError: (id: string, error: string | undefined) => void;
+  setMasterArc: (id: string, masterArc: MasterArcState | undefined) => void;
+  advanceMasterArcStage: (id: string, reason?: string) => void;
+  markStageBeatAchieved: (id: string, beatId: string, round?: number) => void;
+  applyStageJudgeResult: (id: string, result: StageJudgeResult, completedRound: number) => void;
+  setStageJudgeError: (id: string, error: string | undefined) => void;
 
   // ---- 记忆锚点 ----
   addAnchor: (id: string, anchor: Omit<MemoryAnchor, 'id' | 'createdAt'>) => void;
@@ -112,6 +126,23 @@ interface GameStoreState {
 
 function touch(save: GameSave, patch: Partial<GameSave>): GameSave {
   return { ...save, ...patch, updatedAt: nowMs() };
+}
+
+function isLegacyAuthorSave(save: GameSave): boolean {
+  return save.content?.mode === 'author' && !save.state?.authorNarrative?.masterArc;
+}
+
+function markLegacyEnded(save: GameSave): GameSave {
+  if (!isLegacyAuthorSave(save)) return save;
+  return {
+    ...save,
+    state: {
+      ...save.state,
+      phase: 'ended',
+      error: '此存档创建于阶段化叙事之前，不再支持继续游玩。请创建新旅程。',
+      ending: save.state.ending || '旧版执笔模式存档已标记为不可继续。',
+    },
+  };
 }
 
 function latestAssistantIndex(history: Message[]): number {
@@ -551,17 +582,134 @@ function normalizeSettingGuard(raw: unknown): SettingGuardState | undefined {
   };
 }
 
+function normalizeNarrativeStageBeat(raw: unknown, index: number): NarrativeStageBeat | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<NarrativeStageBeat>;
+  const description = obj.description?.trim().slice(0, 100);
+  if (!description) return undefined;
+  const status = obj.status === 'achieved' || obj.status === 'skipped' || obj.status === 'pending'
+    ? obj.status
+    : 'pending';
+  const achievedAtRound = Number.isFinite(obj.achievedAtRound)
+    ? Math.max(0, Math.floor(Number(obj.achievedAtRound)))
+    : undefined;
+  return {
+    id: obj.id || genId(`beat_${index}`),
+    description,
+    status,
+    achievedAtRound,
+  };
+}
+
+function normalizeNarrativeStage(raw: unknown, index: number): NarrativeStage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<NarrativeStage>;
+  const name = obj.name?.trim().slice(0, 24);
+  const description = obj.description?.trim().slice(0, 260);
+  if (!name || !description) return undefined;
+  const status = obj.status === 'active' || obj.status === 'completed' || obj.status === 'skipped' || obj.status === 'pending'
+    ? obj.status
+    : index === 0 ? 'active' : 'pending';
+  return {
+    id: obj.id || genId(`stage_${index}`),
+    name,
+    description,
+    enterConditions: Array.isArray(obj.enterConditions)
+      ? obj.enterConditions.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 6)
+      : [],
+    completionConditions: Array.isArray(obj.completionConditions)
+      ? obj.completionConditions.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+      : [],
+    expectedBeats: Array.isArray(obj.expectedBeats)
+      ? obj.expectedBeats.map((x, i) => normalizeNarrativeStageBeat(x, i)).filter(Boolean) as NarrativeStageBeat[]
+      : [],
+    status,
+    enteredAtRound: Number.isFinite(obj.enteredAtRound) ? Math.max(0, Math.floor(Number(obj.enteredAtRound))) : undefined,
+    exitedAtRound: Number.isFinite(obj.exitedAtRound) ? Math.max(0, Math.floor(Number(obj.exitedAtRound))) : undefined,
+  };
+}
+
+function normalizeMasterArc(raw: unknown): MasterArcState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<MasterArcState>;
+  const stages = Array.isArray(obj.stages)
+    ? obj.stages.map((x, i) => normalizeNarrativeStage(x, i)).filter(Boolean) as NarrativeStage[]
+    : [];
+  if (!stages.length) return undefined;
+  const currentStageIndex = clamp(
+    Math.floor(Number(obj.currentStageIndex) || 0),
+    0,
+    Math.max(0, stages.length - 1),
+  );
+  if (!stages.some((s) => s.status === 'active')) {
+    stages[currentStageIndex] = { ...stages[currentStageIndex], status: 'active' };
+  }
+  return {
+    title: obj.title?.trim().slice(0, 30) || '主弧',
+    summary: obj.summary?.trim().slice(0, 260) || '',
+    stages,
+    currentStageIndex,
+    generatedAtRound: Math.max(0, Math.floor(Number(obj.generatedAtRound) || 0)),
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    generationConfig: obj.generationConfig
+      ? normalizeAuthorMasterArcConfig(obj.generationConfig)
+      : undefined,
+  };
+}
+
+function normalizeStageJudge(raw: unknown): StageJudgeState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<StageJudgeState>;
+  const playerPace = obj.playerPace === 'immersive' || obj.playerPace === 'exploratory' || obj.playerPace === 'progressing' || obj.playerPace === 'hurrying'
+    ? obj.playerPace
+    : 'progressing';
+  const primary = obj.playerIntent?.primary?.trim().slice(0, 100);
+  const thisRound = obj.storyFocus?.thisRound?.trim().slice(0, 180);
+  if (!primary || !thisRound) return undefined;
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    playerIntent: {
+      primary,
+      secondary: Array.isArray(obj.playerIntent?.secondary)
+        ? obj.playerIntent.secondary.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 4)
+        : undefined,
+      implicit: obj.playerIntent?.implicit?.trim().slice(0, 100) || undefined,
+    },
+    playerPace,
+    paceReasoning: obj.paceReasoning?.trim().slice(0, 180) || undefined,
+    stageStatus: {
+      currentStageId: obj.stageStatus?.currentStageId?.trim() || undefined,
+      completion: clamp(Math.round(Number(obj.stageStatus?.completion) || 0), 0, 100),
+      newlyAchievedBeats: Array.isArray(obj.stageStatus?.newlyAchievedBeats)
+        ? obj.stageStatus.newlyAchievedBeats.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 12)
+        : [],
+      shouldAdvance: !!obj.stageStatus?.shouldAdvance,
+      advanceReasoning: obj.stageStatus?.advanceReasoning?.trim().slice(0, 160) || undefined,
+    },
+    storyFocus: {
+      thisRound,
+      avoid: Array.isArray(obj.storyFocus?.avoid)
+        ? obj.storyFocus.avoid.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 6)
+        : undefined,
+    },
+    lastError: obj.lastError?.trim().slice(0, 240) || undefined,
+  };
+}
+
 function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
   const obj = (raw ?? {}) as Partial<AuthorNarrativeState>;
   return {
     plan: obj.plan,
     logicReview: normalizeAuthorLogicReview(obj.logicReview),
     settingGuard: normalizeSettingGuard(obj.settingGuard),
+    masterArc: normalizeMasterArc(obj.masterArc),
+    stageJudge: normalizeStageJudge(obj.stageJudge),
     activeArcs: normalizeStoryArcList(obj.activeArcs),
     completedArcs: normalizeStoryArcList(obj.completedArcs),
     lastDirectorRound: obj.lastDirectorRound,
     lastLogicCheckRound: obj.lastLogicCheckRound,
     lastSettingGuardRound: obj.lastSettingGuardRound,
+    lastStageJudgeRound: obj.lastStageJudgeRound,
   };
 }
 
@@ -629,6 +777,9 @@ export const useGameStore = create<GameStoreState>()(
       },
 
       importSave: (incoming) => {
+        if (isLegacyAuthorSave(incoming)) {
+          throw new Error('此旅程包来自不兼容的旧版本（无主弧数据）。请使用新版重新创建旅程。');
+        }
         const now = nowMs();
         const id = genId('save');
         const save: GameSave = {
@@ -1291,6 +1442,215 @@ export const useGameStore = create<GameStoreState>()(
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
 
+      setMasterArc: (id, masterArc) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    masterArc: normalizeMasterArc(masterArc),
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      advanceMasterArcStage: (id) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const masterArc = normalizeMasterArc(narrative.masterArc);
+          if (!masterArc) return s;
+          const currentIndex = masterArc.currentStageIndex;
+          const current = masterArc.stages[currentIndex];
+          if (!current) return s;
+          const nextIndex = currentIndex + 1;
+          const round = save.state.currentRound;
+          const stages = masterArc.stages.map((stage, index) => {
+            if (index === currentIndex) {
+              return {
+                ...stage,
+                status: stage.status === 'skipped' ? 'skipped' as const : 'completed' as const,
+                exitedAtRound: round,
+              };
+            }
+            if (index === nextIndex) {
+              return {
+                ...stage,
+                status: 'active' as const,
+                enteredAtRound: stage.enteredAtRound ?? round,
+              };
+            }
+            return stage;
+          });
+          const nextMasterArc: MasterArcState = {
+            ...masterArc,
+            stages,
+            currentStageIndex: Math.min(nextIndex, stages.length - 1),
+            updatedAtRound: round,
+          };
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    masterArc: nextMasterArc,
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      markStageBeatAchieved: (id, beatId, round) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const masterArc = normalizeMasterArc(narrative.masterArc);
+          if (!masterArc) return s;
+          const current = masterArc.stages[masterArc.currentStageIndex];
+          if (!current) return s;
+          const atRound = Math.max(0, Math.floor(Number(round) || save.state.currentRound));
+          let changed = false;
+          const stages = masterArc.stages.map((stage, stageIndex) => {
+            if (stageIndex !== masterArc.currentStageIndex) return stage;
+            return {
+              ...stage,
+              expectedBeats: stage.expectedBeats.map((beat) => {
+                if (beat.id !== beatId || beat.status === 'achieved') return beat;
+                changed = true;
+                return { ...beat, status: 'achieved' as const, achievedAtRound: atRound };
+              }),
+            };
+          });
+          if (!changed) return s;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    masterArc: {
+                      ...masterArc,
+                      stages,
+                      updatedAtRound: atRound,
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      applyStageJudgeResult: (id, result, completedRound) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const masterArc = normalizeMasterArc(narrative.masterArc);
+          const beatIds = new Set(
+            masterArc?.stages[masterArc.currentStageIndex]?.expectedBeats.map((b) => b.id) ?? [],
+          );
+          const newlyAchievedBeats = (result.stageStatus.newlyAchievedBeats ?? [])
+            .filter((beatId) => beatIds.has(beatId));
+          const nextMasterArc = masterArc
+            ? {
+              ...masterArc,
+              stages: masterArc.stages.map((stage, index) => {
+                if (index !== masterArc.currentStageIndex) return stage;
+                return {
+                  ...stage,
+                  expectedBeats: stage.expectedBeats.map((beat) =>
+                    newlyAchievedBeats.includes(beat.id) && beat.status !== 'achieved'
+                      ? { ...beat, status: 'achieved' as const, achievedAtRound: completedRound }
+                      : beat,
+                  ),
+                };
+              }),
+              updatedAtRound: completedRound,
+            }
+            : undefined;
+          const stageJudge: StageJudgeState = {
+            ...result,
+            stageStatus: {
+              ...result.stageStatus,
+              newlyAchievedBeats,
+            },
+            updatedAtRound: completedRound,
+            lastError: undefined,
+          };
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    masterArc: nextMasterArc ?? narrative.masterArc,
+                    stageJudge,
+                    lastStageJudgeRound: completedRound,
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      setStageJudgeError: (id, error) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const prev = narrative.stageJudge;
+          const fallback: StageJudgeState = prev ?? {
+            updatedAtRound: save.state.currentRound,
+            playerIntent: { primary: save.state.lastPlayerInput?.slice(0, 80) || '继续承接上文。' },
+            playerPace: 'progressing',
+            stageStatus: {
+              currentStageId: narrative.masterArc?.stages[narrative.masterArc.currentStageIndex]?.id,
+              completion: 0,
+              newlyAchievedBeats: [],
+              shouldAdvance: false,
+            },
+            storyFocus: {
+              thisRound: '承接玩家输入，只推进当前情境中的一个微节拍。',
+            },
+          };
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    stageJudge: {
+                      ...fallback,
+                      lastError: error?.trim().slice(0, 240) || undefined,
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
       applySettingGuardResult: (id, result, completedRound) =>
         set((s) => {
           const save = s.saves[id];
@@ -1669,10 +2029,16 @@ export const useGameStore = create<GameStoreState>()(
         // 对老存档补齐新增字段（refreshesLeft / refreshChoiceEvery）
         for (const id of Object.keys(saves)) {
           const sv = saves[id];
-          saves[id] = {
+          saves[id] = markLegacyEnded({
             ...sv,
             content: {
               ...sv.content,
+              authorMasterArc: (sv.content as any)?.mode === 'author'
+                ? normalizeAuthorMasterArcConfig((sv.content as any)?.authorMasterArc)
+                : (sv.content as any)?.authorMasterArc,
+              authorStageJudge: (sv.content as any)?.mode === 'author'
+                ? normalizeAuthorStageJudgeConfig((sv.content as any)?.authorStageJudge)
+                : (sv.content as any)?.authorStageJudge,
               authorSettingGuard: (sv.content as any)?.mode === 'author'
                 ? normalizeAuthorSettingGuardConfig((sv.content as any)?.authorSettingGuard)
                 : (sv.content as any)?.authorSettingGuard,
@@ -1703,7 +2069,7 @@ export const useGameStore = create<GameStoreState>()(
               authorNarrative: normalizeAuthorNarrativeState((sv.state as any)?.authorNarrative),
               authorRandomEventState: normalizeAuthorRandomEventState((sv.state as any)?.authorRandomEventState),
             },
-          };
+          });
         }
         return {
           ...currentState,
