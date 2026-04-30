@@ -2,11 +2,23 @@
 
 import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
-import type { Choice, Item, ItemType, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
+import type {
+  AuthorNarrativeState,
+  AuthorRandomEventState,
+  Choice,
+  Item,
+  ItemType,
+  MemoryAnchor,
+  Message,
+  Npc,
+  NpcUpdateRaw,
+  SceneRef,
+} from '@/types/game';
 import { chatJSON } from './llmClient';
 import { DECISION_TRACKING_SYSTEM, buildDecisionTrackingUser, buildDecisionUser } from '@/prompts/decisionSystem';
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
+import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import {
   buildStrictCustomDecisionBlock,
   getDecisionSystemTemplate,
@@ -26,6 +38,11 @@ export interface DecisionRequest {
   currentScene?: SceneRef;
   strictCustom?: StrictCustomConfig;
   includeChoices?: boolean;
+  longTermMemory?: string;
+  anchors?: MemoryAnchor[];
+  narrative?: AuthorNarrativeState;
+  randomEventState?: AuthorRandomEventState;
+  currentRound?: number;
   signal?: AbortSignal;
 }
 
@@ -148,7 +165,7 @@ function sanitizeDetailList(raw: unknown): string[] | undefined {
     if (!text || seen.has(text)) continue;
     seen.add(text);
     out.push(text);
-    if (out.length >= 8) break;
+    if (out.length >= 5) break;
   }
   return out.length ? out : undefined;
 }
@@ -291,14 +308,73 @@ function formatNpcJson(npcs: Npc[]): string {
 
 function appendMachineStateIfMissing(
   text: string,
-  backpackJsonBlock: string,
-  npcJsonBlock: string,
+  blocks: { backpackJsonBlock: string; npcJsonBlock: string; longTermMemoryBlock: string; anchorsBlock: string; narrativePlanBlock: string; activeArcsBlock: string },
 ): string {
   const additions: string[] = [];
-  if (backpackJsonBlock && !text.includes('【当前背包 JSON】')) additions.push(backpackJsonBlock);
-  if (npcJsonBlock && !text.includes('【当前已知 NPC JSON】')) additions.push(npcJsonBlock);
+  if (blocks.backpackJsonBlock && !text.includes('【当前背包 JSON】')) additions.push(blocks.backpackJsonBlock);
+  if (blocks.npcJsonBlock && !text.includes('【当前已知 NPC JSON】')) additions.push(blocks.npcJsonBlock);
+  if (blocks.longTermMemoryBlock && !text.includes('【长期一致性记忆】')) additions.push(blocks.longTermMemoryBlock);
+  if (blocks.anchorsBlock && !text.includes('【玩家标记的关键记忆】')) additions.push(blocks.anchorsBlock);
+  if (blocks.narrativePlanBlock && !text.includes('【当前叙事导演计划】')) additions.push(blocks.narrativePlanBlock);
+  if (blocks.activeArcsBlock && !text.includes('【进行中的事件弧 / 长线事件】')) additions.push(blocks.activeArcsBlock);
   if (!additions.length) return text;
   return [text, ...additions].filter((x) => x.trim()).join('\n\n');
+}
+
+function formatAnchorsBlock(anchors: MemoryAnchor[] | undefined): string {
+  if (!anchors?.length) return '';
+  const lines = ['【玩家标记的关键记忆】（玩家明确标记的不可遗忘节点；更新 NPC.details / choices / 状态时务必呼应或保护这些信息）'];
+  for (const a of anchors.slice(-8)) {
+    const note = a.note ? `【${a.note}】` : '';
+    const content = (a.content?.trim() || a.excerpt?.trim() || '').trim();
+    if (!content) continue;
+    lines.push(`· 第 ${a.round} 回合${note}：${content}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatLongTermMemoryBlock(memory: string | undefined): string {
+  const trimmed = memory?.trim();
+  if (!trimmed) return '';
+  return [
+    '【长期一致性记忆】（已固化的稳定事实，更新 NPC.details 时不要重复写入；与本节冲突时以新剧情为准）',
+    trimmed,
+  ].join('\n');
+}
+
+function formatNarrativePlanBlock(narrative: AuthorNarrativeState | undefined): string {
+  const plan = narrative?.plan;
+  if (!plan) return '';
+  const lines = ['【当前叙事导演计划】'];
+  if (plan.currentAct) lines.push(`当前幕：${plan.currentAct}`);
+  if (plan.currentStage) lines.push(`当前阶段：${plan.currentStage}`);
+  if (plan.stageGoal) lines.push(`阶段目标：${plan.stageGoal}`);
+  if (plan.nextRoundFocus) lines.push(`下一回合焦点：${plan.nextRoundFocus}`);
+  if (plan.nextFewRoundsPlan?.length) {
+    const next = plan.nextFewRoundsPlan[0];
+    if (next?.requiredBeats?.length) {
+      lines.push(`本阶段必达节拍：${next.requiredBeats.join('、')}`);
+    }
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatActiveArcsBlock(
+  narrative: AuthorNarrativeState | undefined,
+  randomEventState: AuthorRandomEventState | undefined,
+  currentRound: number,
+): string {
+  const arcs = [
+    ...(randomEventState?.pendingEvent ? [randomEventState.pendingEvent] : []),
+    ...(randomEventState?.activeEvents ?? []),
+    ...(narrative?.activeArcs ?? []),
+  ];
+  if (!arcs.length) return '';
+  const lines = ['【进行中的事件弧 / 长线事件】'];
+  for (const arc of arcs.slice(0, 5)) {
+    lines.push(formatStoryArcForPrompt(arc, currentRound));
+  }
+  return lines.join('\n');
 }
 
 const RECENT_MESSAGES = 6;
@@ -310,6 +386,11 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const npcSummary = formatNpcs(npcs);
   const backpackJsonBlock = ['【当前背包 JSON】', formatBackpackJson(backpack)].join('\n');
   const npcJsonBlock = ['【当前已知 NPC JSON】', formatNpcJson(npcs)].join('\n');
+  const longTermMemoryBlock = formatLongTermMemoryBlock(p.longTermMemory);
+  const anchorsBlock = formatAnchorsBlock(p.anchors);
+  const narrativePlanBlock = formatNarrativePlanBlock(p.narrative);
+  const arcRound = p.currentRound ?? recent?.[recent.length - 1]?.round ?? 0;
+  const activeArcsBlock = formatActiveArcsBlock(p.narrative, p.randomEventState, arcRound);
   const currentSceneContextText = formatSceneContext(currentScene, currentSceneName);
   const strictCustomDecisionBlock = includeChoices ? buildStrictCustomDecisionBlock(p.strictCustom) : '';
   const decisionSystemPrompt = includeChoices
@@ -345,6 +426,10 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     currentSceneName,
     currentSceneContext: currentSceneContextText,
     strictCustomDecisionBlock,
+    longTermMemory: p.longTermMemory,
+    anchorsBlock,
+    narrativePlanBlock,
+    activeArcsBlock,
   }) : buildDecisionTrackingUser({
     latestStory,
     backpackSummary,
@@ -355,6 +440,10 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     npcJsonBlock,
     currentSceneName,
     currentSceneContext: currentSceneContextText,
+    longTermMemory: p.longTermMemory,
+    anchorsBlock,
+    narrativePlanBlock,
+    activeArcsBlock,
   });
   const renderedDecisionUserPrompt = includeChoices
     ? renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {
@@ -367,13 +456,23 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       npcJsonBlock,
       currentSceneBlock,
       strictCustomDecisionBlock,
+      longTermMemoryBlock,
+      anchorsBlock,
+      narrativePlanBlock,
+      activeArcsBlock,
       defaultDecisionUserPrompt,
     }) || defaultDecisionUserPrompt
     : defaultDecisionUserPrompt;
   const decisionUserPrompt = appendMachineStateIfMissing(
     renderedDecisionUserPrompt,
-    backpackJsonBlock,
-    npcJsonBlock,
+    {
+      backpackJsonBlock,
+      npcJsonBlock,
+      longTermMemoryBlock,
+      anchorsBlock,
+      narrativePlanBlock,
+      activeArcsBlock,
+    },
   );
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {

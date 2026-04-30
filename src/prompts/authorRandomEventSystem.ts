@@ -1,5 +1,15 @@
-import type { Background, RandomEvent, StoryOutline } from '@/types/content';
-import type { AuthorRandomEventConfig, Message, Npc, SceneRef } from '@/types/game';
+import type { Background, RandomEvent, StoryOutline, WorldBookEntry } from '@/types/content';
+import type {
+  AuthorNarrativeState,
+  AuthorRandomEventConfig,
+  Item,
+  MemoryAnchor,
+  Message,
+  Npc,
+  SceneRef,
+} from '@/types/game';
+import { formatItemsForPrompt } from '@/lib/items';
+import { formatStoryArcForPrompt } from '@/lib/authorMode';
 
 export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是互动小说的"动态长线事件导演"。你的任务不是续写正文，而是判断下一回合是否应该引入一个贴合上下文的长线事件，并在需要时生成事件弧 JSON。
 
@@ -70,6 +80,71 @@ function formatReferenceEvents(events: RandomEvent[]): string {
   ).join('\n');
 }
 
+function formatWorldBook(entries: WorldBookEntry[] | undefined): string {
+  if (!entries?.length) return '';
+  const always = entries.filter((e) => e.alwaysActive);
+  const triggered = entries.filter((e) => !e.alwaysActive);
+  const lines: string[] = ['【世界设定】（生成事件时不要违反这些设定）'];
+  if (always.length) {
+    lines.push('常驻：');
+    for (const e of always.slice(0, 6)) {
+      lines.push(`· ${e.name}：${e.content}`);
+    }
+  }
+  if (triggered.length) {
+    lines.push('本回合触发：');
+    for (const e of triggered.slice(0, 6)) {
+      lines.push(`· ${e.name}：${e.content}`);
+    }
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
+  if (!anchors?.length) return '';
+  const lines: string[] = ['【玩家标记的关键记忆】（玩家明确关注的节点；新事件应能呼应、推进或回收这些线索，不要绕过）'];
+  for (const a of anchors.slice(-8)) {
+    const note = a.note ? `【${a.note}】` : '';
+    const content = (a.content?.trim() || a.excerpt?.trim() || '').trim();
+    if (!content) continue;
+    lines.push(`· 第 ${a.round} 回合${note}：${content}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatBackpack(backpack: Item[] | undefined): string {
+  if (!backpack?.length) return '';
+  return ['【玩家背包】（新事件可以围绕已有道具展开）', formatItemsForPrompt(backpack)].join('\n');
+}
+
+function formatNarrativePlan(narrative: AuthorNarrativeState | undefined): string {
+  const plan = narrative?.plan;
+  if (!plan) return '';
+  const lines: string[] = ['【当前叙事导演计划】（新事件必须服务此计划，不要与之冲突）'];
+  if (plan.currentAct) lines.push(`当前幕：${plan.currentAct}`);
+  if (plan.currentStage) lines.push(`当前阶段：${plan.currentStage}`);
+  if (plan.stageGoal) lines.push(`阶段目标：${plan.stageGoal}`);
+  if (plan.nextRoundFocus) lines.push(`下一回合焦点：${plan.nextRoundFocus}`);
+  if (plan.nextFewRoundsPlan?.length) {
+    lines.push('近期计划：');
+    plan.nextFewRoundsPlan.slice(0, 4).forEach((item) => {
+      lines.push(`· 第 ${item.startRound}-${item.endRound} 回合：${item.goal}`);
+    });
+  }
+  if (plan.pacingAdvice) lines.push(`节奏建议：${plan.pacingAdvice}`);
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatActiveArcs(narrative: AuthorNarrativeState | undefined, currentRound: number): string {
+  const arcs = narrative?.activeArcs ?? [];
+  if (!arcs.length) return '';
+  const lines: string[] = ['【已在进行中的叙事弧】（不要生成与这些主题或时段冲突的新事件，可让新事件配合或避让）'];
+  for (const arc of arcs.slice(0, 5)) {
+    lines.push(formatStoryArcForPrompt(arc, currentRound));
+  }
+  return lines.join('\n');
+}
+
 export function buildAuthorRandomEventUser(p: {
   outline?: StoryOutline;
   background?: Background;
@@ -87,9 +162,18 @@ export function buildAuthorRandomEventUser(p: {
   npcs: Npc[];
   currentScene?: SceneRef;
   referenceEvents: RandomEvent[];
+  worldBookEntries?: WorldBookEntry[];
+  backpack?: Item[];
+  anchors?: MemoryAnchor[];
+  narrative?: AuthorNarrativeState;
 }): string {
   const isInfinite = !p.totalRounds || p.totalRounds <= 0;
   const dynamic = p.config.dynamic;
+  const worldBookBlock = formatWorldBook(p.worldBookEntries);
+  const anchorsBlock = formatAnchors(p.anchors);
+  const backpackBlock = formatBackpack(p.backpack);
+  const planBlock = formatNarrativePlan(p.narrative);
+  const activeArcsBlock = formatActiveArcs(p.narrative, p.currentRound);
   return [
     p.mustTrigger
       ? '【调度要求】本轮处于必定触发区间。除非上下文完全无法成立，否则必须输出 trigger=true 并生成事件弧。'
@@ -102,11 +186,15 @@ export function buildAuthorRandomEventUser(p: {
     '【故事大纲】',
     p.outline ? `标题：${p.outline.title}\n梗概：${p.outline.synopsis}\n阶段：${p.outline.acts.join(' / ')}${p.outline.tone ? `\n文风：${p.outline.tone}` : ''}` : '（无）',
     '',
+    worldBookBlock,
+    worldBookBlock ? '' : '',
     '【主角/出身】',
     p.background ? `姓名：${p.characterName || '（未命名）'}\n${p.background.name}：${p.background.description}\n特质：${p.background.traits.join('、')}` : '（无）',
     '',
     p.summary?.trim() ? `【历史摘要】\n${p.summary.trim()}\n` : '',
     p.longTermMemory?.trim() ? `【长期一致性记忆】\n${p.longTermMemory.trim()}\n` : '',
+    anchorsBlock,
+    anchorsBlock ? '' : '',
     '【最近上下文】',
     formatRecent(p.recent),
     '',
@@ -116,9 +204,15 @@ export function buildAuthorRandomEventUser(p: {
     '【当前已知 NPC】',
     formatNpcs(p.npcs),
     '',
+    backpackBlock,
+    backpackBlock ? '' : '',
     '【当前场景】',
     formatScene(p.currentScene),
     '',
+    planBlock,
+    planBlock ? '' : '',
+    activeArcsBlock,
+    activeArcsBlock ? '' : '',
     '【玩家填写的随机事件生成提示词】',
     dynamic.generatorPrompt || '（无）',
     '',

@@ -7,8 +7,9 @@ export const MEMORY_SYSTEM = `你是文字 RPG 的长期一致性记忆整理助
 2. 所有人物信息必须以主角视角表述。主角不知道的真实身份、隐藏动机、幕后秘密不能写成事实；只能写成"我怀疑/我感觉/似乎/可能"。
 3. 区分临时状态与稳定设定：例如"上次见面穿 JK 服"和"常常穿 JK 服"不能混淆；只有多次证据才写"常常"。
 4. 新信息与旧记忆冲突时，用新信息更新旧记忆；已解决、失效或不再重要的条目应删除。
-5. 尽量短句、可引用、可执行；不要复述整段剧情，不要写文学化正文。
-6. 输出总长度必须不超过用户给定的上限。`;
+5. 玩家通过【玩家标记的关键记忆】明确标记的内容必须保留——除非它本身已被推翻或自然解决——并优先以"主角承诺/计划/未解线索"形式落入条目，永不静默丢弃。
+6. 尽量短句、可引用、可执行；不要复述整段剧情，不要写文学化正文。
+7. 输出总长度必须不超过用户给定的上限。`;
 
 export function buildMemoryUser(p: {
   previousMemory?: string;
@@ -17,9 +18,10 @@ export function buildMemoryUser(p: {
   npcText: string;
   backpackText: string;
   currentSceneText: string;
+  anchorsText?: string;
   maxChars: number;
 }): string {
-  return [
+  const lines: string[] = [
     `请把以下信息合并为最新长期一致性记忆，最长 ${p.maxChars} 个汉字左右。`,
     '',
     '建议格式（可省略空类目）：',
@@ -46,6 +48,14 @@ export function buildMemoryUser(p: {
     '【当前场景】',
     p.currentSceneText.trim() || '（不明）',
     '',
-    '请输出更新后的长期一致性记忆正文。',
-  ].join('\n');
+  ];
+  if (p.anchorsText?.trim()) {
+    lines.push(
+      '【玩家标记的关键记忆】（必须保留并以承诺/计划/未解线索/伏笔等形式落地）',
+      p.anchorsText.trim(),
+      '',
+    );
+  }
+  lines.push('请输出更新后的长期一致性记忆正文。');
+  return lines.join('\n');
 }

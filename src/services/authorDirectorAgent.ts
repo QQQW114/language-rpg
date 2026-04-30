@@ -1,9 +1,11 @@
 import type { AppSettings } from '@/types/settings';
-import type { Background, StoryOutline } from '@/types/content';
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorDirectorConfig,
   AuthorNarrativeState,
   AuthorRandomEventState,
+  Item,
+  MemoryAnchor,
   Message,
   NarrativePlanState,
   Npc,
@@ -32,6 +34,9 @@ export interface AuthorDirectorRequest {
   currentScene?: SceneRef;
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
+  worldBookEntries?: WorldBookEntry[];
+  backpack?: Item[];
+  anchors?: MemoryAnchor[];
   signal?: AbortSignal;
 }
 

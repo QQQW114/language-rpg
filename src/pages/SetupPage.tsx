@@ -27,9 +27,9 @@ import { StrictCustomEditor } from '@/components/StrictCustomEditor';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { useAuthorModeStore } from '@/store/useAuthorModeStore';
 import { normalizeStrictCustomConfig } from '@/lib/strictCustom';
-import { DEFAULT_AUTHOR_DIRECTOR_CONFIG, DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG, DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, normalizeAuthorDirectorConfig, normalizeAuthorLogicCheckConfig, normalizeAuthorRandomEventConfig } from '@/lib/authorMode';
+import { DEFAULT_AUTHOR_DIRECTOR_CONFIG, DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG, DEFAULT_AUTHOR_RANDOM_EVENT_CONFIG, DEFAULT_AUTHOR_SETTING_GUARD_CONFIG, normalizeAuthorDirectorConfig, normalizeAuthorLogicCheckConfig, normalizeAuthorRandomEventConfig, normalizeAuthorSettingGuardConfig } from '@/lib/authorMode';
 import type { RandomEvent } from '@/types/content';
-import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorRandomEventConfig, JourneyMode } from '@/types/game';
+import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorRandomEventConfig, AuthorSettingGuardConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
@@ -68,6 +68,9 @@ export default function SetupPage() {
   );
   const [authorLogicCheck, setAuthorLogicCheck] = useState<AuthorLogicCheckConfig>(() =>
     normalizeAuthorLogicCheckConfig(DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG),
+  );
+  const [authorSettingGuard, setAuthorSettingGuard] = useState<AuthorSettingGuardConfig>(() =>
+    normalizeAuthorSettingGuardConfig(DEFAULT_AUTHOR_SETTING_GUARD_CONFIG),
   );
   const [customStartScene, setCustomStartScene] = useState<string | undefined>();
   const [genBusy, setGenBusy] = useState<'outline' | 'background' | 'scene' | 'events' | 'worldbook' | null>(null);
@@ -305,6 +308,10 @@ export default function SetupPage() {
     setAuthorLogicCheck((prev) => normalizeAuthorLogicCheckConfig({ ...prev, ...patch }));
   };
 
+  const updateAuthorSettingGuard = (patch: Partial<AuthorSettingGuardConfig>) => {
+    setAuthorSettingGuard((prev) => normalizeAuthorSettingGuardConfig({ ...prev, ...patch }));
+  };
+
   const toggleAuthorPoolEvent = (id: string) => {
     setAuthorRandomEvent((prev) =>
       normalizeAuthorRandomEventConfig({
@@ -370,6 +377,7 @@ export default function SetupPage() {
     const normalizedAuthorRandomEvent = normalizeAuthorRandomEventConfig(authorRandomEvent);
     const normalizedAuthorDirector = normalizeAuthorDirectorConfig(authorDirector);
     const normalizedAuthorLogicCheck = normalizeAuthorLogicCheckConfig(authorLogicCheck);
+    const normalizedAuthorSettingGuard = normalizeAuthorSettingGuardConfig(authorSettingGuard);
     const authorEventResourceIds = Array.from(new Set([
       ...normalizedAuthorRandomEvent.poolEventIds,
       ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
@@ -394,6 +402,7 @@ export default function SetupPage() {
         authorRandomEvent: isAuthorMode ? normalizedAuthorRandomEvent : undefined,
         authorDirector: isAuthorMode ? normalizedAuthorDirector : undefined,
         authorLogicCheck: isAuthorMode ? normalizedAuthorLogicCheck : undefined,
+        authorSettingGuard: isAuthorMode ? normalizedAuthorSettingGuard : undefined,
         storyStyle: {
           storyLength: settings.storyLength,
           storyStyleAddendum: settings.storyStyleAddendum,
@@ -785,6 +794,10 @@ export default function SetupPage() {
                 config={authorLogicCheck}
                 onChange={updateAuthorLogicCheck}
               />
+              <AuthorSettingGuardSection
+                config={authorSettingGuard}
+                onChange={updateAuthorSettingGuard}
+              />
               <AuthorRandomEventSection
                 config={authorRandomEvent}
                 events={visibleEvents}
@@ -1165,6 +1178,82 @@ function AuthorLogicCheckSection({
         rows={4}
         hint="用于强调哪些连续性问题最重要；后续可再交给专门提示词模型优化。"
       />
+    </Card>
+  );
+}
+
+function AuthorSettingGuardSection({
+  config,
+  onChange,
+}: {
+  config: AuthorSettingGuardConfig;
+  onChange: (patch: Partial<AuthorSettingGuardConfig>) => void;
+}) {
+  return (
+    <Card className={config.enabled ? 'mb-4 border-gold/50' : 'mb-4'}>
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div>
+          <CardTitle className="text-base">设定守护者</CardTitle>
+          <CardMeta>
+            每回合故事生成前先检查世界书、长期记忆、玩家输入与设定盲区，把强约束和建议注入故事模型。
+          </CardMeta>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={config.enabled}
+            onChange={(e) => onChange({ enabled: e.target.checked })}
+            className="accent-gold"
+          />
+          启用
+        </label>
+      </div>
+
+      <Textarea
+        label="守护者提示词"
+        value={config.prompt}
+        disabled={!config.enabled}
+        onChange={(e) => onChange({ prompt: e.target.value })}
+        rows={4}
+        hint="用于强调需要优先守住哪些设定盲区、题材细节和玩家偏好。"
+      />
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <label className={`rounded border px-3 py-2 text-sm cursor-pointer ${
+          config.candidatesAutoAccept
+            ? 'border-gold/60 bg-gold/10 text-parchment-50'
+            : 'border-parchment-600/40 bg-parchment-900/30 text-parchment-200/75'
+        }`}>
+          <input
+            type="checkbox"
+            checked={config.candidatesAutoAccept}
+            disabled={!config.enabled}
+            onChange={(e) => onChange({ candidatesAutoAccept: e.target.checked })}
+            className="mr-2 accent-gold"
+          />
+          自动接受候选词条
+          <div className="mt-1 text-xs text-parchment-200/50">
+            默认关闭；关闭时会在游戏右侧面板等待你手动加入书库。
+          </div>
+        </label>
+        <label className={`rounded border px-3 py-2 text-sm cursor-pointer ${
+          config.ambientBeatsEnabled
+            ? 'border-gold/60 bg-gold/10 text-parchment-50'
+            : 'border-parchment-600/40 bg-parchment-900/30 text-parchment-200/75'
+        }`}>
+          <input
+            type="checkbox"
+            checked={config.ambientBeatsEnabled}
+            disabled={!config.enabled}
+            onChange={(e) => onChange({ ambientBeatsEnabled: e.target.checked })}
+            className="mr-2 accent-gold"
+          />
+          启用环境侧建议
+          <div className="mt-1 text-xs text-parchment-200/50">
+            根据承诺、关系、场景和外部世界，提醒故事模型加入主动反应。
+          </div>
+        </label>
+      </div>
     </Card>
   );
 }

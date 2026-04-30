@@ -26,16 +26,56 @@ import { requestReview } from '@/services/reviewAgent';
 import { requestAuthorRandomEvent, storyArcToRandomEvent } from '@/services/authorRandomEventAgent';
 import { requestAuthorDirectorPlan } from '@/services/authorDirectorAgent';
 import { requestAuthorLogicCheck } from '@/services/authorLogicCheckAgent';
+import { requestSettingGuard } from '@/services/authorSettingGuardAgent';
 import { matchWorldBook } from '@/services/worldBookMatcher';
 import { pickRandomEvent } from '@/services/randomEventScheduler';
 import { maybeCompress } from '@/services/contextCompressor';
 import type { AuthorRandomEventConfig, Choice, GameSave, Item, Message, SceneRef, StoryArc } from '@/types/game';
 import type { GameContent } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
+import type { WorldBook, WorldBookEntry } from '@/types/content';
 import { buildJourneyPackage } from '@/lib/journeyPackage';
 import { AuthorArcPanel } from '@/components/AuthorArcPanel';
+import { SettingGuardPanel } from '@/components/SettingGuardPanel';
+import { normalizeAuthorSettingGuardConfig } from '@/lib/authorMode';
 
 const RECENT_TEXT_WINDOW = 2400;
+type GameTaskKind = 'story' | 'choices' | 'review';
+const runningGameTaskKeys = new Set<string>();
+
+function gameTaskKey(save: GameSave, kind: GameTaskKind): string {
+  // 同一存档同一类模型任务任一时刻只允许一个。
+  // 不能把 currentRound 放进 story key：故事正文生成后会先 incrementRound，
+  // 再跑决策/记忆/导演等后处理；若此时玩家离开再返回，新页面会看到
+  // phase 仍是 story 但 currentRound 已增长，从而绕过旧 round key 再写一回合。
+  return `${save.id}:${kind}`;
+}
+
+function beginGameTask(key: string): boolean {
+  if (runningGameTaskKeys.has(key)) return false;
+  runningGameTaskKeys.add(key);
+  return true;
+}
+
+function endGameTask(key: string): void {
+  runningGameTaskKeys.delete(key);
+}
+
+function getActiveWorldBookEntriesForAgent(
+  worldBooks: WorldBook[],
+  save: GameSave,
+  latestStory?: string,
+): WorldBookEntry[] {
+  const candidates = flattenWorldBookEntries(worldBooks, save.content.worldBookIds);
+  const recentParts = save.state.history.slice(-6).map((m) => m.content);
+  if (latestStory) recentParts.push(latestStory);
+  const recentText = recentParts.join('\n').slice(-RECENT_TEXT_WINDOW);
+  return matchWorldBook({
+    entries: candidates,
+    recentText,
+    currentInput: save.state.lastPlayerInput,
+  });
+}
 
 function getPromptConfig(content: GameContent): StrictCustomConfig | undefined {
   return content.mode === 'author'
@@ -175,6 +215,8 @@ export default function GamePage() {
   const [npcOpen, setNpcOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
+  const mountedRef = useRef(false);
+  const leavingPageRef = useRef(false);
 
   const outline = useMemo(() => outlines.find((o) => o.id === save?.content.outlineId), [outlines, save?.content.outlineId]);
   const background = useMemo(() => backgrounds.find((b) => b.id === save?.content.backgroundId), [backgrounds, save?.content.backgroundId]);
@@ -193,6 +235,22 @@ export default function GamePage() {
   useEffect(() => {
     if (!save) nav('/');
   }, [save, nav]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    leavingPageRef.current = false;
+    return () => {
+      mountedRef.current = false;
+      leavingPageRef.current = true;
+      abortRef.current = null;
+      busyRef.current = false;
+    };
+  }, []);
+
+  const leaveGamePage = useCallback((to: string) => {
+    leavingPageRef.current = true;
+    nav(to);
+  }, [nav]);
 
   const getSave = useCallback((): GameSave | undefined => {
     const s = useGameStore.getState();
@@ -218,6 +276,11 @@ export default function GamePage() {
       currentScene: current.state.currentScene,
       strictCustom: getPromptConfig(current.content),
       includeChoices,
+      longTermMemory: current.state.longTermMemory,
+      anchors: current.state.anchors,
+      narrative: current.content.mode === 'author' ? current.state.authorNarrative : undefined,
+      randomEventState: current.content.mode === 'author' ? current.state.authorRandomEventState : undefined,
+      currentRound: current.state.currentRound,
       signal,
     });
 
@@ -256,12 +319,45 @@ export default function GamePage() {
         npcs: latestForMemory.state.npcs ?? [],
         backpack: latestForMemory.state.backpack ?? [],
         currentScene: latestForMemory.state.currentScene,
+        anchors: latestForMemory.state.anchors,
         maxChars: settings.memoryMaxChars ?? 4000,
         signal,
       });
       if (memory) {
         actions.setLongTermMemory(sourceSave.id, memory, completedRound);
       }
+    }
+  }, [settings]);
+
+  const runMemoryNow = useCallback(async (saveId: string, signal?: AbortSignal) => {
+    const actions = useGameStore.getState();
+    const current = actions.saves[saveId];
+    if (!current) return;
+    const completedRound = current.state.currentRound;
+    if (completedRound <= (current.state.lastMemoryRound ?? 0)) return;
+
+    const memory = await requestMemoryUpdate({
+      settings,
+      previousMemory: current.state.longTermMemory,
+      recent: current.state.history.slice(-10),
+      decision: {
+        choices: current.state.lastChoices ?? [],
+        grants: [],
+        destroys: [],
+        itemPatches: [],
+        npcs: [],
+        currentScene: current.state.currentScene,
+        availableScenes: current.state.availableScenes ?? [],
+      },
+      npcs: current.state.npcs ?? [],
+      backpack: current.state.backpack ?? [],
+      currentScene: current.state.currentScene,
+      anchors: current.state.anchors,
+      maxChars: settings.memoryMaxChars ?? 4000,
+      signal,
+    });
+    if (memory) {
+      actions.setLongTermMemory(saveId, memory, completedRound);
     }
   }, [settings]);
 
@@ -340,6 +436,10 @@ export default function GamePage() {
       npcs: current.state.npcs ?? [],
       currentScene: current.state.currentScene,
       referenceEvents,
+      worldBookEntries: getActiveWorldBookEntriesForAgent(worldBooks, current, latestStory),
+      backpack: current.state.backpack ?? [],
+      anchors: current.state.anchors,
+      narrative: current.state.authorNarrative,
       signal,
     });
 
@@ -369,7 +469,7 @@ export default function GamePage() {
         lastError: result.reason,
       });
     }
-  }, [settings, outline, background, allEvents, addEventToLibrary]);
+  }, [settings, outline, background, allEvents, addEventToLibrary, worldBooks]);
 
   const maybeUpdateAuthorDirectorPlan = useCallback(async (
     saveId: string,
@@ -415,6 +515,9 @@ export default function GamePage() {
       currentScene: current.state.currentScene,
       narrative,
       randomEventState: current.state.authorRandomEventState,
+      worldBookEntries: getActiveWorldBookEntriesForAgent(worldBooks, current, latestStory),
+      backpack: current.state.backpack ?? [],
+      anchors: current.state.anchors,
       signal,
     });
 
@@ -427,7 +530,7 @@ export default function GamePage() {
       completedArcs: latest.state.authorNarrative?.completedArcs ?? narrative.completedArcs,
       lastDirectorRound: completedRound,
     });
-  }, [settings, outline, background]);
+  }, [settings, outline, background, worldBooks]);
 
   const maybeUpdateAuthorLogicReview = useCallback(async (
     saveId: string,
@@ -468,6 +571,8 @@ export default function GamePage() {
       availableScenes: current.state.availableScenes ?? [],
       narrative,
       randomEventState: current.state.authorRandomEventState,
+      worldBookEntries: getActiveWorldBookEntriesForAgent(worldBooks, current, latestStory),
+      anchors: current.state.anchors,
       signal,
     });
 
@@ -480,7 +585,69 @@ export default function GamePage() {
       completedArcs: latest.state.authorNarrative?.completedArcs ?? narrative.completedArcs,
       lastLogicCheckRound: completedRound,
     });
-  }, [settings, outline, background]);
+  }, [settings, outline, background, worldBooks]);
+
+  const maybeRunSettingGuard = useCallback(async (
+    saveId: string,
+    signal?: AbortSignal,
+  ): Promise<{ memoryUrgent: boolean }> => {
+    const actions = useGameStore.getState();
+    const current = actions.saves[saveId];
+    if (!current || current.content.mode !== 'author') return { memoryUrgent: false };
+
+    const config = normalizeAuthorSettingGuardConfig(current.content.authorSettingGuard);
+    if (!config.enabled) return { memoryUrgent: false };
+
+    const completedRound = current.state.currentRound;
+    const nextRound = completedRound + 1;
+    const allEntries = flattenWorldBookEntries(worldBooks, current.content.worldBookIds);
+
+    try {
+      const result = await requestSettingGuard({
+        settings,
+        outline,
+        background,
+        characterName: current.content.characterName,
+        currentRound: completedRound,
+        nextRound,
+        totalRounds: current.config.totalRounds,
+        config,
+        summary: current.state.summary,
+        longTermMemory: current.state.longTermMemory,
+        recent: current.state.history.slice(-8),
+        playerInput: current.state.lastPlayerInput,
+        npcs: current.state.npcs ?? [],
+        backpack: current.state.backpack ?? [],
+        currentScene: current.state.currentScene,
+        worldBookEntries: allEntries,
+        anchors: current.state.anchors ?? [],
+        narrative: current.state.authorNarrative,
+        randomEventState: current.state.authorRandomEventState,
+        signal,
+      });
+
+      if (!result) {
+        actions.setSettingGuardError(saveId, '守护者未返回可用 JSON');
+        return { memoryUrgent: false };
+      }
+
+      actions.applySettingGuardResult(saveId, result, completedRound);
+
+      if (config.candidatesAutoAccept) {
+        const fresh = useGameStore.getState().saves[saveId];
+        const pending = fresh?.state.authorNarrative?.settingGuard?.candidates
+          .filter((c) => c.status === 'pending') ?? [];
+        pending.forEach((c) => actions.acceptSettingCandidate(saveId, c.id));
+      }
+
+      return { memoryUrgent: result.memoryUrgency === 'high' };
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+      console.warn('[settingGuard] failed', err);
+      actions.setSettingGuardError(saveId, err?.message ?? String(err));
+      return { memoryUrgent: false };
+    }
+  }, [settings, outline, background, worldBooks]);
 
   // ----- 异步任务：故事 -----
   const runStory = useCallback(async () => {
@@ -491,8 +658,7 @@ export default function GamePage() {
       actions.advanceAuthorArcs(initial.id, initial.state.currentRound);
     }
     const s = useGameStore.getState().saves[initial.id] ?? initial;
-    const { state, config, content } = s;
-    const pendingAuthorArc = getPendingAuthorArcForCurrentRound(s);
+    let currentForStory = s;
 
     setBusy(true);
     setErrorMsg(undefined);
@@ -501,33 +667,43 @@ export default function GamePage() {
     const abort = new AbortController();
     abortRef.current = abort;
 
-    const recentText = state.history.slice(-6).map((m) => m.content).join('\n').slice(-RECENT_TEXT_WINDOW);
-    const candidateEntries = flattenWorldBookEntries(worldBooks, content.worldBookIds);
-    const activeEntries = matchWorldBook({
-      entries: candidateEntries,
-      recentText,
-      currentInput: state.lastPlayerInput,
-    });
-
-    const scheduledEventIds = getScheduledEventIds(content);
-    const eventCandidates = allEvents.filter((e) => scheduledEventIds.includes(e.id));
-    const triggeredEvent = pickRandomEvent({
-      candidates: eventCandidates,
-      currentRound: state.currentRound,
-      triggered: state.triggeredEvents,
-    });
-
-    const selectedSet = new Set(state.selectedItemIds ?? []);
-    const usedItems: Item[] = (state.backpack ?? []).filter((it) => selectedSet.has(it.id));
-    const storySettings = content.storyStyle
-      ? {
-        ...settings,
-        storyLength: content.storyStyle.storyLength,
-        storyStyleAddendum: content.storyStyle.storyStyleAddendum,
-      }
-      : settings;
-
     try {
+      if (currentForStory.content.mode === 'author') {
+        const guard = await maybeRunSettingGuard(currentForStory.id, abort.signal);
+        if (guard.memoryUrgent) {
+          await runMemoryNow(currentForStory.id, abort.signal);
+        }
+        currentForStory = useGameStore.getState().saves[currentForStory.id] ?? currentForStory;
+      }
+
+      const { state, config, content } = currentForStory;
+      const pendingAuthorArc = getPendingAuthorArcForCurrentRound(currentForStory);
+      const recentText = state.history.slice(-6).map((m) => m.content).join('\n').slice(-RECENT_TEXT_WINDOW);
+      const candidateEntries = flattenWorldBookEntries(worldBooks, content.worldBookIds);
+      const activeEntries = matchWorldBook({
+        entries: candidateEntries,
+        recentText,
+        currentInput: state.lastPlayerInput,
+      });
+
+      const scheduledEventIds = getScheduledEventIds(content);
+      const eventCandidates = allEvents.filter((e) => scheduledEventIds.includes(e.id));
+      const triggeredEvent = pickRandomEvent({
+        candidates: eventCandidates,
+        currentRound: state.currentRound,
+        triggered: state.triggeredEvents,
+      });
+
+      const selectedSet = new Set(state.selectedItemIds ?? []);
+      const usedItems: Item[] = (state.backpack ?? []).filter((it) => selectedSet.has(it.id));
+      const storySettings = content.storyStyle
+        ? {
+          ...settings,
+          storyLength: content.storyStyle.storyLength,
+          storyStyleAddendum: content.storyStyle.storyStyleAddendum,
+        }
+        : settings;
+
       const full = await requestStory({
         settings: storySettings,
         outline,
@@ -552,7 +728,11 @@ export default function GamePage() {
         strictCustom: getPromptConfig(content),
         summarizedUntilIndex: state.summarizedUntilIndex,
         finalizeRequested: !!state.finalizeRequested,
-        onDelta: (t) => setStreaming((prev) => prev + t),
+        onDelta: (t) => {
+          if (mountedRef.current && !leavingPageRef.current) {
+            setStreaming((prev) => prev + t);
+          }
+        },
         signal: abort.signal,
       });
 
@@ -563,7 +743,7 @@ export default function GamePage() {
       actions.incrementRound(s.id);
       actions.setLastPlayerInput(s.id, undefined);
       actions.updateStateOf(s.id, { regenerationHint: undefined });
-      setStreaming('');
+      if (mountedRef.current && !leavingPageRef.current) setStreaming('');
 
       // 固化本回合获得的道具 → 消耗已勾选的一次性物品 → 清空本轮选择
       actions.commitPendingGrants(s.id);
@@ -591,6 +771,10 @@ export default function GamePage() {
       } else {
         const shouldEnterManual = afterRound % Math.max(config.manualInputEvery, 1) === 0;
         if (shouldEnterManual) {
+          // 先退出 story phase，再跑后处理模型。
+          // 否则在这段后处理期间离开/返回 GamePage，新实例会看到 phase=story
+          // 且 lastPlayerInput 已清空，误以为需要用“（请推进剧情。）”再生成一回合。
+          actions.setPhase(s.id, 'manual');
           try {
             await applyDecisionForStory(s, full, false, abort.signal);
             await maybePrepareAuthorRandomEvent(s.id, full, abort.signal);
@@ -600,9 +784,8 @@ export default function GamePage() {
             if (err?.name === 'AbortError') throw err;
             const msg = err?.message ?? String(err);
             console.warn('[decisionAgent/authorRandomEvent] tracking update failed', err);
-            setErrorMsg(msg);
+            if (mountedRef.current && !leavingPageRef.current) setErrorMsg(msg);
           }
-          actions.setPhase(s.id, 'manual');
         } else {
           actions.setChoices(s.id, undefined);
           actions.setPhase(s.id, 'choices');
@@ -625,17 +808,17 @@ export default function GamePage() {
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        setStreaming('');
+        if (mountedRef.current && !leavingPageRef.current) setStreaming('');
         return;
       }
       const msg = err?.message ?? String(err);
-      setErrorMsg(msg);
+      if (mountedRef.current && !leavingPageRef.current) setErrorMsg(msg);
       actions.setError(s.id, msg);
     } finally {
-      setBusy(false);
-      abortRef.current = null;
+      if (mountedRef.current && !leavingPageRef.current) setBusy(false);
+      if (abortRef.current === abort) abortRef.current = null;
     }
-  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview]);
+  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview, maybeRunSettingGuard, runMemoryNow]);
 
   // ----- 异步任务：选项 + 给予/销毁道具 -----
   const runChoices = useCallback(async () => {
@@ -646,16 +829,20 @@ export default function GamePage() {
 
     setBusy(true);
     setErrorMsg(undefined);
+    const abort = new AbortController();
+    abortRef.current = abort;
     try {
-      await applyDecisionForStory(s, lastAssistant.content, true);
-      await maybePrepareAuthorRandomEvent(s.id, lastAssistant.content);
-      await maybeUpdateAuthorDirectorPlan(s.id, lastAssistant.content);
-      await maybeUpdateAuthorLogicReview(s.id, lastAssistant.content);
+      await applyDecisionForStory(s, lastAssistant.content, true, abort.signal);
+      await maybePrepareAuthorRandomEvent(s.id, lastAssistant.content, abort.signal);
+      await maybeUpdateAuthorDirectorPlan(s.id, lastAssistant.content, abort.signal);
+      await maybeUpdateAuthorLogicReview(s.id, lastAssistant.content, abort.signal);
     } catch (err: any) {
+      if (err?.name === 'AbortError') return;
       const msg = err?.message ?? String(err);
       setErrorMsg(msg);
     } finally {
-      setBusy(false);
+      if (abortRef.current === abort) abortRef.current = null;
+      if (mountedRef.current && !leavingPageRef.current) setBusy(false);
     }
   }, [getSave, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview]);
 
@@ -666,18 +853,23 @@ export default function GamePage() {
     const actions = useGameStore.getState();
     setReviewing(true);
     setErrorMsg(undefined);
+    const abort = new AbortController();
+    abortRef.current = abort;
     try {
-      const review = await requestReview({ settings, save: s, outline, background });
+      const review = await requestReview({ settings, save: s, outline, background, signal: abort.signal });
       actions.setReview(s.id, review);
     } catch (err: any) {
+      if (err?.name === 'AbortError') return;
       setErrorMsg(err?.message ?? String(err));
     } finally {
-      setReviewing(false);
+      if (abortRef.current === abort) abortRef.current = null;
+      if (mountedRef.current && !leavingPageRef.current) setReviewing(false);
     }
   }, [getSave, settings, outline, background]);
 
   // ----- 调度器 -----
   const dispatch = useCallback(() => {
+    if (!mountedRef.current || leavingPageRef.current) return;
     if (busyRef.current) return;
     const s = getSave();
     if (!s) return;
@@ -685,8 +877,11 @@ export default function GamePage() {
 
     if (phase === 'ended') {
       if (!review && !reviewing) {
+        const key = gameTaskKey(s, 'review');
+        if (!beginGameTask(key)) return;
         busyRef.current = true;
         runReview().finally(() => {
+          endGameTask(key);
           busyRef.current = false;
         });
       }
@@ -694,23 +889,31 @@ export default function GamePage() {
     }
 
     if (phase === 'story') {
+      const key = gameTaskKey(s, 'story');
+      if (!beginGameTask(key)) return;
       busyRef.current = true;
-      runStory().finally(() => {
-        busyRef.current = false;
-        dispatch();
-      });
-    } else if (phase === 'choices' && !lastChoices) {
+        runStory().finally(() => {
+          endGameTask(key);
+          busyRef.current = false;
+          if (mountedRef.current && !leavingPageRef.current) dispatch();
+        });
+      } else if (phase === 'choices' && !lastChoices) {
+      const key = gameTaskKey(s, 'choices');
+      if (!beginGameTask(key)) return;
       busyRef.current = true;
-      runChoices().finally(() => {
-        busyRef.current = false;
-        dispatch();
-      });
-    }
+        runChoices().finally(() => {
+          endGameTask(key);
+          busyRef.current = false;
+          if (mountedRef.current && !leavingPageRef.current) dispatch();
+        });
+      }
   }, [getSave, runStory, runChoices, runReview, reviewing]);
 
   useEffect(() => {
-    dispatch();
-  }, [dispatch, save?.state.phase, save?.state.currentRound, save?.state.lastChoices, save?.state.review]);
+    if (!leavingPageRef.current) dispatch();
+    // 不把 dispatch/settings 放进依赖：设置页保存“故事长度/风格偏好”等会重建模型调用闭包，
+    // 但不应在当前 phase 没变化时重新调度一次故事/决策模型。
+  }, [save?.state.phase, save?.state.currentRound, save?.state.lastChoices, save?.state.review]);
 
   // ----- 交互 -----
   function onPick(choice: Choice) {
@@ -886,7 +1089,7 @@ export default function GamePage() {
     <div className="min-h-full flex flex-col">
       {/* Top Bar */}
       <div className="sticky top-0 z-20 bg-parchment-800/80 backdrop-blur-md border-b border-parchment-600/40 px-4 py-3 flex items-center gap-3">
-        <Button variant="ghost" onClick={() => nav('/')}>
+        <Button variant="ghost" onClick={() => leaveGamePage('/')}>
           <Home size={16} />
         </Button>
         <div className="flex-1 max-w-2xl">
@@ -944,7 +1147,7 @@ export default function GamePage() {
             <span className="hidden sm:inline">{save.state.finalizeRequested ? '待完结' : '完结旅程'}</span>
           </Button>
         )}
-        <Button variant="ghost" onClick={() => nav('/settings')}>
+        <Button variant="ghost" onClick={() => leaveGamePage('/settings')}>
           <Settings size={16} />
         </Button>
       </div>
@@ -977,7 +1180,7 @@ export default function GamePage() {
                 onRegenerate={save.state.review ? runReview : undefined}
               />
               <div className="flex justify-center gap-2 mt-8">
-                <Button onClick={() => nav('/')}>返回主页</Button>
+                <Button onClick={() => leaveGamePage('/')}>返回主页</Button>
               </div>
             </>
           )}
@@ -1101,10 +1304,16 @@ export default function GamePage() {
               itemCount={backpack.length}
             />
             {save.content.mode === 'author' && (
-              <AuthorArcPanel
-                narrative={save.state.authorNarrative}
-                randomEventState={save.state.authorRandomEventState}
-              />
+              <>
+                <AuthorArcPanel
+                  narrative={save.state.authorNarrative}
+                  randomEventState={save.state.authorRandomEventState}
+                />
+                <SettingGuardPanel
+                  saveId={save.id}
+                  narrative={save.state.authorNarrative}
+                />
+              </>
             )}
             <SceneMap
               current={save.state.currentScene}

@@ -3,6 +3,7 @@ import type {
   AuthorLogicCheckConfig,
   AuthorRandomEventConfig,
   AuthorRandomEventMode,
+  AuthorSettingGuardConfig,
   GuaranteedRoundRange,
   StoryArc,
   StoryArcStage,
@@ -42,6 +43,14 @@ export const DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG: AuthorLogicCheckConfig = {
   everyRounds: 3,
   prompt:
     '重点检查人物外观/关系、时间天气、场景位置、背包道具、承诺与伏笔、大纲阶段是否前后矛盾。只给未来修复建议，不要重写已发生正文。',
+};
+
+export const DEFAULT_AUTHOR_SETTING_GUARD_CONFIG: AuthorSettingGuardConfig = {
+  enabled: true,
+  prompt:
+    '重点检查故事模型是否会违反 alwaysActive 世界书条目；优先抓"瞎发挥"的设定盲区（餐饮、出行、社交礼仪、校园规则、行业规则等）；玩家偏好画像应贴近最近 5 回合的实际选择，不要过度概括。',
+  candidatesAutoAccept: false,
+  ambientBeatsEnabled: true,
 };
 
 function positiveInt(value: unknown, fallback: number, min = 1, max = 999): number {
@@ -130,6 +139,18 @@ export function normalizeAuthorLogicCheckConfig(
     enabled: input?.enabled !== false,
     everyRounds: positiveInt(input?.everyRounds, base.everyRounds, 1, 20),
     prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
+  };
+}
+
+export function normalizeAuthorSettingGuardConfig(
+  input?: Partial<AuthorSettingGuardConfig>,
+): AuthorSettingGuardConfig {
+  const base = DEFAULT_AUTHOR_SETTING_GUARD_CONFIG;
+  return {
+    enabled: input?.enabled !== false,
+    prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
+    candidatesAutoAccept: !!input?.candidatesAutoAccept,
+    ambientBeatsEnabled: input?.ambientBeatsEnabled !== false,
   };
 }
 

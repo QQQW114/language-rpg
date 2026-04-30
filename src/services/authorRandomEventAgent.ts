@@ -1,6 +1,16 @@
 import type { AppSettings } from '@/types/settings';
-import type { Background, RandomEvent, StoryOutline } from '@/types/content';
-import type { AuthorRandomEventConfig, Message, Npc, SceneRef, StoryArc, StoryArcStage } from '@/types/game';
+import type { Background, RandomEvent, StoryOutline, WorldBookEntry } from '@/types/content';
+import type {
+  AuthorNarrativeState,
+  AuthorRandomEventConfig,
+  Item,
+  MemoryAnchor,
+  Message,
+  Npc,
+  SceneRef,
+  StoryArc,
+  StoryArcStage,
+} from '@/types/game';
 import { chatJSON } from '@/services/llmClient';
 import { AUTHOR_RANDOM_EVENT_SYSTEM, buildAuthorRandomEventUser } from '@/prompts/authorRandomEventSystem';
 import { clamp, extractJSON, genId, nowMs } from '@/lib/utils';
@@ -23,6 +33,10 @@ export interface AuthorRandomEventRequest {
   npcs: Npc[];
   currentScene?: SceneRef;
   referenceEvents: RandomEvent[];
+  worldBookEntries?: WorldBookEntry[];
+  backpack?: Item[];
+  anchors?: MemoryAnchor[];
+  narrative?: AuthorNarrativeState;
   signal?: AbortSignal;
 }
 

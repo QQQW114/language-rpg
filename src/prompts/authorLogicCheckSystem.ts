@@ -1,9 +1,10 @@
-import type { Background, StoryOutline } from '@/types/content';
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorLogicCheckConfig,
   AuthorNarrativeState,
   AuthorRandomEventState,
   Item,
+  MemoryAnchor,
   Message,
   Npc,
   SceneRef,
@@ -19,6 +20,7 @@ export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是互动小说的"逻辑审校 / �
 - 道具：背包中物品获得/消耗/损毁是否与正文矛盾。
 - 大纲/节奏：是否偏离当前阶段，是否提前剧透、跳过关键 beat、无故新增支线。
 - 记忆/伏笔：长期记忆、玩家标记、叙事弧是否被遗忘或反复改写。
+- ★ 世界书违反：故事是否擅自重写或绕过 alwaysActive 世界书条目（如能力规则被改写、世界基调被打破）——这是最高优先级检查项。
 
 输出协议：
 1. 只能输出合法 JSON，禁止 Markdown 围栏、注释和解释。
@@ -38,8 +40,35 @@ export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是互动小说的"逻辑审校 / �
   "nextRoundWarnings":["下一回合尤其要避免的坑，最多6条，每条≤100字"]
 }
 
+severity 判定标准（必须严格执行，不要为了"不打扰"统一标 info）：
+
+- critical：故事的根基被破坏。包括：
+  · 违反 alwaysActive 世界书条目（例：世界书写"能力主动可控"，故事写成"被动反向触发"）
+  · 与【长期一致性记忆】固化的稳定事实直接冲突（例：记忆写"主角答应明晚去图书馆"，本回合主角去了别处且无人提及约定）
+  · 推翻【玩家标记的关键记忆】（玩家显式 anchor 的内容被忽视、改写、提前消解）
+  · 主角秘密被无意义提前揭示（违反 revealPolicy）
+  · 跨多回合反复出现且未被修正的细节崩坏
+
+- warning：明显的细节矛盾，会让读者明显出戏：
+  · NPC 外观/服装/称呼跨回合无故跳变
+  · 时间/天气在没有过场的情况下突变（例：刚刚深夜，下一句突然下午）
+  · 道具状态与正文不符（例：明明已损毁的道具又出现）
+  · 阶段跳过当前导演计划要求的关键 beat
+  · 与刚刚发生剧情的因果脱节
+
+- info：轻度提示，不修复也不破坏阅读：
+  · 措辞偏差（例："按你口味" / "按我口味" 这种文字级抖动）
+  · 早期记忆与新状态的过期残留（例："赤脚"在已购鞋后还偶尔出现）
+  · 猜测性观察的小不一致（"我感觉" / "我觉得"措辞抖动）
+  · 文风轻微偏离 outline.tone
+
+判定纪律：
+- 宁可标高一档，也不要漏抓。审校的价值在于发现问题、推动修复，而不是"不打扰"。
+- 如果某个问题反复在多回合出现且前几次只标 info 没被修复，本次必须升级为 warning 或 critical。
+- 同一类问题已经在 repairDirectives 中被记录的，新一轮如未修复应明确指出"修复未生效，建议升级强度"。
+- 没有问题也要诚实输出空 issues + 简短保持建议；不要为了凑数臆造问题。
+
 规则：
-- 不要为了挑错而臆造问题；没有明显问题也要输出空 issues 和少量保持建议。
 - 修复建议应服务于未来剧情自然修补，不要求重写已发生正文。
 - 不得揭示主角尚不知道的隐藏真相；可以说"保持为未揭示"或"以主角视角模糊处理"。`;
 
@@ -89,6 +118,38 @@ function formatArcs(p: {
   return arcs.slice(0, 10).map((arc) => formatStoryArcForPrompt(arc, p.currentRound)).join('\n');
 }
 
+function formatWorldBook(entries: WorldBookEntry[] | undefined): string {
+  if (!entries?.length) return '';
+  const always = entries.filter((e) => e.alwaysActive);
+  const triggered = entries.filter((e) => !e.alwaysActive);
+  const lines: string[] = ['【世界设定】（违反这些设定的细节即为连续性问题，请重点检查）'];
+  if (always.length) {
+    lines.push('常驻：');
+    for (const e of always.slice(0, 8)) {
+      lines.push(`· ${e.name}：${e.content}`);
+    }
+  }
+  if (triggered.length) {
+    lines.push('本回合触发：');
+    for (const e of triggered.slice(0, 8)) {
+      lines.push(`· ${e.name}：${e.content}`);
+    }
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
+  if (!anchors?.length) return '';
+  const lines: string[] = ['【玩家标记的关键记忆】（玩家明确标记不可遗忘的节点；如果它被忽视、改写、提前消解，请作为 critical 级问题输出）'];
+  for (const a of anchors.slice(-10)) {
+    const note = a.note ? `【${a.note}】` : '';
+    const content = (a.content?.trim() || a.excerpt?.trim() || '').trim();
+    if (!content) continue;
+    lines.push(`· 第 ${a.round} 回合${note}：${content}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
 export function buildAuthorLogicCheckUser(p: {
   outline?: StoryOutline;
   background?: Background;
@@ -106,8 +167,12 @@ export function buildAuthorLogicCheckUser(p: {
   availableScenes?: SceneRef[];
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
+  worldBookEntries?: WorldBookEntry[];
+  anchors?: MemoryAnchor[];
 }): string {
   const plan = p.narrative?.plan;
+  const worldBookBlock = formatWorldBook(p.worldBookEntries);
+  const anchorsBlock = formatAnchors(p.anchors);
   return [
     `【审校任务】检查截至第 ${p.currentRound} 回合后的连续性与逻辑风险。`,
     `总回合：${!p.totalRounds || p.totalRounds <= 0 ? '无尽模式' : p.totalRounds}`,
@@ -117,6 +182,8 @@ export function buildAuthorLogicCheckUser(p: {
       ? `标题：${p.outline.title}\n梗概：${p.outline.synopsis}\n阶段：${p.outline.acts.join(' / ')}${p.outline.tone ? `\n文风：${p.outline.tone}` : ''}`
       : '（无）',
     '',
+    worldBookBlock,
+    worldBookBlock ? '' : '',
     '【主角/出身】',
     p.background
       ? `姓名：${p.characterName || '（未命名）'}\n${p.background.name}：${p.background.description}\n特质：${p.background.traits.join('、')}`
@@ -124,6 +191,8 @@ export function buildAuthorLogicCheckUser(p: {
     '',
     p.summary?.trim() ? `【历史摘要】\n${p.summary.trim()}\n` : '',
     p.longTermMemory?.trim() ? `【长期一致性记忆】\n${p.longTermMemory.trim()}\n` : '',
+    anchorsBlock,
+    anchorsBlock ? '' : '',
     '【最近上下文】',
     formatRecent(p.recent),
     '',

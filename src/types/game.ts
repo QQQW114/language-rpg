@@ -43,6 +43,13 @@ export interface AuthorLogicCheckConfig {
   prompt: string;             // 玩家对审校模型的额外要求
 }
 
+export interface AuthorSettingGuardConfig {
+  enabled: boolean;
+  prompt: string;             // 玩家对设定守护者的额外要求
+  candidatesAutoAccept: boolean;
+  ambientBeatsEnabled: boolean;
+}
+
 export interface StoryArcStage {
   id: string;
   startRound: number;
@@ -106,13 +113,66 @@ export interface NarrativePlanState {
   updatedAtRound: number;
 }
 
+export interface SettingPatch {
+  id: string;
+  topic: string;
+  advice: string;
+  severity: 'must' | 'should';
+  suggestedAtRound: number;
+}
+
+export interface SettingGuardCandidate {
+  id: string;
+  name: string;
+  keywords: string[];
+  content: string;
+  rationale: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  suggestedAtRound: number;
+}
+
+export interface SettingGuardPreference {
+  tendency?: string;
+  recentSignals?: string[];
+  confidence: 'low' | 'medium' | 'high';
+  updatedAtRound: number;
+}
+
+export interface SettingGuardAmbientBeat {
+  id: string;
+  source: string;
+  trigger: string;
+  beat: string;
+  optional: boolean;
+  suggestedAtRound: number;
+  consumed?: boolean;
+}
+
+export interface SettingGuardDeviation {
+  description: string;
+  affectedEntryNames?: string[];
+  flaggedAtRound: number;
+}
+
+export interface SettingGuardState {
+  updatedAtRound: number;
+  patches: SettingPatch[];
+  candidates: SettingGuardCandidate[];
+  preference?: SettingGuardPreference;
+  pendingAmbientBeats: SettingGuardAmbientBeat[];
+  deviation?: SettingGuardDeviation;
+  lastError?: string;
+}
+
 export interface AuthorNarrativeState {
   plan?: NarrativePlanState;
   logicReview?: AuthorLogicReviewState;
+  settingGuard?: SettingGuardState;
   activeArcs: StoryArc[];
   completedArcs: StoryArc[];
   lastDirectorRound?: number;
   lastLogicCheckRound?: number;
+  lastSettingGuardRound?: number;
 }
 
 export interface AuthorLogicIssue {
@@ -188,6 +248,7 @@ export interface GameContent {
   authorRandomEvent?: AuthorRandomEventConfig; // 执笔模式随机事件/动态事件弧配置
   authorDirector?: AuthorDirectorConfig; // 执笔模式叙事导演/大纲映射配置
   authorLogicCheck?: AuthorLogicCheckConfig; // 执笔模式逻辑/一致性审校配置
+  authorSettingGuard?: AuthorSettingGuardConfig; // 执笔模式设定守护者配置
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 

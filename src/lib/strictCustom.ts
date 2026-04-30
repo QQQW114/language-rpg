@@ -11,6 +11,7 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动�
 {{summaryBlock}}
 {{memoryBlock}}
 {{narrativePlanBlock}}
+{{settingGuardBlock}}
 {{logicReviewBlock}}
 {{npcsBlock}}
 {{anchorsBlock}}
@@ -27,6 +28,7 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动�
 export const DEFAULT_STORY_USER_TEMPLATE = `{{defaultUserMessage}}`;
 
 export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
+{{longTermMemoryBlock}}
 {{recentTextBlock}}
 【玩家最新看到的故事片段】
 {{latestStory}}
@@ -36,15 +38,20 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 {{backpackJsonBlock}}
 {{npcBlock}}
 {{npcJsonBlock}}
+{{anchorsBlock}}
 {{currentSceneBlock}}
+{{narrativePlanBlock}}
+{{activeArcsBlock}}
 {{strictCustomDecisionBlock}}
 请按协议输出 JSON。注意：
+- choices 应服务于上方【当前导演计划】的下一回合焦点和【进行中事件弧】的当前阶段（若有）；与计划无关的随性 choices 应避免；
 - grants 不要与背包重名；
 - 修改/删除已有道具时优先使用【当前背包 JSON】里的 id；新物品才放 grants；
 - destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；
 - 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；
 - 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；
 - npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；
+- 修订 details 时先比对【长期一致性记忆】，已固化稳定事实不要重复；与玩家标记记忆、当前导演计划或进行中事件弧相关的细节优先保留；
 - npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；
 - currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。
 - 没有就是空数组或缺省。`;

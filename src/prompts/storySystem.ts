@@ -2,7 +2,7 @@
 // 导出一个函数而非静态字符串，方便根据世界书/随机事件/回合动态拼装。
 
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
-import type { AuthorNarrativeState, AuthorRandomEventState, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
+import type { AuthorLogicIssue, AuthorNarrativeState, AuthorRandomEventState, Item, Npc, MemoryAnchor, SceneRef } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
@@ -111,7 +111,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     if (outline.tone) {
       outlineLines.push(
         `文风/题材：${outline.tone}`,
-        '（必须严格遵循上述文风与题材，禁止擅自转向其他类型——例如不要把恋爱故事写成惊悚悬疑，不要把温情成长故事写成动作冒险；情节冲突应源于"题材本身应有的张力"，不要靠外部悬疑/超自然元素凭空制造戏剧性。）',
+        '（请严格遵循上述文风与题材：恋爱故事的张力主要来自人物关系与情绪流动；推理/悬疑故事来自未解谜团与线索拼合；成长/治愈来自内心抉择与日常细节；动作冒险来自外部对抗与抉择代价。让冲突与张力源于该题材自然生长出的可能性，不要为了戏剧性强行混入与题材相悖的元素。）',
       );
     }
     const actPlanBlock = buildActPlanBlock(outline.acts, nextRound, totalRounds, finalizeRequested);
@@ -166,25 +166,91 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     ].filter(Boolean).join('\n')
     : '';
 
+  const settingGuard = authorNarrative?.settingGuard;
+  const settingGuardBlock = (() => {
+    if (!settingGuard) return '';
+    const lines: string[] = [];
+    const must = (settingGuard.patches ?? []).filter((p) => p.severity === 'must');
+    const should = (settingGuard.patches ?? []).filter((p) => p.severity === 'should');
+
+    if (must.length || should.length) {
+      lines.push('【执笔模式 · 本回合设定守护】');
+      if (must.length) {
+        lines.push('必须遵守（违反即为严重设定问题）：');
+        must.slice(0, 6).forEach((p) => lines.push(`· ${p.topic}：${p.advice}`));
+      }
+      if (should.length) {
+        lines.push('建议参考：');
+        should.slice(0, 6).forEach((p) => lines.push(`· ${p.topic}：${p.advice}`));
+      }
+    }
+
+    if (settingGuard.deviation) {
+      lines.push('', '⚠ 守护者发现的偏离风险：');
+      lines.push(settingGuard.deviation.description);
+      if (settingGuard.deviation.affectedEntryNames?.length) {
+        lines.push(`涉及世界书：${settingGuard.deviation.affectedEntryNames.join('、')}`);
+      }
+      lines.push('请在本回合或下一回合通过自然剧情修正方向。');
+    }
+
+    const beats = (settingGuard.pendingAmbientBeats ?? [])
+      .filter((b) => !b.consumed && b.suggestedAtRound >= currentRound - 3);
+    if (beats.length) {
+      lines.push('', '【环境侧主动反应建议】（可选演绎，不强制全部纳入）：');
+      beats.slice(0, 4).forEach((b) => {
+        const tag = b.optional ? '' : '【强烈建议】';
+        lines.push(`· ${tag}${b.source} · ${b.trigger}：${b.beat}`);
+      });
+    }
+
+    if (settingGuard.preference?.tendency && settingGuard.preference.confidence !== 'low') {
+      lines.push('', `【玩家偏好画像 · 置信度 ${settingGuard.preference.confidence}】`);
+      lines.push(settingGuard.preference.tendency);
+    }
+
+    return lines.length ? lines.join('\n') : '';
+  })();
+
   const logicReview = authorNarrative?.logicReview;
-  const logicReviewBlock = logicReview
-    ? [
+  const logicReviewBlock = (() => {
+    if (!logicReview) return '';
+    const issues = logicReview.issues ?? [];
+    const critical = issues.filter((i) => i.severity === 'critical');
+    const warning = issues.filter((i) => i.severity === 'warning');
+    const info = issues.filter((i) => i.severity === 'info');
+    const formatIssue = (issue: AuthorLogicIssue) =>
+      `· ${issue.type}：${issue.description}${issue.repairHint ? `；修复：${issue.repairHint}` : ''}`;
+
+    const lines: string[] = [
       '【执笔模式 · 逻辑审校与修复建议】',
       `审校回合：第 ${logicReview.updatedAtRound} 回合`,
-      logicReview.overall ? `总体：${logicReview.overall}` : '',
-      logicReview.issues?.length
-        ? [
-          '连续性风险：',
-          ...logicReview.issues.slice(0, 8).map((issue) =>
-            `· ${issue.severity}/${issue.type}：${issue.description}${issue.repairHint ? `；修复：${issue.repairHint}` : ''}`,
-          ),
-        ].join('\n')
-        : '',
-      logicReview.repairDirectives?.length ? `后续修复指令：${logicReview.repairDirectives.join('；')}` : '',
-      logicReview.nextRoundWarnings?.length ? `下一回合避免：${logicReview.nextRoundWarnings.join('；')}` : '',
-      '执行规则：优先用未来剧情自然修补连续性问题；不要在正文中暴露"审校/修复"等元信息。',
-    ].filter(Boolean).join('\n')
-    : '';
+    ];
+    if (logicReview.overall) lines.push(`总体：${logicReview.overall}`);
+    if (critical.length) {
+      lines.push('', '⚠ 必须修复（严重一致性问题，本回合或下回合内必须自然处理）：');
+      critical.slice(0, 6).forEach((i) => lines.push(formatIssue(i)));
+    }
+    if (warning.length) {
+      lines.push('', '建议修复（明显风险，尽快通过剧情自然修补）：');
+      warning.slice(0, 6).forEach((i) => lines.push(formatIssue(i)));
+    }
+    if (info.length) {
+      lines.push('', '参考（轻度提示，写作时留意即可）：');
+      info.slice(0, 4).forEach((i) => lines.push(formatIssue(i)));
+    }
+    if (logicReview.repairDirectives?.length) {
+      lines.push('', `后续修复指令：${logicReview.repairDirectives.join('；')}`);
+    }
+    if (logicReview.nextRoundWarnings?.length) {
+      lines.push(`下一回合避免：${logicReview.nextRoundWarnings.join('；')}`);
+    }
+    lines.push(
+      '',
+      '执行规则：优先处理"必须修复"项；其他级别参考即可。修复应通过新剧情自然完成，不要重写已发生正文，不要在叙事中暴露"审校/修复"等元信息。',
+    );
+    return lines.filter(Boolean).join('\n');
+  })();
 
   const backgroundBlock = background
     ? [
@@ -322,6 +388,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     summaryBlock,
     memoryBlock,
     narrativePlanBlock,
+    settingGuardBlock,
     logicReviewBlock,
     npcsBlock: npcLines.join('\n'),
     anchorsBlock: anchorLines.join('\n'),
@@ -337,6 +404,11 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   if (storyArcBlock && !rendered.includes('【执笔模式 · 叙事弧 / 长线事件】')) fallbackBlocks.push(storyArcBlock);
   if (memoryBlock && !rendered.includes('【长期一致性记忆】')) fallbackBlocks.push(memoryBlock);
   if (narrativePlanBlock && !rendered.includes('【执笔模式 · 当前叙事导演计划】')) fallbackBlocks.push(narrativePlanBlock);
+  if (
+    settingGuardBlock
+    && !rendered.includes('【执笔模式 · 本回合设定守护】')
+    && !rendered.includes('【环境侧主动反应建议】')
+  ) fallbackBlocks.push(settingGuardBlock);
   if (logicReviewBlock && !rendered.includes('【执笔模式 · 逻辑审校与修复建议】')) fallbackBlocks.push(logicReviewBlock);
   return fallbackBlocks.length ? [rendered, ...fallbackBlocks].join('\n\n') : rendered;
 }

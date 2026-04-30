@@ -39,7 +39,10 @@ npcs：仅列本回合登场/互动或需要修正去重的配角；最多 6 个
 - 修改已有 NPC 可直接给 affinity 设定当前好感度，或给 affinityDelta 表示本回合变化；不要同时滥用。
 - 删除 NPC 仅用于重复条目、误识别条目或故事明确不应继续保留的人物档案；普通离场/死亡通常仍应保留人物志，不要删除。
 - details 用于记录主角已知的细节短条目：外观（粉色美甲）、服装（上次见面穿 JK 服）、习惯、关系猜测、承诺牵连等；最多 5 条，每条 ≤24 字。
+- details 是 PATCH 语义：仅列出本回合需要【新增 / 修订 / 替换】的细节，旧细节由系统自动保留。如需清空全部既有 details 改写一整套，必须同时设 replaceDetails=true。
 - 区分"上次见面穿..."与"常常穿..."：只有多次证据才写常态；猜测必须写"我怀疑/可能/似乎"。
+- details 淘汰协议（条数即将超 5 时按以下顺序丢弃）：① 已被新剧情明确推翻的旧细节（如"上次见面穿 JK 服"已被本回合"今天换了正装"覆盖）；② 已被【长期一致性记忆】固化保留的稳定特征（避免与记忆重复）；③ 一次性临时状态（"今天感冒"）优先于永久性特征（"粉色美甲"）被丢；④ 无关本回合剧情走向的细节优先丢。
+- 永远保留：与当前导演计划、进行中事件弧或主角承诺直接相关的细节。
 - role / description / note 都必须基于【主角已经看见、听见、亲身经历或合理推断】的信息，不要写上帝视角秘密、真实身份、隐藏动机或主角尚不知道的背景。
 - description 用主角视角记录第一印象或已知事实；若主角不了解对方，就写"我不知道"或"我不了解"，也可以省略。
 
@@ -99,7 +102,10 @@ npcs：仅列本回合登场/互动或需要修正去重的配角；最多 6 个
 - 修改已有 NPC 可直接给 affinity 设定当前好感度，或给 affinityDelta 表示本回合变化；不要同时滥用。
 - 删除 NPC 仅用于重复条目、误识别条目或故事明确不应继续保留的人物档案；普通离场/死亡通常仍应保留人物志，不要删除。
 - details 用于记录主角已知的细节短条目：外观（粉色美甲）、服装（上次见面穿 JK 服）、习惯、关系猜测、承诺牵连等；最多 5 条，每条 ≤24 字。
+- details 是 PATCH 语义：仅列出本回合需要【新增 / 修订 / 替换】的细节，旧细节由系统自动保留。如需清空全部既有 details 改写一整套，必须同时设 replaceDetails=true。
 - 区分"上次见面穿..."与"常常穿..."：只有多次证据才写常态；猜测必须写"我怀疑/可能/似乎"。
+- details 淘汰协议（条数即将超 5 时按以下顺序丢弃）：① 已被新剧情明确推翻的旧细节（如"上次见面穿 JK 服"已被本回合"今天换了正装"覆盖）；② 已被【长期一致性记忆】固化保留的稳定特征（避免与记忆重复）；③ 一次性临时状态（"今天感冒"）优先于永久性特征（"粉色美甲"）被丢；④ 无关本回合剧情走向的细节优先丢。
+- 永远保留：与当前导演计划、进行中事件弧或主角承诺直接相关的细节。
 - role / description / note 都必须基于【主角已经看见、听见、亲身经历或合理推断】的信息，不要写上帝视角秘密、真实身份、隐藏动机或主角尚不知道的背景。
 - description 用主角视角记录第一印象或已知事实；若主角不了解对方，就写"我不知道"或"我不了解"，也可以省略。
 
@@ -127,6 +133,29 @@ export interface BuildDecisionUserParams {
   currentSceneName?: string;
   currentSceneContext?: string;
   strictCustomDecisionBlock?: string;
+  longTermMemory?: string;
+  anchorsBlock?: string;
+  narrativePlanBlock?: string;
+  activeArcsBlock?: string;
+}
+
+function appendDecisionContext(parts: string[], p: BuildDecisionUserParams): void {
+  if (p.longTermMemory?.trim()) {
+    parts.push(
+      '【长期一致性记忆】（已固化的稳定事实，更新 NPC.details 时不要重复写入；与本节冲突时以新剧情为准）',
+      p.longTermMemory.trim(),
+      '',
+    );
+  }
+  if (p.anchorsBlock?.trim()) {
+    parts.push(p.anchorsBlock.trim(), '');
+  }
+  if (p.narrativePlanBlock?.trim()) {
+    parts.push(p.narrativePlanBlock.trim(), '');
+  }
+  if (p.activeArcsBlock?.trim()) {
+    parts.push(p.activeArcsBlock.trim(), '');
+  }
 }
 
 export function buildDecisionUser(p: BuildDecisionUserParams): string {
@@ -134,6 +163,7 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
   if (p.summary?.trim()) {
     parts.push('【历史摘要】', p.summary.trim(), '');
   }
+  appendDecisionContext(parts, p);
   if (p.recentText?.trim()) {
     parts.push('【最近若干回合】', p.recentText.trim(), '');
   }
@@ -155,12 +185,14 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
     parts.push(p.strictCustomDecisionBlock.trim(), '');
   }
   parts.push('请按协议输出 JSON。注意：');
+  parts.push('- choices 应服务于上方【当前导演计划】的下一回合焦点和【进行中事件弧】的当前阶段（若有）；与计划无关的随性 choices 应避免；');
   parts.push('- grants 不要与背包重名；');
   parts.push('- 修改/删除已有道具时优先使用【当前背包 JSON】里的 id；新物品才放 grants；');
   parts.push('- destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；');
   parts.push('- 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；');
   parts.push('- 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；');
   parts.push('- npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；');
+  parts.push('- 修订 details 时先比对【长期一致性记忆】，已固化稳定事实不要重复；与玩家标记记忆、当前导演计划或进行中事件弧相关的细节优先保留；');
   parts.push('- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；');
   parts.push('- currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。');
   parts.push('- 没有就是空数组或缺省。');
@@ -172,6 +204,7 @@ export function buildDecisionTrackingUser(p: BuildDecisionUserParams): string {
   if (p.summary?.trim()) {
     parts.push('【历史摘要】', p.summary.trim(), '');
   }
+  appendDecisionContext(parts, p);
   if (p.recentText?.trim()) {
     parts.push('【最近若干回合】', p.recentText.trim(), '');
   }
@@ -197,6 +230,7 @@ export function buildDecisionTrackingUser(p: BuildDecisionUserParams): string {
   parts.push('- 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；');
   parts.push('- 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；');
   parts.push('- npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；');
+  parts.push('- 修订 details 时先比对【长期一致性记忆】，已固化稳定事实不要重复；与玩家标记记忆、当前导演计划或进行中事件弧相关的细节优先保留；');
   parts.push('- npcs 的 role / description / note 只能写主角已知信息；不了解就写"我不知道"/"我不了解"或省略；');
   parts.push('- currentScene 必须贴合最新故事叙述，并同时输出 time 与 weather；availableScenes 只列直接相邻可达处。');
   parts.push('- 没有就是空数组或缺省。');

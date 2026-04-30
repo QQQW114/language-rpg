@@ -1,5 +1,5 @@
 import type { AppSettings } from '@/types/settings';
-import type { Choice, Item, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
+import type { Choice, Item, MemoryAnchor, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import type { RawDestroy, RawGrant, RawItemPatch } from '@/lib/items';
 import { formatItemsForPrompt } from '@/lib/items';
 import { chatJSON } from './llmClient';
@@ -23,6 +23,7 @@ export interface MemoryUpdateRequest {
   npcs: Npc[];
   backpack: Item[];
   currentScene?: SceneRef;
+  anchors?: MemoryAnchor[];
   maxChars: number;
   signal?: AbortSignal;
 }
@@ -87,6 +88,18 @@ function formatDecision(d: MemoryDecisionSnapshot): string {
   }, null, 2);
 }
 
+function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
+  if (!anchors?.length) return '';
+  const lines: string[] = [];
+  for (const a of anchors.slice(-12)) {
+    const note = a.note ? `【${a.note}】` : '';
+    const content = (a.content?.trim() || a.excerpt?.trim() || '').trim();
+    if (!content) continue;
+    lines.push(`· 第 ${a.round} 回合${note}：${content}`);
+  }
+  return lines.join('\n');
+}
+
 export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<string | null> {
   const maxChars = clampMaxChars(p.maxChars);
   const model = p.settings.memoryModel?.trim() || p.settings.summaryModel?.trim() || p.settings.storyModel;
@@ -107,6 +120,7 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<strin
               npcText: formatNpcs(p.npcs),
               backpackText: formatItemsForPrompt(p.backpack ?? []),
               currentSceneText: formatScene(p.currentScene),
+              anchorsText: formatAnchors(p.anchors),
               maxChars,
             }),
           },

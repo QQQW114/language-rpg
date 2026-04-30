@@ -1,13 +1,16 @@
-import type { Background, StoryOutline } from '@/types/content';
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorDirectorConfig,
   AuthorNarrativeState,
   AuthorRandomEventState,
+  Item,
+  MemoryAnchor,
   Message,
   Npc,
   SceneRef,
 } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
+import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 
 export const AUTHOR_DIRECTOR_SYSTEM = `你是互动小说的"叙事导演 / 小说编辑"。你不写正文，不生成玩家选项，只为后续故事模型制定可执行的短期叙事计划。
@@ -85,6 +88,43 @@ function formatStrictOutline(config?: StrictCustomConfig): string {
     .join('\n');
 }
 
+function formatWorldBook(entries: WorldBookEntry[] | undefined): string {
+  if (!entries?.length) return '';
+  const always = entries.filter((e) => e.alwaysActive);
+  const triggered = entries.filter((e) => !e.alwaysActive);
+  const lines: string[] = ['【世界设定】'];
+  if (always.length) {
+    lines.push('常驻：');
+    for (const e of always.slice(0, 8)) {
+      lines.push(`· ${e.name}：${e.content}`);
+    }
+  }
+  if (triggered.length) {
+    lines.push('本回合触发：');
+    for (const e of triggered.slice(0, 8)) {
+      lines.push(`· ${e.name}：${e.content}`);
+    }
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
+  if (!anchors?.length) return '';
+  const lines: string[] = ['【玩家标记的关键记忆】（玩家明确标记的不可遗忘节点；制定计划时请确保这些信息得到呼应或推进，不要被规划忽视）'];
+  for (const a of anchors.slice(-8)) {
+    const note = a.note ? `【${a.note}】` : '';
+    const content = (a.content?.trim() || a.excerpt?.trim() || '').trim();
+    if (!content) continue;
+    lines.push(`· 第 ${a.round} 回合${note}：${content}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function formatBackpack(backpack: Item[] | undefined): string {
+  if (!backpack?.length) return '';
+  return ['【玩家背包】', formatItemsForPrompt(backpack)].join('\n');
+}
+
 function formatArcs(p: {
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
@@ -116,8 +156,14 @@ export function buildAuthorDirectorUser(p: {
   currentScene?: SceneRef;
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
+  worldBookEntries?: WorldBookEntry[];
+  backpack?: Item[];
+  anchors?: MemoryAnchor[];
 }): string {
   const isInfinite = !p.totalRounds || p.totalRounds <= 0;
+  const worldBookBlock = formatWorldBook(p.worldBookEntries);
+  const anchorsBlock = formatAnchors(p.anchors);
+  const backpackBlock = formatBackpack(p.backpack);
   return [
     `【规划任务】请为第 ${p.nextRound} 回合开始后的未来 ${p.config.horizonRounds} 回合制定叙事导演计划。`,
     `已完成回合：${p.currentRound}`,
@@ -128,6 +174,8 @@ export function buildAuthorDirectorUser(p: {
       ? `标题：${p.outline.title}\n梗概：${p.outline.synopsis}\n阶段：${p.outline.acts.join(' / ')}${p.outline.tone ? `\n文风：${p.outline.tone}` : ''}`
       : '（无）',
     '',
+    worldBookBlock,
+    worldBookBlock ? '' : '',
     '【严格自定义详细大纲】',
     formatStrictOutline(p.strictCustom),
     '',
@@ -138,6 +186,8 @@ export function buildAuthorDirectorUser(p: {
     '',
     p.summary?.trim() ? `【历史摘要】\n${p.summary.trim()}\n` : '',
     p.longTermMemory?.trim() ? `【长期一致性记忆】\n${p.longTermMemory.trim()}\n` : '',
+    anchorsBlock,
+    anchorsBlock ? '' : '',
     '【最近上下文】',
     formatRecent(p.recent),
     '',
@@ -145,6 +195,8 @@ export function buildAuthorDirectorUser(p: {
     '【已知 NPC / 关系】',
     formatNpcs(p.npcs),
     '',
+    backpackBlock,
+    backpackBlock ? '' : '',
     '【当前场景】',
     formatScene(p.currentScene),
     '',

@@ -1,5 +1,5 @@
 import type { AppSettings } from '@/types/settings';
-import type { Background, StoryOutline } from '@/types/content';
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorLogicCheckConfig,
   AuthorLogicIssue,
@@ -7,6 +7,7 @@ import type {
   AuthorNarrativeState,
   AuthorRandomEventState,
   Item,
+  MemoryAnchor,
   Message,
   Npc,
   SceneRef,
@@ -33,6 +34,8 @@ export interface AuthorLogicCheckRequest {
   availableScenes?: SceneRef[];
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
+  worldBookEntries?: WorldBookEntry[];
+  anchors?: MemoryAnchor[];
   signal?: AbortSignal;
 }
 

@@ -1,8 +1,36 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { GameSave, GameState, GameConfig, GameContent, Message, Choice, GamePhase, Item, AdventureReview, Npc, NpcUpdateRaw, MemoryAnchor, SceneRef, AuthorNarrativeState, AuthorRandomEventState, StoryArc, AuthorLogicReviewState, AuthorLogicIssue } from '@/types/game';
+import type {
+  GameSave,
+  GameState,
+  GameConfig,
+  GameContent,
+  Message,
+  Choice,
+  GamePhase,
+  Item,
+  AdventureReview,
+  Npc,
+  NpcUpdateRaw,
+  MemoryAnchor,
+  SceneRef,
+  AuthorNarrativeState,
+  AuthorRandomEventState,
+  StoryArc,
+  AuthorLogicReviewState,
+  AuthorLogicIssue,
+  SettingGuardAmbientBeat,
+  SettingGuardCandidate,
+  SettingGuardDeviation,
+  SettingGuardPreference,
+  SettingGuardState,
+  SettingPatch,
+} from '@/types/game';
+import type { SettingGuardResult } from '@/services/authorSettingGuardAgent';
 import { clamp, genId, nowMs } from '@/lib/utils';
 import { createItem, type RawGrant, type RawDestroy, type RawItemPatch } from '@/lib/items';
+import { useContentStore } from '@/store/useContentStore';
+import { normalizeAuthorSettingGuardConfig } from '@/lib/authorMode';
 
 interface GameStoreState {
   saves: Record<string, GameSave>;
@@ -67,6 +95,14 @@ interface GameStoreState {
   upsertAuthorArc: (id: string, arc: StoryArc) => void;
   completeAuthorArc: (id: string, arcId: string, round?: number) => void;
   advanceAuthorArcs: (id: string, currentRound: number) => void;
+  applySettingGuardResult: (id: string, result: SettingGuardResult, completedRound: number) => void;
+  acceptSettingCandidate: (id: string, candidateId: string) => void;
+  rejectSettingCandidate: (id: string, candidateId: string) => void;
+  deleteSettingCandidate: (id: string, candidateId: string) => void;
+  markAmbientBeatConsumed: (id: string, beatId: string) => void;
+  expireOldAmbientBeats: (id: string, currentRound: number, maxAge?: number) => void;
+  clearSettingGuardDeviation: (id: string) => void;
+  setSettingGuardError: (id: string, error: string | undefined) => void;
 
   // ---- 记忆锚点 ----
   addAnchor: (id: string, anchor: Omit<MemoryAnchor, 'id' | 'createdAt'>) => void;
@@ -220,6 +256,8 @@ function normalizeNpcAffinity(base: number, direct?: number, delta?: number): nu
   return clamp(directValue + deltaValue, -100, 100);
 }
 
+const NPC_DETAILS_LIMIT = 5;
+
 function normalizeNpcDetails(raw: unknown): string[] {
   const arr = Array.isArray(raw)
     ? raw
@@ -233,16 +271,38 @@ function normalizeNpcDetails(raw: unknown): string[] {
     if (!text || seen.has(text)) continue;
     seen.add(text);
     out.push(text);
-    if (out.length >= 10) break;
+    if (out.length >= NPC_DETAILS_LIMIT) break;
   }
   return out;
 }
 
+// details 合并语义：模型输出是 PATCH（仅本回合新增/修订/替换的细节）。
+// - replace=true：用新 details 完全替换旧 details（截到上限）。
+// - replace=false（默认）：新 details 占据前列，旧 details 补足剩余空位；保证不超过 NPC_DETAILS_LIMIT 条。
+// - 模型本回合未输出 details：完整保留旧 details（截到上限）。
 function mergeNpcDetails(prev: string[] | undefined, incoming: string[] | undefined, replace?: boolean): string[] | undefined {
   const next = normalizeNpcDetails(incoming);
   if (replace) return next.length ? next : undefined;
-  const merged = normalizeNpcDetails([...(prev ?? []), ...next]);
-  return merged.length ? merged.slice(-10) : undefined;
+  if (!next.length) {
+    const kept = normalizeNpcDetails(prev);
+    return kept.length ? kept : undefined;
+  }
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const d of next) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    result.push(d);
+    if (result.length >= NPC_DETAILS_LIMIT) return result;
+  }
+  for (const raw of prev ?? []) {
+    const text = String(raw ?? '').trim().slice(0, 48);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+    if (result.length >= NPC_DETAILS_LIMIT) break;
+  }
+  return result.length ? result : undefined;
 }
 
 function normalizeAnchors(rawAnchors: unknown, history: Message[] | undefined): MemoryAnchor[] {
@@ -402,15 +462,106 @@ function normalizeAuthorLogicReview(raw: unknown): AuthorLogicReviewState | unde
   };
 }
 
+function normalizeSettingGuard(raw: unknown): SettingGuardState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<SettingGuardState>;
+  const patches: SettingPatch[] = Array.isArray(obj.patches)
+    ? obj.patches.slice(0, 12).map((item, index) => {
+      const patch = item as Partial<SettingPatch>;
+      const severity = patch.severity === 'must' || patch.severity === 'should' ? patch.severity : 'should';
+      return {
+        id: patch.id || genId(`patch_${index}`),
+        topic: String(patch.topic ?? '').trim().slice(0, 24),
+        advice: String(patch.advice ?? '').trim().slice(0, 220),
+        severity,
+        suggestedAtRound: Math.max(0, Math.floor(Number(patch.suggestedAtRound) || 0)),
+      };
+    }).filter((item) => item.topic && item.advice)
+    : [];
+
+  const candidates: SettingGuardCandidate[] = Array.isArray(obj.candidates)
+    ? obj.candidates.slice(0, 30).map((item, index) => {
+      const cand = item as Partial<SettingGuardCandidate>;
+      const status = cand.status === 'accepted' || cand.status === 'rejected' || cand.status === 'pending'
+        ? cand.status
+        : 'pending';
+      return {
+        id: cand.id || genId(`cand_${index}`),
+        name: String(cand.name ?? '').trim().slice(0, 30),
+        keywords: Array.isArray(cand.keywords)
+          ? cand.keywords.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+          : [],
+        content: String(cand.content ?? '').trim().slice(0, 240),
+        rationale: String(cand.rationale ?? '').trim().slice(0, 180),
+        status,
+        suggestedAtRound: Math.max(0, Math.floor(Number(cand.suggestedAtRound) || 0)),
+      };
+    }).filter((item) => item.name && item.content)
+    : [];
+
+  const prefRaw = obj.preference as Partial<SettingGuardPreference> | undefined;
+  const prefConfidence = prefRaw?.confidence === 'high' || prefRaw?.confidence === 'medium' || prefRaw?.confidence === 'low'
+    ? prefRaw.confidence
+    : undefined;
+  const preference: SettingGuardPreference | undefined = prefRaw && prefConfidence
+    ? {
+      tendency: prefRaw.tendency?.trim().slice(0, 160) || undefined,
+      recentSignals: Array.isArray(prefRaw.recentSignals)
+        ? prefRaw.recentSignals.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+        : undefined,
+      confidence: prefConfidence,
+      updatedAtRound: Math.max(0, Math.floor(Number(prefRaw.updatedAtRound) || 0)),
+    }
+    : undefined;
+
+  const pendingAmbientBeats: SettingGuardAmbientBeat[] = Array.isArray(obj.pendingAmbientBeats)
+    ? obj.pendingAmbientBeats.slice(0, 20).map((item, index) => {
+      const beat = item as Partial<SettingGuardAmbientBeat>;
+      return {
+        id: beat.id || genId(`beat_${index}`),
+        source: String(beat.source ?? '').trim().slice(0, 30),
+        trigger: String(beat.trigger ?? '').trim().slice(0, 100),
+        beat: String(beat.beat ?? '').trim().slice(0, 160),
+        optional: beat.optional !== false,
+        suggestedAtRound: Math.max(0, Math.floor(Number(beat.suggestedAtRound) || 0)),
+        consumed: !!beat.consumed,
+      };
+    }).filter((item) => item.source && item.trigger && item.beat)
+    : [];
+
+  const devRaw = obj.deviation as Partial<SettingGuardDeviation> | undefined;
+  const deviation: SettingGuardDeviation | undefined = devRaw?.description?.trim()
+    ? {
+      description: devRaw.description.trim().slice(0, 240),
+      affectedEntryNames: Array.isArray(devRaw.affectedEntryNames)
+        ? devRaw.affectedEntryNames.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 8)
+        : undefined,
+      flaggedAtRound: Math.max(0, Math.floor(Number(devRaw.flaggedAtRound) || 0)),
+    }
+    : undefined;
+
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    patches,
+    candidates,
+    preference,
+    pendingAmbientBeats,
+    deviation,
+    lastError: obj.lastError?.trim().slice(0, 240) || undefined,
+  };
+}
+
 function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
   const obj = (raw ?? {}) as Partial<AuthorNarrativeState>;
   return {
     plan: obj.plan,
     logicReview: normalizeAuthorLogicReview(obj.logicReview),
+    settingGuard: normalizeSettingGuard(obj.settingGuard),
     activeArcs: normalizeStoryArcList(obj.activeArcs),
     completedArcs: normalizeStoryArcList(obj.completedArcs),
     lastDirectorRound: obj.lastDirectorRound,
     lastLogicCheckRound: obj.lastLogicCheckRound,
+    lastSettingGuardRound: obj.lastSettingGuardRound,
   };
 }
 
@@ -1140,6 +1291,334 @@ export const useGameStore = create<GameStoreState>()(
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
 
+      applySettingGuardResult: (id, result, completedRound) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const oldGuard = narrative.settingGuard;
+
+          const patches: SettingPatch[] = (result.patches ?? []).slice(0, 6).map((p) => ({
+            ...p,
+            id: genId('patch'),
+            suggestedAtRound: completedRound,
+          }));
+
+          const candidatesByName = new Map<string, SettingGuardCandidate>();
+          (oldGuard?.candidates ?? []).forEach((c) => candidatesByName.set(c.name, c));
+          for (const raw of (result.candidates ?? []).slice(0, 2)) {
+            const name = raw.name.trim();
+            if (!name) continue;
+            const existing = candidatesByName.get(name);
+            if (existing && existing.status !== 'pending') continue;
+            candidatesByName.set(name, {
+              ...raw,
+              name,
+              id: existing?.id ?? genId('cand'),
+              status: 'pending',
+              suggestedAtRound: completedRound,
+            });
+          }
+
+          const confidenceRank = { low: 0, medium: 1, high: 2 } as const;
+          const oldPreference = oldGuard?.preference;
+          let preference = oldPreference;
+          if (result.preference) {
+            if (
+              !oldPreference
+              || confidenceRank[result.preference.confidence] >= confidenceRank[oldPreference.confidence]
+            ) {
+              preference = {
+                ...result.preference,
+                updatedAtRound: completedRound,
+              };
+            }
+          }
+
+          const expireBefore = Math.max(0, completedRound - 3);
+          const survivedBeats = (oldGuard?.pendingAmbientBeats ?? [])
+            .filter((b) => !b.consumed && b.suggestedAtRound >= expireBefore);
+          const newBeats: SettingGuardAmbientBeat[] = (result.ambientBeats ?? []).slice(0, 3).map((b) => ({
+            ...b,
+            id: genId('beat'),
+            suggestedAtRound: completedRound,
+          }));
+
+          const settingGuard: SettingGuardState = {
+            updatedAtRound: completedRound,
+            patches,
+            candidates: Array.from(candidatesByName.values()).slice(-24),
+            preference,
+            pendingAmbientBeats: [...survivedBeats, ...newBeats].slice(-12),
+            deviation: result.deviation
+              ? { ...result.deviation, flaggedAtRound: completedRound }
+              : undefined,
+            lastError: undefined,
+          };
+
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard,
+                    lastSettingGuardRound: completedRound,
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      acceptSettingCandidate: (id, candidateId) => {
+        const save = get().saves[id];
+        const guard = save?.state.authorNarrative?.settingGuard;
+        const candidate = guard?.candidates.find((c) => c.id === candidateId);
+        if (!save || !candidate) return;
+
+        let sinkBookId: string | undefined;
+        try {
+          const contentStore = useContentStore.getState();
+          const sinkName = `守护沉淀 · ${save.name}`;
+          const existing = contentStore.customWorldBooks.find((book) => book.name === sinkName);
+          const entry = {
+            id: genId('wbe_guard'),
+            name: candidate.name,
+            keywords: candidate.keywords ?? [],
+            content: candidate.content,
+            priority: 90,
+            alwaysActive: true,
+          };
+          if (existing) {
+            sinkBookId = existing.id;
+            contentStore.updateWorldBook({
+              ...existing,
+              entries: [
+                ...existing.entries.filter((item) => item.name !== candidate.name),
+                entry,
+              ],
+            });
+          } else {
+            sinkBookId = genId('wb_guard');
+            contentStore.addWorldBook({
+              id: sinkBookId,
+              name: sinkName,
+              description: '由设定守护者建议、玩家确认后沉淀的旅程专属世界书。',
+              entries: [entry],
+            });
+          }
+        } catch (err) {
+          console.warn('[settingGuard] accept candidate failed', err);
+          get().setSettingGuardError(id, err instanceof Error ? err.message : String(err));
+          return;
+        }
+
+        set((s) => {
+          const current = s.saves[id];
+          if (!current) return s;
+          const narrative = normalizeAuthorNarrativeState(current.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard);
+          if (!settingGuard) return s;
+          const worldBookIds = sinkBookId
+            ? Array.from(new Set([...(current.content.worldBookIds ?? []), sinkBookId]))
+            : current.content.worldBookIds;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(current, {
+                content: {
+                  ...current.content,
+                  worldBookIds,
+                },
+                state: {
+                  ...current.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      candidates: settingGuard.candidates.map((c) =>
+                        c.id === candidateId ? { ...c, status: 'accepted' } : c,
+                      ),
+                      lastError: undefined,
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        });
+      },
+
+      rejectSettingCandidate: (id, candidateId) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard);
+          if (!settingGuard) return s;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      candidates: settingGuard.candidates.map((c) =>
+                        c.id === candidateId ? { ...c, status: 'rejected' } : c,
+                      ),
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      deleteSettingCandidate: (id, candidateId) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard);
+          if (!settingGuard) return s;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      candidates: settingGuard.candidates.filter((c) => c.id !== candidateId),
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      markAmbientBeatConsumed: (id, beatId) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard);
+          if (!settingGuard) return s;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      pendingAmbientBeats: settingGuard.pendingAmbientBeats.map((b) =>
+                        b.id === beatId ? { ...b, consumed: true } : b,
+                      ),
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      expireOldAmbientBeats: (id, currentRound, maxAge = 3) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard);
+          if (!settingGuard) return s;
+          const expireBefore = Math.max(0, currentRound - Math.max(1, maxAge));
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      pendingAmbientBeats: settingGuard.pendingAmbientBeats.map((b) =>
+                        !b.consumed && b.suggestedAtRound < expireBefore ? { ...b, consumed: true } : b,
+                      ),
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      clearSettingGuardDeviation: (id) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard);
+          if (!settingGuard) return s;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      deviation: undefined,
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      setSettingGuardError: (id, error) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const settingGuard = normalizeSettingGuard(narrative.settingGuard) ?? {
+            updatedAtRound: save.state.currentRound,
+            patches: [],
+            candidates: [],
+            pendingAmbientBeats: [],
+          };
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    settingGuard: {
+                      ...settingGuard,
+                      lastError: error?.trim().slice(0, 240) || undefined,
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
       addAnchor: (id, anchor) =>
         set((s) => {
           const save = s.saves[id];
@@ -1192,6 +1671,12 @@ export const useGameStore = create<GameStoreState>()(
           const sv = saves[id];
           saves[id] = {
             ...sv,
+            content: {
+              ...sv.content,
+              authorSettingGuard: (sv.content as any)?.mode === 'author'
+                ? normalizeAuthorSettingGuardConfig((sv.content as any)?.authorSettingGuard)
+                : (sv.content as any)?.authorSettingGuard,
+            },
             config: {
               totalRounds: sv.config?.totalRounds ?? 30,
               manualInputEvery: sv.config?.manualInputEvery ?? 5,
