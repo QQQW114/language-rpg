@@ -20,6 +20,7 @@ import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 import {
   buildStrictCustomDecisionBlock,
   getDecisionSystemTemplate,
@@ -477,7 +478,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       defaultDecisionUserPrompt,
     }) || defaultDecisionUserPrompt
     : defaultDecisionUserPrompt;
-  const decisionUserPrompt = appendMachineStateIfMissing(
+  const decisionUserPrompt = appendDeepSeekV4PureAnalysisMarker(appendMachineStateIfMissing(
     renderedDecisionUserPrompt,
     {
       backpackJsonBlock,
@@ -488,7 +489,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       narrativePlanBlock,
       activeArcsBlock,
     },
-  );
+  ));
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {
     const text = await chatJSON(

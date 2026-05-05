@@ -87,6 +87,8 @@ http://127.0.0.1:5173
 
 推荐：`deepseek-v4-pro` / `deepseek-v4-flash` 或能力相近的长上下文模型。
 
+项目已参考 DeepSeek V4 角色扮演提示词格式做了一定优化：故事模型可在设置页切换「默认」「DeepSeek V4 · 主角特化」「DeepSeek V4 · 指令遵循特化」三种模式；非故事类 JSON / 状态模型会在 user 消息末尾追加偏分析的格式约束，降低模型读剧情后入戏、破坏 JSON 协议的概率。
+
 - **故事模型**：`deepseek-v4-pro` —— 故事生成模型，越强越好。
 - **决策模型**：`deepseek-v4-flash` —— 场景轮换、人物关系、背包道具。
 - **摘要 / 记忆模型**：`deepseek-v4-flash` —— 压缩上下文 + 整理稳定事实。
@@ -171,7 +173,13 @@ src/
 node scripts/test-api.mjs [model]
 ```
 
-该脚本用于本地 OpenAI 兼容代理联调。长期使用时建议改为从环境变量读取 API Base 与 Key。
+该脚本用于本地 OpenAI 兼容代理联调。请通过环境变量提供配置：
+
+```bash
+LRPG_API_BASE=http://127.0.0.1:8317/v1
+LRPG_API_KEY=your_api_key
+LRPG_TEST_MODEL=deepseek-v4-flash
+```
 
 ## 其他
 

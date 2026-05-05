@@ -15,6 +15,7 @@ import type {
 import { chatJSON } from '@/services/llmClient';
 import { AUTHOR_STAGE_JUDGE_SYSTEM, buildStageJudgeUser } from '@/prompts/authorStageJudgeSystem';
 import { clamp, extractJSON } from '@/lib/utils';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface StageJudgeRequest {
   settings: AppSettings;
@@ -116,7 +117,7 @@ function sanitizeStageJudge(raw: unknown, p: StageJudgeRequest): StageJudgeResul
 
 export async function requestStageJudge(p: StageJudgeRequest): Promise<StageJudgeResult | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildStageJudgeUser({
+  const user = appendDeepSeekV4PureAnalysisMarker(buildStageJudgeUser({
     outline: p.outline,
     characterName: p.characterName,
     currentRound: p.currentRound,
@@ -134,7 +135,7 @@ export async function requestStageJudge(p: StageJudgeRequest): Promise<StageJudg
     worldBookEntries: p.worldBookEntries,
     anchors: p.anchors,
     activeArcs: p.activeArcs,
-  });
+  }));
 
   const runOnce = async (temperature: number): Promise<StageJudgeResult | undefined> => {
     const text = await chatJSON(

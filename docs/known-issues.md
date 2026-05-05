@@ -13,15 +13,9 @@
 ### I-1 删除 / 编辑消息后衍生状态不同步
 - **报告**：用户测试时手动删除某轮消息或重做某轮后，下次模型调用（故事 / 决策 / stageJudge / settingGuard 等）的 `recent` / `latestStory` 等输入仍可能携带被删除的内容。`summary` / `longTermMemory` / `stageJudge.previous` / `settingGuard.patches` 等已固化的衍生状态**不会**因消息删除而自动失效。
 - **症状**：构建期间出现"玩家没输入故事却一直推进"——疑似衍生状态污染导致下游模型把已删消息当作仍在生效。
+- **当前缓解**：`updateMessage / deleteMessage / regenerateAssistantMessage` 已同步失效摘要、长期记忆、stageJudge、导演计划、设定守护 patches / ambientBeats / deviation、逻辑审校等派生状态；守护者 candidates 会保留，避免玩家已沉淀候选丢失。
 - **归属**：维护模型（store 层）
-- **建议修法**：
-  - `useGameStore.deleteMessage / updateMessage / regenerateAssistantMessage` 改造时同步清理：
-    - 若被删消息 round ≤ summarizedUntilIndex → 重置 `summary='' / summarizedUntilIndex=0`（强制下次重摘）
-    - 若被删消息 round ≤ lastMemoryRound → 重置 `longTermMemory='' / lastMemoryRound=0`
-    - 清空 `authorNarrative.stageJudge`（含 storyFocus）
-    - 清空 `authorNarrative.settingGuard.patches / deviation`（保留 candidates）
-    - 清空 `authorNarrative.logicReview`
-  - 或更激进：删除消息时给玩家一个 confirm「会同步重置摘要 / 长期记忆 / 阶段判断 / 设定守护者状态，确认继续？」
+- **剩余风险**：背包、NPC、场景、事件弧等仍是"当前状态"，并非完整按回合回滚；如果未来要支持严肃存档分叉，需要做 snapshot / event-sourcing。
 
 ### I-2 主弧旧存档不自动迁移
 - **背景**：主弧生成 prompt 缺 worldBookEntries 输入是已修复的设计缺漏，但**老存档的 masterArc.stages 仍按旧 prompt 生成**——含错误描述（如把"主动施用"写成"情绪驱动"）。
@@ -102,9 +96,8 @@
 - **归属**：前端
 
 ### I-13 候选词条数量上限存疑
-- **现状**：`SettingGuardCandidate` 在 store 里 `slice(-24)`，超出会丢最旧的。但 normalizeSettingGuard 持久化加载时允许 30 条。
-- **归属**：维护模型（store 一致性）
-- **建议**：统一为 24 或 30，避免持久化与运行时数量不一致。
+- **现状**：已统一为 `SETTING_GUARD_CANDIDATE_LIMIT = 24`，运行时新增与持久化 normalize 都使用同一上限。
+- **归属**：已处理，后续仅观察是否需要 UI 自动清理 accepted / rejected。
 
 ### I-14 stageJudge 失败时 storyFocus 沿用上次
 - **现状**：失败时 `setStageJudgeError` 写错误，故事 prompt 中读到的 stageJudge 仍是上次的成功值。
@@ -157,9 +150,8 @@
 - **建议**：低优先级。生产部署若需要可做 dynamic import 拆分（react-markdown / lucide-react 是大头）。
 
 ### I-19 scripts/test-api.mjs 内置 API key
-- **背景**：项目最初 review 时已发现的——`scripts/test-api.mjs` 含本地联调用的 API_BASE / API_KEY 常量。
-- **归属**：维护模型 / 工程
-- **建议**：改成从环境变量读取。`AGENTS.md` 已提到这点。
+- **状态**：已改为从 `LRPG_API_KEY` / `OPENAI_API_KEY` 与 `LRPG_API_BASE` / `OPENAI_BASE_URL` 读取；缺 key 时直接退出并提示。
+- **归属**：已处理。
 
 ### I-20 prompt-list.md 与代码偏差
 - **状态**：本轮已更新到 v2。后续若新增 agent 需同步维护此文档。

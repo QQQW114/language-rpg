@@ -41,6 +41,8 @@ import {
   normalizeAuthorStageJudgeConfig,
 } from '@/lib/authorMode';
 
+const SETTING_GUARD_CANDIDATE_LIMIT = 24;
+
 interface GameStoreState {
   saves: Record<string, GameSave>;
   activeSaveId?: string;
@@ -511,7 +513,7 @@ function normalizeSettingGuard(raw: unknown): SettingGuardState | undefined {
     : [];
 
   const candidates: SettingGuardCandidate[] = Array.isArray(obj.candidates)
-    ? obj.candidates.slice(0, 30).map((item, index) => {
+    ? obj.candidates.slice(0, SETTING_GUARD_CANDIDATE_LIMIT).map((item, index) => {
       const cand = item as Partial<SettingGuardCandidate>;
       const status = cand.status === 'accepted' || cand.status === 'rejected' || cand.status === 'pending'
         ? cand.status
@@ -713,6 +715,45 @@ function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
   };
 }
 
+function invalidateAuthorNarrativeAfterHistoryChange(state: GameState, affectedRound: number): Partial<GameState> {
+  if (!state.authorNarrative) return {};
+  const threshold = Math.max(0, Math.floor(Number(affectedRound) || 0));
+  const narrative = normalizeAuthorNarrativeState(state.authorNarrative);
+  const shouldDrop = (updatedAtRound?: number) =>
+    Number.isFinite(updatedAtRound) && Number(updatedAtRound) >= threshold;
+  const keepLastRound = (round?: number) =>
+    round !== undefined && round >= threshold ? undefined : round;
+
+  const settingGuard = narrative.settingGuard
+    ? shouldDrop(narrative.settingGuard.updatedAtRound)
+      ? {
+        updatedAtRound: Math.max(0, threshold - 1),
+        patches: [],
+        candidates: narrative.settingGuard.candidates,
+        preference: shouldDrop(narrative.settingGuard.preference?.updatedAtRound)
+          ? undefined
+          : narrative.settingGuard.preference,
+        pendingAmbientBeats: [],
+        lastError: narrative.settingGuard.lastError,
+      }
+      : narrative.settingGuard
+    : undefined;
+
+  return {
+    authorNarrative: {
+      ...narrative,
+      plan: shouldDrop(narrative.plan?.updatedAtRound) ? undefined : narrative.plan,
+      logicReview: shouldDrop(narrative.logicReview?.updatedAtRound) ? undefined : narrative.logicReview,
+      settingGuard,
+      stageJudge: shouldDrop(narrative.stageJudge?.updatedAtRound) ? undefined : narrative.stageJudge,
+      lastDirectorRound: keepLastRound(narrative.lastDirectorRound),
+      lastLogicCheckRound: keepLastRound(narrative.lastLogicCheckRound),
+      lastSettingGuardRound: keepLastRound(narrative.lastSettingGuardRound),
+      lastStageJudgeRound: keepLastRound(narrative.lastStageJudgeRound),
+    },
+  };
+}
+
 function normalizeAuthorRandomEventState(raw: unknown): AuthorRandomEventState {
   const obj = (raw ?? {}) as Partial<AuthorRandomEventState>;
   return {
@@ -873,10 +914,12 @@ export const useGameStore = create<GameStoreState>()(
             : {};
           const summaryInvalid = historyIndex < (save.state.summarizedUntilIndex ?? 0);
           const memoryInvalid = msg.round <= (save.state.lastMemoryRound ?? 0);
+          const derivedClean = invalidateAuthorNarrativeAfterHistoryChange(save.state, msg.round);
 
           const state: GameState = {
             ...save.state,
             ...pendingClean,
+            ...derivedClean,
             history,
             anchors: msg.role === 'assistant'
               ? (save.state.anchors ?? []).map((a) =>
@@ -912,10 +955,12 @@ export const useGameStore = create<GameStoreState>()(
           const summaryInvalid = historyIndex <= (save.state.summarizedUntilIndex ?? 0);
           const memoryInvalid = msg.round <= (save.state.lastMemoryRound ?? 0);
           const lastUser = [...history].reverse().find((m) => m.role === 'user');
+          const derivedClean = invalidateAuthorNarrativeAfterHistoryChange(save.state, msg.round);
 
           const state: GameState = {
             ...save.state,
             ...pendingClean,
+            ...derivedClean,
             history,
             error: undefined,
             regenerationHint: undefined,
@@ -955,10 +1000,12 @@ export const useGameStore = create<GameStoreState>()(
             history.length < (save.state.summarizedUntilIndex ?? 0);
           const memoryInvalid = msg.round <= (save.state.lastMemoryRound ?? 0);
           const regenerationHint = hint?.trim().slice(0, 1200) || undefined;
+          const derivedClean = invalidateAuthorNarrativeAfterHistoryChange(save.state, msg.round);
 
           const state: GameState = {
             ...save.state,
             ...pendingClean,
+            ...derivedClean,
             history,
             currentRound: msg.round,
             lastPlayerInput: lastUser?.content,
@@ -1707,7 +1754,7 @@ export const useGameStore = create<GameStoreState>()(
           const settingGuard: SettingGuardState = {
             updatedAtRound: completedRound,
             patches,
-            candidates: Array.from(candidatesByName.values()).slice(-24),
+            candidates: Array.from(candidatesByName.values()).slice(-SETTING_GUARD_CANDIDATE_LIMIT),
             preference,
             pendingAmbientBeats: [...survivedBeats, ...newBeats].slice(-12),
             deviation: result.deviation

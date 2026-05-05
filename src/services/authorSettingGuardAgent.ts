@@ -18,6 +18,7 @@ import type {
 import { chatJSON } from '@/services/llmClient';
 import { AUTHOR_SETTING_GUARD_SYSTEM, buildSettingGuardUser } from '@/prompts/authorSettingGuardSystem';
 import { extractJSON } from '@/lib/utils';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface SettingGuardRequest {
   settings: AppSettings;
@@ -180,7 +181,7 @@ function sanitizeSettingGuardResult(raw: unknown, p: SettingGuardRequest): Setti
 
 export async function requestSettingGuard(p: SettingGuardRequest): Promise<SettingGuardResult | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildSettingGuardUser(p);
+  const user = appendDeepSeekV4PureAnalysisMarker(buildSettingGuardUser(p));
 
   const runOnce = async (temperature: number): Promise<SettingGuardResult | undefined> => {
     const text = await chatJSON(

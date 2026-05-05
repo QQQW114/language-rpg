@@ -6,6 +6,7 @@ import type { StoryOutline, Background } from '@/types/content';
 import { chatJSON } from './llmClient';
 import { REVIEW_SYSTEM, buildReviewUser } from '@/prompts/reviewSystem';
 import { extractJSON, clamp, nowMs } from '@/lib/utils';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface ReviewRequest {
   settings: AppSettings;
@@ -71,7 +72,7 @@ export async function requestReview(p: ReviewRequest): Promise<AdventureReview> 
   const { settings, save, outline, background, signal } = p;
   const recent = save.state.history.slice(-RECENT_MESSAGES);
 
-  const userPrompt = buildReviewUser({
+  const userPrompt = appendDeepSeekV4PureAnalysisMarker(buildReviewUser({
     outline,
     background,
     characterName: save.content.characterName,
@@ -79,7 +80,7 @@ export async function requestReview(p: ReviewRequest): Promise<AdventureReview> 
     recent,
     ending: save.state.ending,
     totalRounds: save.config.totalRounds,
-  });
+  }));
 
   const model = settings.summaryModel?.trim() || settings.storyModel;
 

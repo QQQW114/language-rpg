@@ -4,7 +4,17 @@
 >
 > **本文是当前代码状态的真实快照，含执笔模式 Phase 1.0 + 1.0.5 的所有改动**。早期版本见 git 历史。
 >
-> 版本：截至「主弧生成补 worldBookEntries + stageJudge 补 longTermMemory/anchors/worldBook/activeArcs + memorySystem 补 outline/worldBook + summarizer 补 outline + storySystem 长度治理」之后的状态。
+> 版本：截至「DeepSeek V4 思维模式 marker 接入所有模型 user 末尾 + 故事模型三档提示词模式 + 玩家偏好显式进入故事 prompt」之后的状态。
+
+## 0.1 DeepSeek V4 思维模式注入总则
+
+参考 `docs/other/deepseek_v4_rolepaly_instruct-main` 的建议：**思维模式指令不放 system prompt，而拼到本次 user 消息末尾**。本项目所有 LLM 链路都按这个方向处理：
+
+- **故事模型**：由设置项 `settings.storyPromptMode` 控制。默认模式不追加 marker；DeepSeek V4 主角特化追加 `【角色沉浸要求】`；DeepSeek V4 指令遵循特化追加 `【思维模式要求】`。
+- **JSON / 状态 / 分析类模型**：统一追加纯分析 `【思维模式要求】`，防止模型读到剧情后把自己当成主角，优先保障 JSON 协议、设定分析、节奏判断和状态维护。
+- 实现集中在 `src/lib/deepseekV4Prompt.ts`：
+  - `buildDeepSeekV4StoryMarker(...)`：故事模型专用，按三档模式生成末尾 marker。
+  - `appendDeepSeekV4PureAnalysisMarker(...)`：非故事链路通用，追加纯分析 marker。
 
 ## 0. 一回合的完整调度顺序（执笔模式）
 
@@ -69,6 +79,22 @@
 | strictCustom | content.strictCustom 或 authorCustom | 玩家自定义提示词 |
 | finalizeRequested | state.finalizeRequested | 无尽模式收束信号 |
 | lengthHint / styleAddendum | content.storyStyle | 篇幅 + 风格补充 |
+| storyPromptMode | settings.storyPromptMode | 故事提示词模式：默认 / DeepSeek V4 主角特化 / DeepSeek V4 指令遵循特化 |
+
+### 1.1.1 故事提示词模式（DeepSeek V4 特化）
+
+设置页新增 `settings.storyPromptMode`，只影响**故事模型**，不影响 JSON/状态类模型。
+
+| 模式 | 正文人称 | user 消息末尾追加 | 用途 |
+|---|---|---|---|
+| `default` | 第二人称“你” | 无 | 保留原有故事主持人写法 |
+| `deepseek-v4-protagonist` | 第一人称“我” | `【角色沉浸要求】...` | 让 DeepSeek V4 在 `<think>` 内代入主角，提升情绪沉浸 |
+| `deepseek-v4-instruction` | 第三人称主角姓名 | `【思维模式要求】...` | 让 DeepSeek V4 在 `<think>` 内保持故事主理人 / 导演视角，降低把自己当主角和擅自替玩家行动的概率 |
+
+实现位置：
+- `src/services/storyAgent.ts`：在最终 `userMessage` 末尾追加 DeepSeek V4 marker。该内容只进入本次请求，不写入 `history`。
+- `src/prompts/storySystem.ts`：按 `storyPromptMode` 切换写作规范第 2 条（“你” / “我” / 主角姓名）。
+- 玩家偏好来源：执笔模式的设定守护者输出 `playerPreference`，经 `authorNarrative.settingGuard.preference` 进入 `storySystem` 的【玩家偏好画像】；DeepSeek V4 两个新模式还会把同一偏好追加进 user 末尾 marker。
 
 ### 1.2 决策模型详细输入（`buildDecisionUser` / 默认模板）
 
@@ -78,7 +104,7 @@
 - npcBlock / npcJsonBlock / anchorsBlock
 - currentSceneBlock / **narrativePlanBlock** / **activeArcsBlock**
 - strictCustomDecisionBlock
-- **stageJudge** 经由 storySystem 注入到故事 prompt，但决策 prompt 也接收 narrativePlan 作为参考
+- **stageJudge** 经由 `stageNarrativeBlock` 注入决策 prompt；决策 prompt 同时接收 narrativePlan / activeArcs 作为参考
 
 decisionSystem.ts 当前关键约束：
 - choices 必须贴合 stageJudge.storyFocus.thisRound（immersive/exploratory 时不给"立刻跳阶段"选项）
@@ -180,6 +206,8 @@ outline + background + characterName + currentRound / nextRound + totalRounds
 - anchors / longTermMemory（关键的 RAG 类输入）
 - backpack + narrative + randomEventState
 
+这些链路的 user prompt 末尾也会追加 DeepSeek V4 纯分析 marker，保持“分析模型不入戏、最终严格按 JSON 协议输出”的格式。
+
 各 prompt 中都补了 `playerPace` 纪律：
 - 导演：immersive/exploratory 时计划更细
 - 审校：违反 playerPace=warning，shouldAdvance=false 时强行推进=critical
@@ -210,6 +238,8 @@ outline + background + characterName + currentRound / nextRound + totalRounds
 
 文件：`prompts/randomizer.ts` / Service：`services/randomizers.ts` / 模型：`settings.randomModel || settings.summaryModel || settings.storyModel`
 
+这些启程页生成链路同样在 user prompt 末尾追加 DeepSeek V4 纯分析 marker；随机开局场景虽然输出纯文本，也使用纯分析 marker 来降低角色入戏干扰。
+
 | 功能 | System 常量 | 输出 |
 |---|---|---|
 | 随机故事大纲 | `RANDOM_OUTLINE_SYSTEM` | JSON：`StoryOutline` |
@@ -226,14 +256,21 @@ outline + background + characterName + currentRound / nextRound + totalRounds
 |---|---|---|
 | 严格自定义全局/推进/揭示/选项 | `strictCustom.{globalPrompt, pacingPrompt, revealPrompt, choicePrompt}` | 跨模式通用约束 |
 | 严格自定义详细大纲（仍保留 startRound/endRound 字段，但语义已软化为"建议范围"） | `strictCustom.detailedOutline[]` | 玩家明确想要的回合区间硬约束 |
-| 故事 system / user 模板 | `strictCustom.storySystemPrompt / storyUserPrompt` | 极限自定义故事模型 |
-| 决策 system / user 模板 | `strictCustom.decisionSystemPrompt / decisionUserPrompt` | 极限自定义决策模型 |
+| 提示词链路覆盖开关 | `strictCustom.promptOverrideEnabled` | 默认关闭；关闭时只注入严格规则块，不覆盖项目最新默认 system/user 模板 |
+| 故事 system / user 模板 | `strictCustom.storySystemPrompt / storyUserPrompt` | 仅在 `promptOverrideEnabled=true` 时覆盖故事模型 |
+| 故事提示词模式 | `settings.storyPromptMode` | 默认 / DeepSeek V4 主角特化 / DeepSeek V4 指令遵循特化 |
+| 决策 system / user 模板 | `strictCustom.decisionSystemPrompt / decisionUserPrompt` | 仅在 `promptOverrideEnabled=true` 时覆盖决策模型 |
 | 动态事件生成器 / 偏好提示词 | `authorRandomEvent.dynamic.{generatorPrompt, preferencePrompt}` | 动态事件方向 |
 | 叙事导演提示词 | `authorDirector.prompt` | 阶段目标/节奏控制 |
 | 逻辑审校提示词 | `authorLogicCheck.prompt` | 审校关注点 |
 | 设定守护者提示词 | `authorSettingGuard.prompt` | 守护者关注点 |
 | **主弧生成提示词** | `authorMasterArc.stageHint` | 玩家给主弧设计师的偏好（默认空） |
 | **阶段判断提示词** | `authorStageJudge.prompt` | 玩家对节奏判断的偏好 |
+
+严格自定义编辑页内置三个故事 System 模板草稿：
+- `DEFAULT_STORY_SYSTEM_TEMPLATE`：完整默认链路，含主弧 / stageJudge / 守护者 / 审校 / 记忆等全部块。
+- `DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE`：强调叙述人称服从 `{{writingRulesBlock}}`，适配当前三档故事提示词模式。
+- `COMPACT_STORY_SYSTEM_TEMPLATE`：面向 prompt 长流程膨胀的轻量草稿，保留核心块并减少低优先级输入。
 
 ---
 

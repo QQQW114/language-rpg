@@ -4,6 +4,7 @@
 import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/types/content';
 import type { AuthorLogicIssue, AuthorNarrativeState, AuthorRandomEventState, Item, Npc, MemoryAnchor, PlayerPace, SceneRef } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
+import type { StoryPromptMode } from '@/types/settings';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import {
@@ -31,6 +32,7 @@ export interface BuildStorySystemParams {
   authorRandomEventState?: AuthorRandomEventState;
   finalizeRequested?: boolean;  // 无尽模式下玩家要求本回合收束
   lengthHint?: 'short' | 'standard' | 'long';
+  storyPromptMode?: StoryPromptMode;
   styleAddendum?: string;
   strictCustom?: StrictCustomConfig;
 }
@@ -48,11 +50,27 @@ function paceToHumanReadable(pace: PlayerPace): string {
   }
 }
 
+function protagonistNameOf(characterName?: string): string {
+  return characterName?.trim() || '主角';
+}
+
+function perspectiveRule(mode: StoryPromptMode | undefined, characterName?: string): string {
+  const protagonist = protagonistNameOf(characterName);
+  switch (mode) {
+    case 'deepseek-v4-protagonist':
+      return `2. 使用第一人称"我"叙述玩家角色；"我"就是${protagonist}。允许写"我的"感受、观察与即时反应，但不要替玩家做出超出输入的关键决定。`;
+    case 'deepseek-v4-instruction':
+      return `2. 使用第三人称叙述玩家角色，优先称呼其姓名"${protagonist}"；不要用第二人称"你"指代玩家角色，也不要用第一人称"我"代替${protagonist}行动。`;
+    default:
+      return '2. 使用第二人称"你"称呼玩家角色。';
+  }
+}
+
 export function buildStorySystem(p: BuildStorySystemParams): string {
   const {
     outline, background, characterName, activeWorldBookEntries,
     summary, longTermMemory, currentRound, totalRounds, triggeredEvent, backpack, usedItems, npcs, anchors, currentScene,
-    authorNarrative, authorRandomEventState, finalizeRequested, lengthHint, styleAddendum, strictCustom,
+    authorNarrative, authorRandomEventState, finalizeRequested, lengthHint, storyPromptMode, styleAddendum, strictCustom,
   } = p;
 
   const isInfinite = !totalRounds || totalRounds <= 0;
@@ -230,6 +248,9 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     if (settingGuard.preference?.tendency && settingGuard.preference.confidence !== 'low') {
       lines.push('', `【玩家偏好画像 · 置信度 ${settingGuard.preference.confidence}】`);
       lines.push(settingGuard.preference.tendency);
+      if (settingGuard.preference.recentSignals?.length) {
+        lines.push(`近期信号：${settingGuard.preference.recentSignals.slice(0, 5).join('；')}`);
+      }
     }
 
     return lines.length ? lines.join('\n') : '';
@@ -373,7 +394,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const writingRulesBlock = [
     '【写作规范】',
     lengthRule,
-    '2. 使用第二人称"你"称呼玩家角色。',
+    perspectiveRule(storyPromptMode, characterName),
     '3. 不要替玩家做出本回合的关键决定；叙述在自然的选择点或悬念处收束，但避免直接写"你会怎么做？"这类元指令。',
     '4. 环境、NPC、时间推移你可以自由推进；玩家的具体行为应依据玩家上一条输入。若玩家输入含糊，你可合理演绎后果。',
     '5. 允许使用 Markdown：**人名/关键地点/物品** 以粗体强调；*内心独白/感官细节* 以斜体表现。',

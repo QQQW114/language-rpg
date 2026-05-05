@@ -5,6 +5,7 @@ import type { RawDestroy, RawGrant, RawItemPatch } from '@/lib/items';
 import { formatItemsForPrompt } from '@/lib/items';
 import { chatJSON } from './llmClient';
 import { MEMORY_SYSTEM, buildMemoryUser } from '@/prompts/memorySystem';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface MemoryDecisionSnapshot {
   choices?: Choice[];
@@ -135,7 +136,7 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<strin
           { role: 'system', content: MEMORY_SYSTEM },
           {
             role: 'user',
-            content: buildMemoryUser({
+            content: appendDeepSeekV4PureAnalysisMarker(buildMemoryUser({
               previousMemory: clip(p.previousMemory ?? '', maxChars),
               recentText: formatRecent(p.recent),
               decisionText: formatDecision(p.decision),
@@ -146,7 +147,7 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<strin
               outlineText: formatOutlineForMemory(p.outline),
               worldBookText: formatAlwaysActiveWorldBook(p.worldBookEntries),
               maxChars,
-            }),
+            })),
           },
         ],
         signal: p.signal,

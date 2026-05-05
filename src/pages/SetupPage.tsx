@@ -625,7 +625,7 @@ export default function SetupPage() {
       {step === 'strict' && journeyMode === 'author' && (
         <StrictCustomEditor
           title="严格自定义模式"
-          description="面向强自定义旅程的独立提示词链路。执笔模式默认每回合都由玩家自由输入；当前版本先复制原严格自定义链路，后续可在这里继续加入专属模型、伏笔、填坑与逻辑审校。"
+          description="面向强自定义旅程的独立规则与详细大纲。执笔模式默认每回合都由玩家自由输入；提示词链路覆盖已改为独立开关，默认沿用项目最新模型链路。"
           config={authorDraft}
           update={authorMode.update}
           reset={authorMode.reset}
@@ -713,10 +713,11 @@ export default function SetupPage() {
                     )}
                   </CardTitle>
                   <CardMeta>
-                    用高优先级提示词控制隐藏设定揭示、回合推进粒度和指定回合详细大纲。
+                    用高优先级规则控制隐藏设定揭示、回合推进粒度和指定回合详细大纲；提示词链路覆盖需在编辑页单独打开。
                   </CardMeta>
                   <div className="text-xs text-parchment-200/70">
                     详细大纲 {strictDetailCount} 项
+                    {strictCustomDraft.promptOverrideEnabled ? ' · 已覆盖提示词链路' : ' · 使用默认提示词链路'}
                     {strictCustomDraft.enabled ? ' · 将随新旅程固化' : ' · 当前未启用'}
                   </div>
                 </div>
@@ -734,10 +735,12 @@ export default function SetupPage() {
                       <span className="text-[10px] text-gold/80 tracking-[0.25em] uppercase">每回合自由行动</span>
                     </CardTitle>
                     <CardMeta>
-                      使用独立提示词链路与详细大纲草稿；当前版本先复制原严格自定义链路，后续可扩展专属模型。
+                      使用独立规则、详细大纲草稿与可选提示词链路覆盖；默认沿用项目最新提示词链路。
                     </CardMeta>
                     <div className="text-xs text-parchment-200/70">
-                      详细大纲 {authorDetailCount} 项 · 将随新旅程固化
+                      详细大纲 {authorDetailCount} 项
+                      {authorDraft.promptOverrideEnabled ? ' · 已覆盖提示词链路' : ' · 使用默认提示词链路'}
+                      {' · 将随新旅程固化'}
                     </div>
                   </div>
                   <Button variant="outline" onClick={() => setStep('strict')}>

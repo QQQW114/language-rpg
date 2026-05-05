@@ -6,6 +6,15 @@ import { OrnateDivider } from '@/components/ui/Ornaments';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { clsx } from '@/lib/utils';
 import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
+import {
+  COMPACT_STORY_SYSTEM_TEMPLATE,
+  DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE,
+  DEFAULT_DECISION_USER_TEMPLATE,
+  DEFAULT_STORY_SYSTEM_TEMPLATE,
+  DEFAULT_STORY_USER_TEMPLATE,
+  FOCUSED_STORY_USER_TEMPLATE,
+} from '@/lib/strictCustom';
+import { DECISION_SYSTEM } from '@/prompts/decisionSystem';
 
 interface StrictCustomEditorProps {
   title?: string;
@@ -59,7 +68,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
             <div>
               <CardTitle className="mb-1">{props.enableLabel ?? '启用严格自定义'}</CardTitle>
               <CardMeta>
-                {props.enableDescription ?? '开启后，新旅程会使用下方提示词模板作为实际请求内容；关闭时仅作为草稿保存，不影响新旅程。'}
+                {props.enableDescription ?? '开启后，新旅程会注入上方规则、详细大纲和选项偏好；提示词链路模板是否覆盖由下方独立开关控制。'}
               </CardMeta>
             </div>
           </label>
@@ -104,10 +113,26 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
         />
       </div>
 
-      <OrnateDivider>提示词链路</OrnateDivider>
+      <OrnateDivider>提示词链路覆盖</OrnateDivider>
+      <Card className={clsx('mb-4', config.promptOverrideEnabled && 'border-gold/70 shadow-glow-sm')}>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={config.promptOverrideEnabled}
+            onChange={(e) => update({ promptOverrideEnabled: e.target.checked })}
+            className="mt-1 accent-gold"
+          />
+          <div>
+            <CardTitle className="mb-1">启用 system / user 模板覆盖</CardTitle>
+            <CardMeta>
+              默认关闭：严格自定义只把上方规则块注入项目最新默认提示词，不会意外覆盖最近加入的故事模式、DeepSeek V4 marker 和辅助模型链路。
+              打开后，下方四个模板会直接替换对应模型的 system / user prompt。
+            </CardMeta>
+          </div>
+        </label>
+      </Card>
       <div className="text-sm text-parchment-200/70 leading-relaxed mb-3">
-        这些文本框显示的就是实际请求会使用的模板：默认已填入项目原本提示词；玩家修改后会直接覆盖对应的
-        system / user 内容，而不是追加到末尾。清空某项会自动回退到项目默认模板。
+        下方文本框默认只是草稿；只有打开「启用 system / user 模板覆盖」后才会成为实际请求模板。清空某项会自动回退到项目默认模板。
         故事模板常用变量：
         <code className="text-gold/80 mx-1">{'{{round}}'}</code>
         <code className="text-gold/80 mx-1">{'{{roundInfo}}'}</code>
@@ -120,6 +145,56 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
         <code className="text-gold/80 mx-1">{'{{strictCustomDecisionBlock}}'}</code>
         <code className="text-gold/80 mx-1">{'{{defaultDecisionUserPrompt}}'}</code>。
       </div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          onClick={() => update({ storySystemPrompt: DEFAULT_STORY_SYSTEM_TEMPLATE })}
+        >
+          载入故事完整模板
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          onClick={() => update({ storySystemPrompt: DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE })}
+        >
+          载入 DeepSeek 兼容故事模板
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          onClick={() => update({ storySystemPrompt: COMPACT_STORY_SYSTEM_TEMPLATE })}
+        >
+          载入故事精简模板
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          onClick={() => update({ storyUserPrompt: DEFAULT_STORY_USER_TEMPLATE })}
+        >
+          载入默认 Story User
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          onClick={() => update({ storyUserPrompt: FOCUSED_STORY_USER_TEMPLATE })}
+        >
+          载入聚焦推进 Story User
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          type="button"
+          onClick={() => update({ decisionSystemPrompt: DECISION_SYSTEM, decisionUserPrompt: DEFAULT_DECISION_USER_TEMPLATE })}
+        >
+          载入决策默认模板
+        </Button>
+      </div>
       <div className="grid gap-4 md:grid-cols-2">
         <Textarea
           label="故事模型 · System 提示词模板"
@@ -127,7 +202,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
           onChange={(e) => update({ storySystemPrompt: e.target.value })}
           rows={8}
           placeholder="默认显示项目原本的故事 system prompt；可直接在此编辑。"
-          hint="会直接作为故事模型的 system prompt。保留 {{strictCustomBlock}} 才会让上方严格规则和详细大纲参与请求。"
+          hint="覆盖开关打开后会直接作为故事模型 system prompt。建议保留 {{writingRulesBlock}} 以跟随故事提示词模式，保留 {{strictCustomBlock}} 以注入上方严格规则和详细大纲。"
         />
         <Textarea
           label="故事模型 · User 提示词模板"
@@ -143,7 +218,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
           onChange={(e) => update({ decisionSystemPrompt: e.target.value })}
           rows={8}
           placeholder="默认显示项目原本的决策 system prompt；可直接在此编辑。"
-          hint="会直接作为决策模型的 system prompt。建议保留 JSON 输出协议，避免选项解析失败。"
+          hint="覆盖开关打开后会直接作为决策模型 system prompt。建议保留 JSON 输出协议，避免选项解析失败。"
         />
         <Textarea
           label="决策模型 · User 提示词模板"
@@ -151,7 +226,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
           onChange={(e) => update({ decisionUserPrompt: e.target.value })}
           rows={8}
           placeholder="默认显示项目原本的决策 user prompt；可直接在此编辑。"
-          hint="会直接作为决策模型的 user prompt。保留 {{strictCustomDecisionBlock}} 才会让上方选项生成偏好参与请求。"
+          hint="覆盖开关打开后会直接作为决策模型 user prompt。保留 {{strictCustomDecisionBlock}} 才会让上方选项生成偏好参与请求。"
         />
       </div>
 

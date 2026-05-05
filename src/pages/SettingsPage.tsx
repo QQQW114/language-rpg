@@ -7,7 +7,7 @@ import { Field } from '@/components/ui/Input';
 import { Textarea } from '@/components/ui/Input';
 import { OrnateDivider } from '@/components/ui/Ornaments';
 import { useState } from 'react';
-import type { AppSettings, StoryLength } from '@/types/settings';
+import type { AppSettings, StoryLength, StoryPromptMode } from '@/types/settings';
 import { DEFAULT_SETTINGS } from '@/types/settings';
 import { clsx } from '@/lib/utils';
 
@@ -195,6 +195,38 @@ export default function SettingsPage() {
                 {v === 'standard' && '标准 · 220~420 字'}
                 {v === 'long' && '长 · 360~600 字'}
               </button>
+            ))}
+          </div>
+        </Field>
+        <Field
+          label="故事提示词模式"
+          hint="用于切换故事模型的叙述视角与 DeepSeek V4 思维模式指令；默认模式保留原有第二人称。"
+        >
+          <div className="grid grid-cols-1 gap-2">
+            {([
+              {
+                value: 'default',
+                label: '默认 · 第二人称',
+                sub: '保留原有提示词：故事主持人用“你”称呼玩家角色。',
+              },
+              {
+                value: 'deepseek-v4-protagonist',
+                label: 'DeepSeek V4 · 主角特化',
+                sub: '在 user 末尾加入角色沉浸指令；正文改用第一人称“我”。',
+              },
+              {
+                value: 'deepseek-v4-instruction',
+                label: 'DeepSeek V4 · 指令遵循特化',
+                sub: '在 user 末尾加入纯分析指令；正文改用主角姓名第三人称，降低擅自代入主角的概率。',
+              },
+            ] as Array<{ value: StoryPromptMode; label: string; sub: string }>).map((option) => (
+              <FormatOption
+                key={option.value}
+                label={option.label}
+                sub={option.sub}
+                active={draft.storyPromptMode === option.value}
+                onClick={() => set('storyPromptMode', option.value)}
+              />
             ))}
           </div>
         </Field>

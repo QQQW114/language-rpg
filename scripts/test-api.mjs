@@ -1,9 +1,14 @@
 // 端到端测试：Responses 格式 · 流式 + JSON 输出
 // 运行：node scripts/test-api.mjs [model]
 
-const BASE = 'http://127.0.0.1:8317/v1';
-const KEY = 'sk-VbUcliEygJlyIVBXu';
-const MODEL = process.argv[2] || 'gpt-5.4-mini';
+const BASE = process.env.LRPG_API_BASE || process.env.OPENAI_BASE_URL || 'http://127.0.0.1:8317/v1';
+const KEY = process.env.LRPG_API_KEY || process.env.OPENAI_API_KEY || '';
+const MODEL = process.argv[2] || process.env.LRPG_TEST_MODEL || 'gpt-5.4-mini';
+
+if (!KEY) {
+  console.error('缺少 API Key：请设置 LRPG_API_KEY 或 OPENAI_API_KEY 后再运行 scripts/test-api.mjs');
+  process.exit(1);
+}
 
 function buildBody(messages, model, temperature) {
   const systems = [];

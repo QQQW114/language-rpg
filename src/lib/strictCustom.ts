@@ -29,6 +29,56 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动�
 
 export const DEFAULT_STORY_USER_TEMPLATE = `{{defaultUserMessage}}`;
 
+export const DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动小说主理人，正在把玩家输入转化为一段连贯、有逻辑的中文互动小说。
+叙述人称必须完全服从下方【写作规范】中的人称规则；不要因历史文本里的"你/我/主角姓名"示例而切回旧人称。
+{{roundInfo}}
+{{outlineBlock}}
+{{masterArcBlock}}
+{{stageJudgeBlock}}
+{{storyArcBlock}}
+{{backgroundBlock}}
+{{worldBookAlwaysBlock}}
+{{worldBookTriggeredBlock}}
+{{summaryBlock}}
+{{memoryBlock}}
+{{narrativePlanBlock}}
+{{settingGuardBlock}}
+{{logicReviewBlock}}
+{{npcsBlock}}
+{{anchorsBlock}}
+{{backpackBlock}}
+{{currentSceneBlock}}
+{{strictCustomBlock}}
+{{usedItemsBlock}}
+{{writingRulesBlock}}
+{{styleAddendumBlock}}
+{{specialBlock}}
+
+请只输出本回合故事正文。你可以描写环境、NPC 反应和即时后果，但不要替玩家做出超出输入的关键决定。`;
+
+export const COMPACT_STORY_SYSTEM_TEMPLATE = `你是互动小说主持人。基于以下上下文，只写本回合直接发生的剧情。
+{{roundInfo}}
+{{masterArcBlock}}
+{{stageJudgeBlock}}
+{{storyArcBlock}}
+{{worldBookAlwaysBlock}}
+{{memoryBlock}}
+{{settingGuardBlock}}
+{{npcsBlock}}
+{{anchorsBlock}}
+{{currentSceneBlock}}
+{{strictCustomBlock}}
+{{usedItemsBlock}}
+{{writingRulesBlock}}
+{{styleAddendumBlock}}
+{{specialBlock}}
+
+若缺少信息，以已知设定和玩家最新输入为准；不要补无关长篇背景。`;
+
+export const FOCUSED_STORY_USER_TEMPLATE = `{{defaultUserMessage}}
+
+请优先处理玩家本回合输入中最关键的一步，并停在自然的下一压力点。`;
+
 export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 {{longTermMemoryBlock}}
 {{recentTextBlock}}
@@ -70,6 +120,7 @@ export const DEFAULT_STRICT_CUSTOM_CONFIG: StrictCustomConfig = {
     '隐藏能力、身份秘密、幕后真相、世界机制只作为幕后设定保持一致；除非玩家明确尝试、调查、触发，或详细大纲指定揭示，否则不要写进正文。',
   choicePrompt:
     '选项应围绕当前压力点给出 3~4 个差异明确的行动，不要提前替玩家解决危机，也不要把隐藏设定作为选项前提。',
+  promptOverrideEnabled: false,
   storySystemPrompt: DEFAULT_STORY_SYSTEM_TEMPLATE,
   storyUserPrompt: DEFAULT_STORY_USER_TEMPLATE,
   decisionSystemPrompt: DECISION_SYSTEM,
@@ -111,6 +162,7 @@ export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>)
     pacingPrompt: (input?.pacingPrompt ?? base.pacingPrompt).trim().slice(0, 2000),
     revealPrompt: (input?.revealPrompt ?? base.revealPrompt).trim().slice(0, 2000),
     choicePrompt: (input?.choicePrompt ?? base.choicePrompt).trim().slice(0, 2000),
+    promptOverrideEnabled: Boolean(input?.promptOverrideEnabled),
     storySystemPrompt: promptTemplate(input?.storySystemPrompt, base.storySystemPrompt),
     storyUserPrompt: promptTemplate(input?.storyUserPrompt, base.storyUserPrompt),
     decisionSystemPrompt: promptTemplate(input?.decisionSystemPrompt, base.decisionSystemPrompt),
@@ -182,23 +234,27 @@ export function buildStrictCustomDecisionBlock(config: StrictCustomConfig | unde
 export function getStorySystemTemplate(config: StrictCustomConfig | undefined): string {
   if (!config?.enabled) return DEFAULT_STORY_SYSTEM_TEMPLATE;
   const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.promptOverrideEnabled) return DEFAULT_STORY_SYSTEM_TEMPLATE;
   return normalized.storySystemPrompt || DEFAULT_STORY_SYSTEM_TEMPLATE;
 }
 
 export function getStoryUserTemplate(config: StrictCustomConfig | undefined): string {
   if (!config?.enabled) return DEFAULT_STORY_USER_TEMPLATE;
   const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.promptOverrideEnabled) return DEFAULT_STORY_USER_TEMPLATE;
   return normalized.storyUserPrompt || DEFAULT_STORY_USER_TEMPLATE;
 }
 
 export function getDecisionSystemTemplate(config: StrictCustomConfig | undefined): string {
   if (!config?.enabled) return DECISION_SYSTEM;
   const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.promptOverrideEnabled) return DECISION_SYSTEM;
   return normalized.decisionSystemPrompt || DECISION_SYSTEM;
 }
 
 export function getDecisionUserTemplate(config: StrictCustomConfig | undefined): string {
   if (!config?.enabled) return DEFAULT_DECISION_USER_TEMPLATE;
   const normalized = normalizeStrictCustomConfig(config);
+  if (!normalized.promptOverrideEnabled) return DEFAULT_DECISION_USER_TEMPLATE;
   return normalized.decisionUserPrompt || DEFAULT_DECISION_USER_TEMPLATE;
 }

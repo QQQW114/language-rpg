@@ -1,5 +1,6 @@
 export type ApiFormat = 'chat' | 'responses';
 export type StoryLength = 'short' | 'standard' | 'long';
+export type StoryPromptMode = 'default' | 'deepseek-v4-protagonist' | 'deepseek-v4-instruction';
 
 export interface StoryStyleSettings {
   storyLength: StoryLength;
@@ -22,6 +23,7 @@ export interface AppSettings {
   memoryEveryRounds: number;          // 每隔多少个已完成回合更新长期记忆；0 表示关闭
   memoryMaxChars: number;             // 长期记忆块最大字符数
   storyLength: StoryLength;            // 故事篇幅偏好
+  storyPromptMode: StoryPromptMode;     // 故事模型提示词模式 / DeepSeek V4 特化
   storyStyleAddendum: string;          // 故事风格自由追加提示
 }
 
@@ -41,5 +43,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   memoryEveryRounds: 3,
   memoryMaxChars: 4000,
   storyLength: 'standard',
+  storyPromptMode: 'default',
   storyStyleAddendum: '',
 };

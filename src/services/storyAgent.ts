@@ -7,6 +7,7 @@ import type { StrictCustomConfig } from '@/types/custom';
 import { chatStreamDetailed, type ChatMessage } from './llmClient';
 import { buildStorySystem } from '@/prompts/storySystem';
 import { getStoryUserTemplate, renderPromptTemplate } from '@/lib/strictCustom';
+import { buildDeepSeekV4StoryMarker } from '@/lib/deepseekV4Prompt';
 
 export interface StoryRequest {
   settings: AppSettings;
@@ -60,6 +61,7 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     strictCustom: p.strictCustom,
     finalizeRequested: p.finalizeRequested,
     lengthHint: p.settings.storyLength,
+    storyPromptMode: p.settings.storyPromptMode,
     styleAddendum: p.settings.storyStyleAddendum,
   });
   // 以 summarizedUntilIndex 为起点，从 history 中切出未被摘要的部分（再做一层 MAX_CONTEXT_MESSAGES 兜底）
@@ -102,7 +104,7 @@ export async function requestStory(p: StoryRequest): Promise<string> {
   }
 
   const nextRound = p.currentRound + 1;
-  const userMessage = renderPromptTemplate(getStoryUserTemplate(p.strictCustom), {
+  const renderedUserMessage = renderPromptTemplate(getStoryUserTemplate(p.strictCustom), {
     round: nextRound,
     completedRounds: p.currentRound,
     nextRound,
@@ -112,6 +114,14 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     usedItemsBlock,
     regenerationHintBlock: regenerationHintBlock.trim(),
   }) || defaultUserMessage;
+  const storyPromptModeMarker = buildDeepSeekV4StoryMarker(
+    p.settings.storyPromptMode,
+    p.characterName,
+    p.authorNarrative?.settingGuard?.preference,
+  );
+  const userMessage = storyPromptModeMarker
+    ? `${renderedUserMessage}\n\n${storyPromptModeMarker}`
+    : renderedUserMessage;
   messages.push({ role: 'user', content: userMessage });
 
   const maxTokens =
@@ -145,7 +155,9 @@ export async function requestStory(p: StoryRequest): Promise<string> {
       { role: 'assistant', content: full },
       {
         role: 'user',
-        content: '（上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。）',
+        content: storyPromptModeMarker
+          ? `（上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。）\n\n${storyPromptModeMarker}`
+          : '（上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。）',
       },
     ];
   }

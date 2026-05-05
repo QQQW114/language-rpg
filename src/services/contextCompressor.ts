@@ -6,6 +6,7 @@ import type { StoryOutline } from '@/types/content';
 import type { AppSettings } from '@/types/settings';
 import { chatJSON } from './llmClient';
 import { SUMMARIZER_SYSTEM, buildSummarizerUser } from '@/prompts/summarizer';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface CompressResult {
   newSummary: string;
@@ -54,7 +55,7 @@ export async function maybeCompress(p: CompressInput): Promise<CompressResult | 
         temperature: 0.3,
         messages: [
           { role: 'system', content: SUMMARIZER_SYSTEM },
-          { role: 'user', content: buildSummarizerUser(summary, text, outline) },
+          { role: 'user', content: appendDeepSeekV4PureAnalysisMarker(buildSummarizerUser(summary, text, outline)) },
         ],
       },
     );

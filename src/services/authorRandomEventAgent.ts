@@ -14,6 +14,7 @@ import type {
 import { chatJSON } from '@/services/llmClient';
 import { AUTHOR_RANDOM_EVENT_SYSTEM, buildAuthorRandomEventUser } from '@/prompts/authorRandomEventSystem';
 import { clamp, extractJSON, genId, nowMs } from '@/lib/utils';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface AuthorRandomEventRequest {
   settings: AppSettings;
@@ -149,7 +150,7 @@ function parseResult(text: string, p: AuthorRandomEventRequest): AuthorRandomEve
 
 export async function requestAuthorRandomEvent(p: AuthorRandomEventRequest): Promise<AuthorRandomEventResult> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildAuthorRandomEventUser(p);
+  const user = appendDeepSeekV4PureAnalysisMarker(buildAuthorRandomEventUser(p));
   const runOnce = async (temperature: number) => {
     const text = await chatJSON(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },

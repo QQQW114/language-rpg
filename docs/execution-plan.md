@@ -238,7 +238,7 @@
 
 | 改动 | 说明 |
 |---|---|
-| #5 模型链路提示词编辑器 | `SettingsPage` 新增「执笔提示词」标签页，暴露每个 system prompt 与 user 模板（含变量说明），允许玩家覆盖默认 |
+| #5 模型链路提示词编辑器 | 已先在严格自定义 / 执笔模式编辑页加入 story/decision system/user 模板草稿与 `promptOverrideEnabled` 覆盖开关；完整 Settings 级全模型编辑器仍待做 |
 | #6 各模型独立选模型 | `SettingsStore` 扩展：每个 agent 独立 `model / temperature / topP / maxTokens / retryEnabled` |
 | #7 调度面板 | 新增「执笔调度」设置区：每个辅助 agent 独立 `everyRounds` + 启用开关 + 失败策略；预估每轮总耗时 |
 
@@ -300,7 +300,7 @@
 | 0 | 审校 severity 判定标准 + 例子 | ☑ 完成 |
 | 0 | prompt 调优实施(优先级 2) | ☐ 块优先级 / horizonRounds / 结局伏笔收束 |
 | 0 | **prompt 输入长度治理 / 长流程稳定性** | ☐ 用户反馈：故事模型后期"越聊越糟"。需要：块优先级 + 长度预算、NPC 列表按"最近活跃"精简、记忆上限按长流程动态扩、已修复审校 issue 自动清空、历史滚动更激进 |
-| 0 | **删除/编辑消息后模型仍携带被删记录（bug）** | ☐ 用户反馈：在前端删除聊天消息或重做某轮后，下次模型调用（故事/决策/各 author agent）的 `recent` / `latestStory` / `summary` 等输入仍然包含已删除的记录。检查 useGameStore 的 `deleteMessage` / `updateMessage` / `regenerateAssistantMessage` 是否完整清理：summary（若被删消息已包含在 summarizedUntilIndex 内）、longTermMemory（若已纳入）、stageJudge.previous（含旧的 storyFocus）、settingGuard 状态（patches/preference 可能基于已删剧情）。可能需要：删除消息时同步清掉对应已固化的衍生状态，并在下次调度前强制刷新 |
+| 0 | **删除/编辑消息后模型仍携带被删记录（bug）** | ☑ 基础缓解完成：编辑 / 删除 / 重做消息时会失效 summary、longTermMemory、stageJudge、导演计划、设定守护补丁、逻辑审校等派生状态。完整回滚背包 / NPC / 场景 / 事件弧仍需未来 snapshot 机制 |
 | 0 | 主弧生成模型补世界书输入 | ☑ 完成（用户测试发现主弧 stages 把"念头即变 / 灌入知识"擅自简化为"情绪驱动"——根因是主弧生成 prompt 未读 worldBook；已修） |
 | 0 | prompt 调优实施(优先级 3) | 合并入 Phase 1.5 |
 | **1.0** | **设定守护者**（已实现，规范见 `docs/setting-guard.md`） | ☑ 完成 |

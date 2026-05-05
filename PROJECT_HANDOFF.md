@@ -89,7 +89,7 @@ cmd /c npm run build
 
 ## 已发现的后续关注点
 
-- `scripts/test-api.mjs` 内有本地联调用的内置 API Base 与 Key 常量；建议后续改成环境变量，例如 `LRPG_API_BASE` / `LRPG_API_KEY`。
+- `scripts/test-api.mjs` 已改为读取环境变量：`LRPG_API_BASE` / `OPENAI_BASE_URL`、`LRPG_API_KEY` / `OPENAI_API_KEY`、`LRPG_TEST_MODEL`。
 - 当前没有自动化单元测试；关键纯函数适合补测：
   - `extractJSON`
   - `readSSE` 的 frame 解析
@@ -103,4 +103,3 @@ cmd /c npm run build
   3. 生成一轮故事。
   4. 生成选项。
   5. 测试背包、场景跳转、手动输入和完结评分。
-

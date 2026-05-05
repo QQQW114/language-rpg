@@ -15,6 +15,7 @@ import type { StrictCustomConfig } from '@/types/custom';
 import { chatJSON } from '@/services/llmClient';
 import { AUTHOR_DIRECTOR_SYSTEM, buildAuthorDirectorUser } from '@/prompts/authorDirectorSystem';
 import { clamp, extractJSON, genId } from '@/lib/utils';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface AuthorDirectorRequest {
   settings: AppSettings;
@@ -133,7 +134,7 @@ function sanitizePlan(raw: unknown, p: AuthorDirectorRequest): NarrativePlanStat
 
 export async function requestAuthorDirectorPlan(p: AuthorDirectorRequest): Promise<NarrativePlanState | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildAuthorDirectorUser(p);
+  const user = appendDeepSeekV4PureAnalysisMarker(buildAuthorDirectorUser(p));
 
   const runOnce = async (temperature: number): Promise<NarrativePlanState | undefined> => {
     const text = await chatJSON(

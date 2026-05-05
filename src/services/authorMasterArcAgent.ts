@@ -9,6 +9,7 @@ import type {
 import { chatJSON } from '@/services/llmClient';
 import { AUTHOR_MASTER_ARC_SYSTEM, buildMasterArcUser } from '@/prompts/authorMasterArcSystem';
 import { clamp, extractJSON, genId } from '@/lib/utils';
+import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface AuthorMasterArcRequest {
   settings: AppSettings;
@@ -140,13 +141,13 @@ export function fallbackMasterArcFromOutline(
 
 export async function requestMasterArc(p: AuthorMasterArcRequest): Promise<MasterArcState | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.storyModel;
-  const user = buildMasterArcUser({
+  const user = appendDeepSeekV4PureAnalysisMarker(buildMasterArcUser({
     outline: p.outline,
     background: p.background,
     characterName: p.characterName,
     config: p.config,
     worldBookEntries: p.worldBookEntries,
-  });
+  }));
 
   const runOnce = async (temperature: number): Promise<MasterArcState | undefined> => {
     const text = await chatJSON(
