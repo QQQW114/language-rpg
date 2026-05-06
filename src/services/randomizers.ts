@@ -12,7 +12,6 @@ import {
   summarizeWorldEntries,
 } from '@/prompts/randomizer';
 import { extractJSON, genId, clamp } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 function toStringArr(v: unknown, max = 5): string[] {
   if (!Array.isArray(v)) return [];
@@ -64,7 +63,7 @@ export async function requestRandomOutline(
         temperature,
         messages: [
           { role: 'system', content: RANDOM_OUTLINE_SYSTEM },
-          { role: 'user', content: appendDeepSeekV4PureAnalysisMarker(buildRandomOutlineUser(hints)) },
+          { role: 'user', content: buildRandomOutlineUser(hints) },
         ],
         signal,
       },
@@ -118,7 +117,7 @@ export async function requestRandomBackground(
         temperature,
         messages: [
           { role: 'system', content: RANDOM_BACKGROUND_SYSTEM },
-          { role: 'user', content: appendDeepSeekV4PureAnalysisMarker(buildRandomBackgroundUser(outline, worldSummary, hint)) },
+          { role: 'user', content: buildRandomBackgroundUser(outline, worldSummary, hint) },
         ],
         signal,
       },
@@ -150,7 +149,7 @@ export async function requestRandomScene(
       temperature: 0.95,
       messages: [
         { role: 'system', content: RANDOM_SCENE_SYSTEM },
-        { role: 'user', content: appendDeepSeekV4PureAnalysisMarker(buildRandomSceneUser(outline, background, hint)) },
+        { role: 'user', content: buildRandomSceneUser(outline, background, hint) },
       ],
       signal,
     },
@@ -210,7 +209,7 @@ export async function requestRandomEvents(
         temperature,
         messages: [
           { role: 'system', content: RANDOM_EVENTS_SYSTEM },
-          { role: 'user', content: appendDeepSeekV4PureAnalysisMarker(buildRandomEventsUser({ outline, background, startScene, hint, count })) },
+          { role: 'user', content: buildRandomEventsUser({ outline, background, startScene, hint, count }) },
         ],
         signal,
       },
@@ -281,7 +280,7 @@ export async function requestRandomWorldBook(
         temperature,
         messages: [
           { role: 'system', content: RANDOM_WORLDBOOK_SYSTEM },
-          { role: 'user', content: appendDeepSeekV4PureAnalysisMarker(buildRandomWorldBookUser({ outline, hint, count })) },
+          { role: 'user', content: buildRandomWorldBookUser({ outline, hint, count }) },
         ],
         signal,
       },

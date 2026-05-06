@@ -3,10 +3,9 @@
 import type { AppSettings } from '@/types/settings';
 import type { AdventureReview, GameSave } from '@/types/game';
 import type { StoryOutline, Background } from '@/types/content';
-import { chatJSON } from './llmClient';
+import { chatJSONDetailed } from './llmClient';
 import { REVIEW_SYSTEM, buildReviewUser } from '@/prompts/reviewSystem';
 import { extractJSON, clamp, nowMs } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface ReviewRequest {
   settings: AppSettings;
@@ -72,7 +71,7 @@ export async function requestReview(p: ReviewRequest): Promise<AdventureReview> 
   const { settings, save, outline, background, signal } = p;
   const recent = save.state.history.slice(-RECENT_MESSAGES);
 
-  const userPrompt = appendDeepSeekV4PureAnalysisMarker(buildReviewUser({
+  const userPrompt = buildReviewUser({
     outline,
     background,
     characterName: save.content.characterName,
@@ -80,12 +79,12 @@ export async function requestReview(p: ReviewRequest): Promise<AdventureReview> 
     recent,
     ending: save.state.ending,
     totalRounds: save.config.totalRounds,
-  }));
+  });
 
   const model = settings.summaryModel?.trim() || settings.storyModel;
 
   const run = async (temperature: number): Promise<AdventureReview | null> => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: settings.apiBaseUrl, apiKey: settings.apiKey, format: settings.apiFormat },
       {
         model,
@@ -97,7 +96,8 @@ export async function requestReview(p: ReviewRequest): Promise<AdventureReview> 
         signal,
       },
     );
-    return sanitize(extractJSON(text));
+    const review = sanitize(extractJSON(result.text));
+    return review ? { ...review, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : null;
   };
 
   try {

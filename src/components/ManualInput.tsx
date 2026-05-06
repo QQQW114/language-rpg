@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
+import { Send } from 'lucide-react';
 import { Textarea } from './ui/Input';
 import { Button } from './ui/Button';
-import { Send } from 'lucide-react';
 
 interface ManualInputProps {
   disabled?: boolean;
@@ -20,7 +20,9 @@ export function ManualInput({ disabled, onSubmit, placeholder }: ManualInputProp
   };
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative flex flex-col gap-2 pt-1">
+      {/* 顶部一条金线分割（始终可见，提示这是输入区） */}
+      <div aria-hidden className="pointer-events-none mb-1 h-px bg-gold-line opacity-60" />
       <Textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -34,9 +36,12 @@ export function ManualInput({ disabled, onSubmit, placeholder }: ManualInputProp
           }
         }}
       />
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] tracking-[0.2em] text-parchment-200/45 font-serif italic">
+          ⌘ / Ctrl + Enter 即落笔
+        </span>
         <Button onClick={submit} disabled={disabled || !value.trim()}>
-          <Send size={16} /> 发送
+          <Send size={16} /> 送出
         </Button>
       </div>
     </div>

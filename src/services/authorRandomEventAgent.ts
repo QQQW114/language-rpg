@@ -11,10 +11,10 @@ import type {
   StoryArc,
   StoryArcStage,
 } from '@/types/game';
-import { chatJSON } from '@/services/llmClient';
+import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_RANDOM_EVENT_SYSTEM, buildAuthorRandomEventUser } from '@/prompts/authorRandomEventSystem';
 import { clamp, extractJSON, genId, nowMs } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
+import type { LlmUsage } from '@/types/llm';
 
 export interface AuthorRandomEventRequest {
   settings: AppSettings;
@@ -45,6 +45,9 @@ export interface AuthorRandomEventResult {
   trigger: boolean;
   reason?: string;
   arc?: StoryArc;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 function cleanText(value: unknown, max: number): string {
@@ -150,9 +153,9 @@ function parseResult(text: string, p: AuthorRandomEventRequest): AuthorRandomEve
 
 export async function requestAuthorRandomEvent(p: AuthorRandomEventRequest): Promise<AuthorRandomEventResult> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = appendDeepSeekV4PureAnalysisMarker(buildAuthorRandomEventUser(p));
+  const user = buildAuthorRandomEventUser(p);
   const runOnce = async (temperature: number) => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
       {
         model,
@@ -164,7 +167,8 @@ export async function requestAuthorRandomEvent(p: AuthorRandomEventRequest): Pro
         signal: p.signal,
       },
     );
-    return parseResult(text, p);
+    const parsed = parseResult(result.text, p);
+    return parsed ? { ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
   };
 
   const first = await runOnce(p.mustTrigger ? 0.45 : 0.65).catch((err) => {

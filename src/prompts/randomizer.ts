@@ -4,7 +4,9 @@ import type { StoryOutline, Background, WorldBookEntry } from '@/types/content';
 
 // ---------- 随机故事大纲 ----------
 
-export const RANDOM_OUTLINE_SYSTEM = `你是一位题材全能的 TRPG 故事总设计师（高奇幻 / 低魔 / 赛博朋克 / 哥特悬疑 / 架空历史 / 末世科幻 等皆可驾驭）。你需要为玩家原创一段供一次性游玩的故事大纲。
+export const RANDOM_OUTLINE_SYSTEM = `你是这段互动小说的"故事总设计师"。你会严格参照用户消息中的主题偏好和避开列表，设计有世界氛围、主角处境、核心冲突、三幕递进和结局代价的大纲。
+
+随机故事大纲生成规则：为玩家原创一段供一次性游玩的故事大纲，可驾驭高奇幻、低魔、赛博朋克、哥特悬疑、架空历史、末世科幻等题材。
 
 输出协议（严格 JSON，无围栏，无多余文字）：
 {
@@ -42,7 +44,9 @@ export function buildRandomOutlineUser(hints: RandomOutlineHints = {}): string {
 
 // ---------- 随机出身 ----------
 
-export const RANDOM_BACKGROUND_SYSTEM = `你是 TRPG 角色创作师。请为给定的故事大纲生成一个契合的玩家"出身"。
+export const RANDOM_BACKGROUND_SYSTEM = `你是这段互动小说的"角色创作师"。你会严格参照用户消息中的故事大纲、世界设定和玩家偏好，设计贴合主线但不剧透的出身、特质、初始物品和开局场景。
+
+随机出身生成规则：为给定的故事大纲生成一个契合的玩家"出身"。
 
 输出协议（严格 JSON，无围栏，无多余文字）：
 {
@@ -74,7 +78,9 @@ export function buildRandomBackgroundUser(outline: StoryOutline, worldSummary?: 
 
 // ---------- 随机开局 ----------
 
-export const RANDOM_SCENE_SYSTEM = `你是互动小说的开篇作者。根据给定的故事大纲与玩家出身，重新撰写一段开篇场景。
+export const RANDOM_SCENE_SYSTEM = `你是这段互动小说的"开篇作者"。你会严格参照用户消息中的故事大纲、玩家出身和开局偏好，用具象感官细节写出可直接作为第 0 回合的开篇场景。
+
+随机开篇场景生成规则：根据给定的故事大纲与玩家出身，重新撰写一段开篇场景。
 
 要求：
 - 使用第二人称"你"
@@ -99,7 +105,9 @@ export function buildRandomSceneUser(outline: StoryOutline, background: Backgrou
 
 // ---- 随机事件池 ----
 
-export const RANDOM_EVENTS_SYSTEM = `你是 TRPG 随机事件设计师。根据给定的故事大纲与玩家出身（可能还有开局场景与主题提示），设计 5~8 条贴合该世界观、该主角处境、该题材基调的随机事件。这些事件会在游戏中按概率触发，作为指令注入给故事模型，让故事在合适时机"自然融入"事件。
+export const RANDOM_EVENTS_SYSTEM = `你是这段互动小说的"随机事件设计师"。你会严格参照用户消息中的故事大纲、玩家出身、开局场景和事件偏好，设计题材一致、能自然触发、不会替玩家决定反应的事件池。
+
+随机事件池生成规则：根据给定的故事大纲与玩家出身（可能还有开局场景与主题提示），设计 5~8 条贴合该世界观、该主角处境、该题材基调的随机事件。这些事件会在游戏中按概率触发，作为指令注入给故事模型，让故事在合适时机"自然融入"事件。
 
 输出协议（严格 JSON，无围栏，无多余文字）：
 {
@@ -158,7 +166,9 @@ export function summarizeWorldEntries(entries: WorldBookEntry[]): string {
 
 // ---- 随机世界书 ----
 
-export const RANDOM_WORLDBOOK_SYSTEM = `你是经验丰富的 TRPG 世界观设计师。为玩家生成一份可用于游戏的"世界书"——一组互补的设定条目，由一条"常驻"条目给出世界基调，其余条目以关键词触发的方式补充具体细节（组织、地点、魔法体系、势力、风俗等）。
+export const RANDOM_WORLDBOOK_SYSTEM = `你是这段互动小说的"世界观设计师"。你会严格参照用户消息中的故事大纲和世界书偏好，设计互补、不重复、可被后续故事模型稳定引用的常驻基调与关键词触发条目。
+
+随机世界书生成规则：为玩家生成一份可用于游戏的"世界书"——一组互补的设定条目，由一条"常驻"条目给出世界基调，其余条目以关键词触发的方式补充具体细节（组织、地点、魔法体系、势力、风俗等）。
 
 输出协议（严格 JSON，无围栏，无多余文字）：
 {

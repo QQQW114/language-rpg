@@ -10,20 +10,14 @@ interface ItemSelectorProps {
   disabled?: boolean;
 }
 
-/**
- * 简洁可勾选的道具行，用于选项或手动输入阶段。
- * - "本回合获得"的道具（pendingGrantKey）高亮金光 + ✨
- * - "即将失去"的道具（pendingDestroy）划掉 + 红色 + 🚫，不可勾选
- * - 一次性 / 多次性 有不同色调区分
- */
 export function ItemSelector({ items, selectedIds, onToggle, disabled }: ItemSelectorProps) {
   if (items.length === 0) return null;
   const selected = new Set(selectedIds);
 
   return (
     <div className="mb-3">
-      <div className="text-xs tracking-[0.3em] text-gold/70 font-serif uppercase mb-2">
-        可用道具 · 勾选以在本回合使用
+      <div className="mb-2 text-[10px] tracking-[0.3em] text-parchment-200/55 font-serif uppercase">
+        器物 · 勾选以在本回合使用
       </div>
       <div className="flex flex-wrap gap-2">
         {items.map((it) => {
@@ -43,16 +37,17 @@ export function ItemSelector({ items, selectedIds, onToggle, disabled }: ItemSel
                   : `${it.name}（${itemTypeLabel(it.type)}）: ${it.description}`
               }
               className={clsx(
-                'group inline-flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all font-serif text-sm',
+                'inline-flex items-center gap-2 px-3 py-1.5 rounded-md border font-serif text-sm',
+                'transition-colors duration-200',
                 'disabled:cursor-not-allowed',
                 isDoomed
-                  ? 'bg-blood/10 border-blood/60 text-parchment-200/50 line-through opacity-70'
+                  ? 'bg-blood/10 border-blood/45 text-parchment-200/55 line-through opacity-75'
                   : isSel
-                  ? 'bg-gold/20 border-gold text-gold-light shadow-glow-sm'
+                  ? 'bg-gold/12 border-gold/65 text-gold-light'
                   : isPending
-                  ? 'bg-parchment-900/60 border-gold/60 text-parchment-50 hover:border-gold hover:bg-parchment-900/80'
-                  : 'bg-parchment-800/60 border-parchment-600/50 text-parchment-100 hover:border-gold/70',
-                disabled && !isDoomed && 'opacity-50',
+                  ? 'bg-parchment-900/55 border-gold-dark/55 text-parchment-100 hover:border-gold/55'
+                  : 'bg-parchment-900/55 border-parchment-700/55 text-parchment-100 hover:border-gold-dark/70',
+                disabled && !isDoomed && 'opacity-55',
               )}
             >
               {isDoomed && <Ban size={12} className="text-blood" />}
@@ -60,15 +55,15 @@ export function ItemSelector({ items, selectedIds, onToggle, disabled }: ItemSel
               <span>{it.name}</span>
               <span
                 className={clsx(
-                  'text-[10px] px-1.5 py-0.5 rounded',
+                  'inline-flex items-center justify-center text-[10px] px-1.5 py-0.5 rounded border tracking-wider',
                   isConsumable
-                    ? 'bg-blood/20 text-blood border border-blood/40'
-                    : 'bg-sky-500/10 text-sky-300/80 border border-sky-500/30',
+                    ? 'bg-blood/15 text-blood/95 border-blood/40'
+                    : 'bg-moss/15 text-moss-light border-moss/40',
                 )}
               >
                 {isConsumable ? '一次性' : '多次性'}
               </span>
-              {isSel && !isDoomed && <Check size={12} />}
+              {isSel && !isDoomed && <Check size={12} className="text-gold-light" />}
             </button>
           );
         })}

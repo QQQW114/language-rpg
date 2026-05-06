@@ -3,15 +3,21 @@
 //  1) chat: data: {"choices":[{"delta":{"content":"..."}}]}
 //  2) responses: 事件 response.output_text.delta → {"delta":"..."}
 
+import { mergeLlmUsage, normalizeLlmUsage } from '@/lib/llmUsage';
+import type { LlmUsage } from '@/types/llm';
+
 export interface StreamOptions {
   onDelta: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
   format?: 'chat' | 'responses';
 }
 
 export interface StreamResult {
   text: string;
+  thinking?: string;
   finishReason?: string;
+  usage?: LlmUsage;
 }
 
 type RawFrame = Record<string, unknown>;
@@ -20,6 +26,18 @@ function extractChatDelta(frame: RawFrame): string | undefined {
   const choices = (frame as any).choices;
   if (!Array.isArray(choices) || choices.length === 0) return undefined;
   const content = choices[0]?.delta?.content;
+  return typeof content === 'string' ? content : undefined;
+}
+
+function extractChatThinkingDelta(frame: RawFrame): string | undefined {
+  const choices = (frame as any).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+  const delta = choices[0]?.delta;
+  const content =
+    delta?.reasoning_content ??
+    delta?.reasoning ??
+    delta?.thinking ??
+    delta?.thoughts;
   return typeof content === 'string' ? content : undefined;
 }
 
@@ -35,6 +53,108 @@ function extractResponsesDelta(frame: RawFrame): string | undefined {
     throw new Error(String(msg));
   }
   return undefined;
+}
+
+function extractResponsesThinkingDelta(frame: RawFrame): string | undefined {
+  const anyFrame = frame as any;
+  const type = anyFrame.type;
+  if (
+    type === 'response.reasoning_summary_text.delta'
+    || type === 'response.reasoning_text.delta'
+    || type === 'response.thinking.delta'
+  ) {
+    const delta = anyFrame.delta ?? anyFrame.text;
+    return typeof delta === 'string' ? delta : undefined;
+  }
+  const content =
+    anyFrame.reasoning_content ??
+    anyFrame.reasoning ??
+    anyFrame.thinking ??
+    anyFrame.thoughts;
+  return typeof content === 'string' ? content : undefined;
+}
+
+function trailingPrefixLength(text: string, tag: string): number {
+  const lower = text.toLowerCase();
+  for (let n = Math.min(tag.length - 1, lower.length); n > 0; n--) {
+    if (lower.endsWith(tag.slice(0, n))) return n;
+  }
+  return 0;
+}
+
+function createThinkTagSplitter(onText: (text: string) => void, onThinking: (text: string) => void) {
+  let inThink = false;
+  let pending = '';
+  let text = '';
+  let thinking = '';
+  const openTag = '<think>';
+  const closeTag = '</think>';
+
+  const emitText = (chunk: string) => {
+    if (!chunk) return;
+    text += chunk;
+    onText(chunk);
+  };
+  const emitThinking = (chunk: string) => {
+    if (!chunk) return;
+    thinking += chunk;
+    onThinking(chunk);
+  };
+
+  const feed = (chunk: string, flush = false) => {
+    let rest = pending + chunk;
+    pending = '';
+    while (rest) {
+      const lower = rest.toLowerCase();
+      if (inThink) {
+        const close = lower.indexOf(closeTag);
+        if (close >= 0) {
+          emitThinking(rest.slice(0, close));
+          rest = rest.slice(close + closeTag.length);
+          inThink = false;
+          continue;
+        }
+        if (!flush) {
+          const keep = trailingPrefixLength(rest, closeTag);
+          if (keep > 0) {
+            emitThinking(rest.slice(0, -keep));
+            pending = rest.slice(-keep);
+            return;
+          }
+        }
+        emitThinking(rest);
+        return;
+      }
+
+      const open = lower.indexOf(openTag);
+      if (open >= 0) {
+        emitText(rest.slice(0, open));
+        rest = rest.slice(open + openTag.length);
+        inThink = true;
+        continue;
+      }
+      if (!flush) {
+        const keep = trailingPrefixLength(rest, openTag);
+        if (keep > 0) {
+          emitText(rest.slice(0, -keep));
+          pending = rest.slice(-keep);
+          return;
+        }
+      }
+      emitText(rest);
+      return;
+    }
+  };
+
+  const finish = () => {
+    if (pending) feed('', true);
+    return {
+      text: text.trim(),
+      thinking: thinking.trim() || undefined,
+    };
+  };
+
+  return { feed, finish };
 }
 
 function detectFinishReason(frame: RawFrame): string | undefined {
@@ -68,6 +188,11 @@ function detectFinishReason(frame: RawFrame): string | undefined {
   return undefined;
 }
 
+function extractUsage(frame: RawFrame): LlmUsage | undefined {
+  const anyFrame = frame as any;
+  return normalizeLlmUsage(anyFrame.usage ?? anyFrame.response?.usage);
+}
+
 export async function readSSEDetailed(
   response: Response,
   opts: StreamOptions,
@@ -76,10 +201,22 @@ export async function readSSEDetailed(
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
-  let full = '';
   let finishReason: string | undefined;
+  let nativeThinking = '';
+  let usage: LlmUsage | undefined;
 
   const extractor = opts.format === 'responses' ? extractResponsesDelta : extractChatDelta;
+  const thinkingExtractor = opts.format === 'responses' ? extractResponsesThinkingDelta : extractChatThinkingDelta;
+  const splitter = createThinkTagSplitter(opts.onDelta, (t) => opts.onThinkingDelta?.(t));
+  const finish = (): StreamResult => {
+    const result = splitter.finish();
+    const thinking = [nativeThinking.trim(), result.thinking]
+      .map((x) => x?.trim())
+      .filter(Boolean)
+      .join('\n\n')
+      || undefined;
+    return { ...result, thinking, finishReason, usage };
+  };
 
   try {
     while (true) {
@@ -98,7 +235,9 @@ export async function readSSEDetailed(
 
         const payload = line.slice(5).trim();
         if (!payload) continue;
-        if (payload === '[DONE]') return { text: full, finishReason };
+        if (payload === '[DONE]') {
+          return finish();
+        }
 
         let frame: RawFrame;
         try {
@@ -108,17 +247,23 @@ export async function readSSEDetailed(
         }
 
         finishReason = detectFinishReason(frame) ?? finishReason;
+        usage = mergeLlmUsage(usage, extractUsage(frame));
+        const thinkingDelta = thinkingExtractor(frame);
+        if (thinkingDelta) {
+          nativeThinking += thinkingDelta;
+          opts.onThinkingDelta?.(thinkingDelta);
+        }
+
         const delta = extractor(frame);
         if (delta) {
-          full += delta;
-          opts.onDelta(delta);
+          splitter.feed(delta);
         }
       }
     }
   } finally {
     try { reader.releaseLock(); } catch { /* noop */ }
   }
-  return { text: full, finishReason };
+  return finish();
 }
 
 export async function readSSE(

@@ -12,10 +12,9 @@ import type {
   SceneRef,
 } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
-import { chatJSON } from '@/services/llmClient';
+import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_DIRECTOR_SYSTEM, buildAuthorDirectorUser } from '@/prompts/authorDirectorSystem';
 import { clamp, extractJSON, genId } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface AuthorDirectorRequest {
   settings: AppSettings;
@@ -134,10 +133,10 @@ function sanitizePlan(raw: unknown, p: AuthorDirectorRequest): NarrativePlanStat
 
 export async function requestAuthorDirectorPlan(p: AuthorDirectorRequest): Promise<NarrativePlanState | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = appendDeepSeekV4PureAnalysisMarker(buildAuthorDirectorUser(p));
+  const user = buildAuthorDirectorUser(p);
 
   const runOnce = async (temperature: number): Promise<NarrativePlanState | undefined> => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
       {
         model,
@@ -149,8 +148,9 @@ export async function requestAuthorDirectorPlan(p: AuthorDirectorRequest): Promi
         signal: p.signal,
       },
     );
-    const obj = extractJSON(text);
-    return sanitizePlan(obj, p);
+    const obj = extractJSON(result.text);
+    const plan = sanitizePlan(obj, p);
+    return plan ? { ...plan, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
   };
 
   const first = await runOnce(0.45).catch((err) => {

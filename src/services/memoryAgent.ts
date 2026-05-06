@@ -3,9 +3,9 @@ import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type { Choice, Item, MemoryAnchor, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import type { RawDestroy, RawGrant, RawItemPatch } from '@/lib/items';
 import { formatItemsForPrompt } from '@/lib/items';
-import { chatJSON } from './llmClient';
+import { chatJSONDetailed } from './llmClient';
 import { MEMORY_SYSTEM, buildMemoryUser } from '@/prompts/memorySystem';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
+import type { LlmUsage } from '@/types/llm';
 
 export interface MemoryDecisionSnapshot {
   choices?: Choice[];
@@ -31,6 +31,13 @@ export interface MemoryUpdateRequest {
   worldBookEntries?: WorldBookEntry[];
   maxChars: number;
   signal?: AbortSignal;
+}
+
+export interface MemoryUpdateResult {
+  memory: string;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 const MAX_RECENT_CHARS = 6000;
@@ -123,11 +130,11 @@ function formatAlwaysActiveWorldBook(entries: WorldBookEntry[] | undefined): str
   return lines.join('\n');
 }
 
-export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<string | null> {
+export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<MemoryUpdateResult | null> {
   const maxChars = clampMaxChars(p.maxChars);
   const model = p.settings.memoryModel?.trim() || p.settings.summaryModel?.trim() || p.settings.storyModel;
   try {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
       {
         model,
@@ -136,7 +143,7 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<strin
           { role: 'system', content: MEMORY_SYSTEM },
           {
             role: 'user',
-            content: appendDeepSeekV4PureAnalysisMarker(buildMemoryUser({
+            content: buildMemoryUser({
               previousMemory: clip(p.previousMemory ?? '', maxChars),
               recentText: formatRecent(p.recent),
               decisionText: formatDecision(p.decision),
@@ -147,15 +154,20 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<strin
               outlineText: formatOutlineForMemory(p.outline),
               worldBookText: formatAlwaysActiveWorldBook(p.worldBookEntries),
               maxChars,
-            })),
+            }),
           },
         ],
         signal: p.signal,
       },
     );
-    const out = text.trim();
+    const out = result.text.trim();
     if (!out) return null;
-    return clip(out, maxChars);
+    return {
+      memory: clip(out, maxChars),
+      thinking: result.thinking,
+      rawOutput: result.text,
+      usage: result.usage,
+    };
   } catch (err) {
     console.warn('[memoryAgent] update failed', err);
     return null;

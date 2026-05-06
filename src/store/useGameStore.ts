@@ -29,6 +29,7 @@ import type {
   NarrativeStage,
   NarrativeStageBeat,
   StageJudgeState,
+  AgentThought,
 } from '@/types/game';
 import type { SettingGuardResult } from '@/services/authorSettingGuardAgent';
 import type { StageJudgeResult } from '@/services/authorStageJudgeAgent';
@@ -40,6 +41,7 @@ import {
   normalizeAuthorSettingGuardConfig,
   normalizeAuthorStageJudgeConfig,
 } from '@/lib/authorMode';
+import { hasCacheHit, normalizeLlmUsage } from '@/lib/llmUsage';
 
 const SETTING_GUARD_CANDIDATE_LIMIT = 24;
 
@@ -63,6 +65,7 @@ interface GameStoreState {
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
   setLongTermMemory: (id: string, memory: string, round: number) => void;
   appendMessage: (id: string, msg: Message) => void;
+  addAgentThought: (id: string, thought: Omit<AgentThought, 'id' | 'createdAt'> & { id?: string; createdAt?: number }) => void;
   updateMessage: (id: string, historyIndex: number, content: string) => void;
   deleteMessage: (id: string, historyIndex: number) => void;
   updateAssistantMessage: (id: string, historyIndex: number, content: string) => void;
@@ -382,6 +385,29 @@ function emptyAuthorRandomEventState(): AuthorRandomEventState {
   };
 }
 
+function normalizeAgentThoughts(raw: unknown): AgentThought[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(-80).map((item, index) => {
+    const obj = item && typeof item === 'object' ? item as Partial<AgentThought> : {};
+    const content = String(obj.content ?? '').trim().slice(0, 12000);
+    const output = String(obj.output ?? '').trim().slice(0, 16000);
+    const usage = normalizeLlmUsage(obj.usage);
+    const cacheHit = hasCacheHit(usage, obj.cacheHit);
+    if (!content && !output && !usage && !cacheHit) return undefined;
+    return {
+      id: obj.id || genId(`thought_${index}`),
+      kind: String(obj.kind ?? 'model').trim().slice(0, 40) || 'model',
+      label: String(obj.label ?? '模型').trim().slice(0, 40) || '模型',
+      round: Math.max(0, Math.floor(Number(obj.round) || 0)),
+      content: content || undefined,
+      output: output || undefined,
+      usage,
+      cacheHit,
+      createdAt: Number(obj.createdAt) || nowMs(),
+    } satisfies AgentThought;
+  }).filter(Boolean) as AgentThought[];
+}
+
 function normalizeStoryArc(raw: unknown): StoryArc | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const obj = raw as Partial<StoryArc>;
@@ -492,6 +518,7 @@ function normalizeAuthorLogicReview(raw: unknown): AuthorLogicReviewState | unde
     issues,
     repairDirectives,
     nextRoundWarnings,
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
   };
 }
 
@@ -581,6 +608,7 @@ function normalizeSettingGuard(raw: unknown): SettingGuardState | undefined {
     pendingAmbientBeats,
     deviation,
     lastError: obj.lastError?.trim().slice(0, 240) || undefined,
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
   };
 }
 
@@ -656,6 +684,7 @@ function normalizeMasterArc(raw: unknown): MasterArcState | undefined {
     generationConfig: obj.generationConfig
       ? normalizeAuthorMasterArcConfig(obj.generationConfig)
       : undefined,
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
   };
 }
 
@@ -695,6 +724,7 @@ function normalizeStageJudge(raw: unknown): StageJudgeState | undefined {
         : undefined,
     },
     lastError: obj.lastError?.trim().slice(0, 240) || undefined,
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
   };
 }
 
@@ -765,6 +795,7 @@ function normalizeAuthorRandomEventState(raw: unknown): AuthorRandomEventState {
     currentProbability: Number.isFinite(obj.currentProbability) ? obj.currentProbability : 0,
     lastCheckedRound: obj.lastCheckedRound,
     lastError: obj.lastError,
+    lastThinking: obj.lastThinking?.trim().slice(0, 12000) || undefined,
   };
 }
 
@@ -808,6 +839,7 @@ export const useGameStore = create<GameStoreState>()(
             availableScenes: [],
             authorNarrative: emptyAuthorNarrativeState(),
             authorRandomEventState: emptyAuthorRandomEventState(),
+            agentThoughts: [],
           },
         };
         set((s) => ({
@@ -893,6 +925,32 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           const state = { ...save.state, history: [...save.state.history, msg] };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      addAgentThought: (id, thought) =>
+        set((s) => {
+          const save = s.saves[id];
+          const content = thought.content?.trim().slice(0, 12000);
+          const output = thought.output?.trim().slice(0, 16000);
+          const usage = normalizeLlmUsage(thought.usage);
+          const cacheHit = hasCacheHit(usage, thought.cacheHit);
+          if (!save || (!content && !output && !usage && !cacheHit)) return s;
+          const next: AgentThought = {
+            id: thought.id || genId('thought'),
+            kind: thought.kind.trim().slice(0, 40) || 'model',
+            label: thought.label.trim().slice(0, 40) || '模型',
+            round: Math.max(0, Math.floor(Number(thought.round) || save.state.currentRound)),
+            content: content || undefined,
+            output: output || undefined,
+            usage,
+            cacheHit,
+            createdAt: thought.createdAt || nowMs(),
+          };
+          const state = {
+            ...save.state,
+            agentThoughts: [...(save.state.agentThoughts ?? []), next].slice(-80),
+          };
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
         }),
 
@@ -1640,6 +1698,7 @@ export const useGameStore = create<GameStoreState>()(
             },
             updatedAtRound: completedRound,
             lastError: undefined,
+            thinking: result.thinking,
           };
           return {
             saves: {
@@ -1761,6 +1820,7 @@ export const useGameStore = create<GameStoreState>()(
               ? { ...result.deviation, flaggedAtRound: completedRound }
               : undefined,
             lastError: undefined,
+            thinking: result.thinking,
           };
 
           return {
@@ -2115,6 +2175,7 @@ export const useGameStore = create<GameStoreState>()(
               currentScene: (sv.state as any)?.currentScene,
               authorNarrative: normalizeAuthorNarrativeState((sv.state as any)?.authorNarrative),
               authorRandomEventState: normalizeAuthorRandomEventState((sv.state as any)?.authorRandomEventState),
+              agentThoughts: normalizeAgentThoughts((sv.state as any)?.agentThoughts),
             },
           });
         }

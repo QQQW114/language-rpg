@@ -3,10 +3,13 @@ import { useGameStore } from '@/store/useGameStore';
 import { useContentStore } from '@/store/useContentStore';
 import { Button } from '@/components/ui/Button';
 import { CornerFiligree, OrnateDivider } from '@/components/ui/Ornaments';
+import { TextStarfield } from '@/components/TextStarfield';
 import { BookOpen, Settings, Library, ScrollText, Trash2, PlayCircle, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/Dialog';
 import { instantiateJourneyPackage, parseJourneyPackage } from '@/lib/journeyPackage';
+import { confirmDialog } from '@/components/ui/ConfirmDialog';
+import { toast } from '@/lib/toast';
 
 export default function HomePage() {
   const nav = useNavigate();
@@ -37,15 +40,16 @@ export default function HomePage() {
       setActive(id);
       nav('/game');
     } catch (err: any) {
-      setImportError(err?.message ?? String(err));
+      const m = err?.message ?? String(err); setImportError(m); toast.danger(`导入失败：${m}`);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
 
   return (
-    <div className="min-h-full flex items-center justify-center px-6 py-12">
-      <div className="relative w-full max-w-3xl text-center">
+    <div className="relative min-h-full flex items-center justify-center px-6 py-12 overflow-hidden">
+      <TextStarfield autoImpulse={8} />
+      <div className="relative z-10 w-full max-w-3xl text-center">
         <CornerFiligree className="absolute -top-6 -left-6 w-20 h-20" />
         <CornerFiligree className="absolute -top-6 -right-6 w-20 h-20 rotate-90" />
         <CornerFiligree className="absolute -bottom-6 -left-6 w-20 h-20 -rotate-90" />
@@ -128,7 +132,7 @@ export default function HomePage() {
                 size="sm"
                 onClick={() => {
                   if (legacy) {
-                    alert('此存档创建于阶段化叙事之前，不再支持继续游玩。请创建新旅程。');
+                    toast.warn('此存档创建于阶段化叙事之前，不再支持继续游玩。请创建新旅程。');
                     return;
                   }
                   setActive(s.id);
@@ -142,9 +146,12 @@ export default function HomePage() {
                 size="sm"
                 variant="danger"
                 onClick={() => {
-                  if (confirm(`确定删除旅程《${s.name}》吗？此操作不可撤销。`)) {
-                    deleteSave(s.id);
-                  }
+                  confirmDialog({
+                    title: '删除旅程',
+                    message: `确定删除旅程《${s.name}》吗？此操作不可撤销。`,
+                    confirmText: '删除',
+                    variant: 'danger',
+                  }).then((ok) => { if (ok) deleteSave(s.id); });
                 }}
               >
                 <Trash2 size={14} />

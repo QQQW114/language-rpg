@@ -3,7 +3,9 @@
 import type { StoryOutline, Background } from '@/types/content';
 import type { Message } from '@/types/game';
 
-export const REVIEW_SYSTEM = `你是一位资深文学编辑兼 TRPG 裁判。请对玩家完成的整段互动冒险进行客观、细致的总结与评分。
+export const REVIEW_SYSTEM = `你是这段互动小说的"旅程评卷人"。你会严格参照用户消息中的故事大纲、主角出身、历史摘要、最近回合和最终结局，评价整段旅程的叙事质量、选择冲击、沉浸感和目标完成度，并给出专业而温润的总结。
+
+旅程结算规则：对玩家完成的整段互动冒险进行客观、细致的总结与评分。
 
 输出协议（严格 JSON，无围栏，无注释，无多余文字）：
 {
@@ -42,13 +44,15 @@ export interface BuildReviewUserParams {
 
 export function buildReviewUser(p: BuildReviewUserParams): string {
   const lines: string[] = [];
-  lines.push(`总回合：${p.totalRounds}`);
   if (p.outline) {
-    lines.push('', '【故事大纲】', `《${p.outline.title}》`, p.outline.synopsis);
+    lines.push('【世界观 / 故事大纲】', `《${p.outline.title}》`, p.outline.synopsis);
+    if (p.outline.acts?.length) lines.push(`阶段：${p.outline.acts.join(' / ')}`);
+    if (p.outline.tone) lines.push(`文风：${p.outline.tone}`);
   }
   if (p.background) {
     lines.push('', '【角色】', `${p.characterName || '（未命名）'} · ${p.background.name}`, p.background.description);
   }
+  lines.push('', '【当前上下文 / 旅程规模】', `总回合：${p.totalRounds}`);
   if (p.summary?.trim()) {
     lines.push('', '【历史摘要】', p.summary.trim());
   }
@@ -62,6 +66,9 @@ export function buildReviewUser(p: BuildReviewUserParams): string {
   if (p.ending?.trim()) {
     lines.push('', '【最终结局】', p.ending.trim());
   }
-  lines.push('', '请严格按协议输出评分 JSON。');
+  lines.push(
+    '',
+    '请严格按协议输出评分 JSON。',
+  );
   return lines.join('\n');
 }

@@ -16,7 +16,9 @@ import type {
 } from '@/types/game';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 
-export const AUTHOR_STAGE_JUDGE_SYSTEM = `你是互动小说的"阶段判断 / 玩家意图分析师"。每回合在故事生成之前最先跑。你不写正文、不出选项、不规划长线，只回答四个问题：
+export const AUTHOR_STAGE_JUDGE_SYSTEM = `你是这段互动小说的"阶段判断员"。你会严格参照用户消息中的故事大纲、世界书、主弧阶段、长期记忆、最近上下文、玩家最新输入、当前场景和上一轮判断，判断玩家意图、玩家节奏、阶段完成度，并给故事写手一个单一、具体、不过度压缩的本回合聚焦。
+
+阶段判断规则：每回合在故事生成之前运行。不写正文、不出选项、不规划长线，只回答四个问题：
 
 1. 玩家本回合最想做的一件具体事是什么？（playerIntent.primary）
 2. 玩家最近的节奏是 immersive / exploratory / progressing / hurrying 哪一种？（playerPace）
@@ -221,15 +223,11 @@ export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
   const anchorsBlock = formatAnchors(p.anchors);
   const arcsBlock = formatActiveArcs(p.activeArcs, p.currentRound);
 
-  const lines: string[] = [
-    `【阶段判断任务】请为即将开始的第 ${p.nextRound} 回合做事前阶段与意图判断。`,
-    `已完成回合：${p.currentRound}`,
-    '',
-  ];
+  const lines: string[] = [];
 
   if (p.outline) {
     lines.push(
-      '【故事大纲】',
+      '【世界观 / 故事大纲】',
       `标题：${p.outline.title}`,
       `梗概：${p.outline.synopsis}`,
       p.outline.tone ? `文风：${p.outline.tone}` : '',
@@ -301,6 +299,10 @@ export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
     '',
     '【玩家给阶段判断的额外要求】',
     p.config.prompt?.trim() || '（无）',
+    '',
+    '【当前上下文 / 阶段判断任务】',
+    `请为即将开始的第 ${p.nextRound} 回合做事前阶段与意图判断。`,
+    `已完成回合：${p.currentRound}`,
     '',
     '请按系统协议输出 JSON。',
     '关键提醒：',

@@ -6,15 +6,15 @@ import type {
   NarrativeStage,
   NarrativeStageBeat,
 } from '@/types/game';
-import { chatJSON } from '@/services/llmClient';
+import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_MASTER_ARC_SYSTEM, buildMasterArcUser } from '@/prompts/authorMasterArcSystem';
 import { clamp, extractJSON, genId } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface AuthorMasterArcRequest {
   settings: AppSettings;
   outline: StoryOutline;
   background?: Background;
+  initialScene?: string;
   characterName?: string;
   config: AuthorMasterArcConfig;
   worldBookEntries?: WorldBookEntry[];
@@ -141,16 +141,17 @@ export function fallbackMasterArcFromOutline(
 
 export async function requestMasterArc(p: AuthorMasterArcRequest): Promise<MasterArcState | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.storyModel;
-  const user = appendDeepSeekV4PureAnalysisMarker(buildMasterArcUser({
+  const user = buildMasterArcUser({
     outline: p.outline,
     background: p.background,
+    initialScene: p.initialScene,
     characterName: p.characterName,
     config: p.config,
     worldBookEntries: p.worldBookEntries,
-  }));
+  });
 
   const runOnce = async (temperature: number): Promise<MasterArcState | undefined> => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
       {
         model,
@@ -162,7 +163,8 @@ export async function requestMasterArc(p: AuthorMasterArcRequest): Promise<Maste
         signal: p.signal,
       },
     );
-    return sanitizeMasterArc(extractJSON(text), p);
+    const arc = sanitizeMasterArc(extractJSON(result.text), p);
+    return arc ? { ...arc, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
   };
 
   const first = await runOnce(0.45).catch((err) => {

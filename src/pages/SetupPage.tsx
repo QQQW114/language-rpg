@@ -412,6 +412,7 @@ export default function SetupPage() {
     const normalizedAuthorMasterArc = normalizeAuthorMasterArcConfig(authorMasterArc);
     const normalizedAuthorStageJudge = normalizeAuthorStageJudgeConfig(authorStageJudge);
     const normalizedAuthorSettingGuard = normalizeAuthorSettingGuardConfig(authorSettingGuard);
+    const initialScene = customStartScene?.trim() || selectedBackground.startScene;
     const authorEventResourceIds = Array.from(new Set([
       ...normalizedAuthorRandomEvent.poolEventIds,
       ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
@@ -423,6 +424,7 @@ export default function SetupPage() {
           settings,
           outline: selectedOutline,
           background: selectedBackground,
+          initialScene,
           characterName: characterName.trim() || undefined,
           config: normalizedAuthorMasterArc,
           worldBookEntries: flattenWorldBookEntries(worldBooks, worldBookIds),
@@ -459,7 +461,7 @@ export default function SetupPage() {
             storyStyleAddendum: settings.storyStyleAddendum,
           },
         },
-        initialScene: (customStartScene?.trim() || selectedBackground.startScene),
+        initialScene,
         initialItems: itemsFromStartStrings(selectedBackground.startItems, 0),
       });
       if (isAuthorMode) {
@@ -472,6 +474,14 @@ export default function SetupPage() {
             masterArc,
           },
         });
+        if (masterArc?.thinking?.trim()) {
+          useGameStore.getState().addAgentThought(saveId, {
+            kind: 'masterArc',
+            label: '主弧铺设 · 勾勒全篇',
+            round: 0,
+            content: masterArc.thinking,
+          });
+        }
       }
       nav('/game');
     } catch (err: any) {

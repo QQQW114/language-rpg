@@ -16,18 +16,18 @@ body {
   margin: 0;
   font-family: 'Noto Serif SC', 'LXGW WenKai', Georgia, serif;
   color: theme('colors.parchment.100');
-  background-color: #120c06;
+  background-color: #0a0704;
+  /* 偏暗偏深邃：去掉过亮的金色顶光晕，只留极弱的远处压暗 */
   background-image:
-    radial-gradient(ellipse at top left, rgba(201, 165, 102, 0.08), transparent 55%),
-    radial-gradient(ellipse at bottom right, rgba(138, 47, 47, 0.08), transparent 55%),
-    radial-gradient(ellipse at center, rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7) 80%),
-    linear-gradient(180deg, #1a120b 0%, #0d0804 100%);
+    radial-gradient(ellipse at top, rgba(201, 165, 102, 0.04), transparent 60%),
+    radial-gradient(ellipse at center, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.85) 80%),
+    linear-gradient(180deg, #100a05 0%, #060402 100%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 古籍羊皮纸纹理覆盖层 */
+/* 噪点降低到不引人注意 */
 body::before {
   content: '';
   position: fixed;
@@ -35,8 +35,8 @@ body::before {
   pointer-events: none;
   z-index: 0;
   background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.79 0 0 0 0 0.65 0 0 0 0 0.4 0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  opacity: 0.55;
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.79 0 0 0 0 0.65 0 0 0 0 0.4 0 0 0 0.04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.28;
   mix-blend-mode: overlay;
 }
 
@@ -46,37 +46,51 @@ body::before {
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(26, 18, 11, 0.6);
+  background: rgba(15, 10, 5, 0.5);
 }
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(#8d7340, #4a3820);
-  border-radius: 6px;
-  border: 2px solid rgba(26, 18, 11, 0.8);
+  background: linear-gradient(180deg, #4a3820, #2a1f14);
+  border-radius: 8px;
+  border: 1px solid rgba(15, 10, 5, 0.85);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(#c9a566, #6b5230);
+  background: linear-gradient(180deg, #6b5230, #3a2c18);
 }
 
-/* 标题雕刻字效 */
+/* 项目原有的 HomePage 标题字效（保留，仅在主页用一次） */
 .title-engraved {
-  background: linear-gradient(180deg, #e3c27e 0%, #c9a566 40%, #8d7340 100%);
+  background: linear-gradient(180deg, #c9a566 0%, #8d7340 50%, #4a3820 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.25);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
 }
 
-/* 分割线 · 用于章节起首 */
+/* gold-foil-text 保留但只用于偶尔的强调 —— 默认放弃流光 */
+.gold-foil-text {
+  background: linear-gradient(120deg, #6b5230 0%, #8d7340 30%, #c9a566 50%, #8d7340 70%, #6b5230 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.deep-engraved {
+  color: theme('colors.gold.light');
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.65);
+  letter-spacing: 0.1em;
+}
+
 .divider-ornate {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  color: theme('colors.gold.DEFAULT');
-  opacity: 0.7;
+  color: theme('colors.gold.dark');
+  opacity: 0.55;
 }
 .divider-ornate::before,
 .divider-ornate::after {
@@ -86,25 +100,50 @@ body::before {
   background: linear-gradient(90deg, transparent, currentColor, transparent);
 }
 
-/* 打字光标 */
-.caret::after {
-  content: '▍';
-  margin-left: 2px;
-  color: theme('colors.gold.DEFAULT');
-  animation: pulse-soft 1.2s ease-in-out infinite;
+/* 金线：默认不发光，只在需要强调时加 .gold-line--glow */
+.gold-line {
+  height: 1px;
+  background-image: theme('backgroundImage.gold-line');
+}
+.gold-line--glow {
+  box-shadow: 0 0 6px rgba(141, 115, 64, 0.35);
+}
+.gold-line-dim {
+  height: 1px;
+  background-image: theme('backgroundImage.gold-line-dim');
+  opacity: 0.7;
 }
 
-/* 故事正文排版 */
+.paper-card {
+  background:
+    linear-gradient(180deg, rgba(26, 18, 11, 0.78) 0%, rgba(15, 10, 5, 0.92) 100%);
+  border: 1px solid rgba(107, 82, 48, 0.35);
+  box-shadow:
+    inset 0 1px 0 rgba(141, 115, 64, 0.08),
+    inset 0 0 24px rgba(0, 0, 0, 0.5),
+    0 2px 12px rgba(0, 0, 0, 0.6);
+}
+
+/* 流式打字光标 —— 更克制 */
+.caret::after {
+  content: '┃';
+  margin-left: 1px;
+  color: theme('colors.gold.dark');
+  animation: pulse-soft 1.2s ease-in-out infinite;
+  font-weight: 300;
+}
+
+/* 故事正文：去掉 max-width 限制，由父容器控制；行高放宽给读者呼吸空间 */
 .prose-story {
-  font-size: 1.05rem;
-  line-height: 2;
+  font-size: 17px;
+  line-height: 1.95;
   letter-spacing: 0.02em;
   color: theme('colors.parchment.100');
 }
 .prose-story p {
-  margin: 0 0 1.1em;
+  margin: 0 0 1.25em;
   text-indent: 2em;
-  animation: fade-in 0.6s ease-out both;
+  animation: fade-in 0.5s ease-out both;
 }
 .prose-story strong {
   color: theme('colors.gold.light');
@@ -115,14 +154,56 @@ body::before {
   font-style: italic;
 }
 .prose-story blockquote {
-  margin: 1em 0;
-  padding-left: 1em;
+  margin: 1.2em 0;
+  padding-left: 1.2em;
   border-left: 2px solid theme('colors.gold.dark');
   color: theme('colors.parchment.200');
   font-style: italic;
 }
+.prose-story h1, .prose-story h2, .prose-story h3 {
+  color: theme('colors.gold.light');
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
 
-/* 按钮通用悬浮发光 */
 .glow-on-hover:hover {
-  box-shadow: theme('boxShadow.glow');
+  box-shadow: 0 0 12px rgba(141, 115, 64, 0.25);
+}
+
+/* 雕花容器：边框更暗、阴影更深 */
+.engraved-frame {
+  border: 1px solid rgba(107, 82, 48, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(141, 115, 64, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(15, 10, 5, 0.7),
+    0 4px 22px rgba(0, 0, 0, 0.65);
+  background:
+    linear-gradient(180deg, rgba(26, 18, 11, 0.82) 0%, rgba(10, 7, 4, 0.94) 100%);
+}
+
+/* tab 选中态金线下划：减弱发光 */
+.tab-active-underline {
+  position: relative;
+}
+.tab-active-underline::after {
+  content: '';
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: -1px;
+  height: 1px;
+  background-image: theme('backgroundImage.gold-line');
+  animation: line-draw-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

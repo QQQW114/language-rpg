@@ -5,9 +5,12 @@ import type { StoryOutline, Background, WorldBookEntry, RandomEvent } from '@/ty
 import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
 import { chatStreamDetailed, type ChatMessage } from './llmClient';
-import { buildStorySystem } from '@/prompts/storySystem';
+import { buildStorySystemPrompt, buildStorySystem } from '@/prompts/storySystem';
 import { getStoryUserTemplate, renderPromptTemplate } from '@/lib/strictCustom';
 import { buildDeepSeekV4StoryMarker } from '@/lib/deepseekV4Prompt';
+import { joinThinking } from '@/lib/thinking';
+import { mergeLlmUsage } from '@/lib/llmUsage';
+import type { LlmUsage } from '@/types/llm';
 
 export interface StoryRequest {
   settings: AppSettings;
@@ -34,14 +37,21 @@ export interface StoryRequest {
   summarizedUntilIndex?: number;
   finalizeRequested?: boolean;
   onDelta: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
 const MAX_CONTEXT_MESSAGES = 40;
 const MAX_AUTO_CONTINUES = 2;
 
-export async function requestStory(p: StoryRequest): Promise<string> {
-  const systemPrompt = buildStorySystem({
+export interface StoryResponse {
+  text: string;
+  thinking?: string;
+  usage?: LlmUsage;
+}
+
+export async function requestStory(p: StoryRequest): Promise<StoryResponse> {
+  const storyContextPrompt = buildStorySystem({
     outline: p.outline,
     background: p.background,
     characterName: p.characterName,
@@ -72,7 +82,7 @@ export async function requestStory(p: StoryRequest): Promise<string> {
   const trimmed = p.history.slice(startIdx);
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: buildStorySystemPrompt(p.settings.storyPromptMode, p.characterName) },
     ...trimmed.map((m) => ({ role: m.role, content: m.content }) as ChatMessage),
   ];
 
@@ -119,9 +129,14 @@ export async function requestStory(p: StoryRequest): Promise<string> {
     p.characterName,
     p.authorNarrative?.settingGuard?.preference,
   );
-  const userMessage = storyPromptModeMarker
-    ? `${renderedUserMessage}\n\n${storyPromptModeMarker}`
-    : renderedUserMessage;
+  const userMessage = [
+    '【世界观 / 旅程资料 / 压缩上下文】',
+    storyContextPrompt,
+    '',
+    '【当前上下文 / 玩家本回合输入】',
+    renderedUserMessage,
+    storyPromptModeMarker ? `\n${storyPromptModeMarker}` : '',
+  ].filter((part) => part.trim()).join('\n');
   messages.push({ role: 'user', content: userMessage });
 
   const maxTokens =
@@ -130,6 +145,8 @@ export async function requestStory(p: StoryRequest): Promise<string> {
       : undefined;
 
   let full = '';
+  const thinkingParts: string[] = [];
+  let usage: LlmUsage | undefined;
   let requestMessages = messages;
   let continueCount = 0;
 
@@ -142,10 +159,13 @@ export async function requestStory(p: StoryRequest): Promise<string> {
         temperature: p.settings.temperatureStory,
         maxTokens,
         onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     full += result.text;
+    if (result.thinking?.trim()) thinkingParts.push(result.thinking.trim());
+    usage = mergeLlmUsage(usage, result.usage);
 
     if (result.finishReason !== 'length' || continueCount >= MAX_AUTO_CONTINUES) break;
 
@@ -155,12 +175,18 @@ export async function requestStory(p: StoryRequest): Promise<string> {
       { role: 'assistant', content: full },
       {
         role: 'user',
-        content: storyPromptModeMarker
-          ? `（上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。）\n\n${storyPromptModeMarker}`
-          : '（上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。）',
+        content: [
+          '【当前上下文 / 续写要求】',
+          '上一段因输出长度限制被截断。请从中断处无缝续写本回合，只补足未完成的叙事；不要重述开头，不要重新列选项。',
+          storyPromptModeMarker ? `\n${storyPromptModeMarker}` : '',
+        ].filter((part) => part.trim()).join('\n'),
       },
     ];
   }
 
-  return full.trim();
+  return {
+    text: full.trim(),
+    thinking: joinThinking(...thinkingParts),
+    usage,
+  };
 }

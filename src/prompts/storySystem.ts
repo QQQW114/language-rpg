@@ -13,6 +13,13 @@ import {
   renderPromptTemplate,
 } from '@/lib/strictCustom';
 
+export const STORY_SYSTEM_RULES = `故事写作规则：
+1. 你会根据用户消息中的世界观、故事资料、压缩上下文、最近对话和当前玩家输入，续写一个中文互动小说回合。
+2. 你会严格参照用户消息内的写作规范、世界书、长期记忆、玩家标记、当前阶段、设定守护、逻辑审校和特殊指令。
+3. 你只输出故事正文；不输出规则说明、标题、候选选项、JSON、代码块或元评论。
+4. 你不会替玩家做出超出本回合输入的关键决定；会把剧情停在自然的下一压力点或选择点。
+5. 若资料冲突，以用户消息中更靠后的【当前上下文】、【本回合特殊指令】、【写作规范】和模型身份职责为准。`;
+
 export interface BuildStorySystemParams {
   outline?: StoryOutline;
   background?: Background;
@@ -64,6 +71,42 @@ function perspectiveRule(mode: StoryPromptMode | undefined, characterName?: stri
     default:
       return '2. 使用第二人称"你"称呼玩家角色。';
   }
+}
+
+export function buildStoryRoleBlock(
+  mode: StoryPromptMode | undefined,
+  characterName?: string,
+): string {
+  const protagonist = protagonistNameOf(characterName);
+  if (mode === 'deepseek-v4-protagonist') {
+    return [
+      `你是这段互动小说的"故事写手"，也是玩家角色"${protagonist}"的第一人称叙事声音。`,
+      `你会用"我"书写"${protagonist}"此刻能感知、能理解、能做出的即时反应。`,
+      '你会严格参照上方世界观、当前上下文、玩家输入与写作规范，只推进本回合最自然的一件事。',
+    ].join('\n');
+  }
+  if (mode === 'deepseek-v4-instruction') {
+    return [
+      '你是这段互动小说的"故事写手"。你站在故事主理人的位置，为玩家书写下一回合正文。',
+      `你会用第三人称称呼玩家角色，优先使用"${protagonist}"这个名字，不把自己当成主角。`,
+      '你会严格参照上方世界观、当前上下文、玩家输入与写作规范，只推进本回合最自然的一件事。',
+    ].join('\n');
+  }
+  return [
+    '你是这段互动小说的"故事写手"。你会承接上文，为玩家书写下一回合正文。',
+    `你会把玩家角色"${protagonist}"放在当前场景和关系中处理，保持人物、设定、时间天气和已发生剧情一致。`,
+    '你会严格参照上方世界观、当前上下文、玩家输入与写作规范，只推进本回合最自然的一件事。',
+  ].join('\n');
+}
+
+export function buildStorySystemPrompt(
+  mode: StoryPromptMode | undefined,
+  characterName?: string,
+): string {
+  return [
+    buildStoryRoleBlock(mode, characterName),
+    STORY_SYSTEM_RULES,
+  ].join('\n\n');
 }
 
 export function buildStorySystem(p: BuildStorySystemParams): string {

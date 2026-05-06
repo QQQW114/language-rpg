@@ -2,6 +2,7 @@
 
 import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorNarrativeState,
   AuthorRandomEventState,
@@ -14,13 +15,13 @@ import type {
   NpcUpdateRaw,
   SceneRef,
 } from '@/types/game';
-import { chatJSON } from './llmClient';
+import { chatJSONDetailed } from './llmClient';
 import { DECISION_TRACKING_SYSTEM, buildDecisionTrackingUser, buildDecisionUser } from '@/prompts/decisionSystem';
 import { extractJSON, genId, clamp } from '@/lib/utils';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
+import type { LlmUsage } from '@/types/llm';
 import {
   buildStrictCustomDecisionBlock,
   getDecisionSystemTemplate,
@@ -31,6 +32,10 @@ import type { RawGrant, RawDestroy, RawItemPatch } from '@/lib/items';
 
 export interface DecisionRequest {
   settings: AppSettings;
+  outline?: StoryOutline;
+  background?: Background;
+  characterName?: string;
+  worldBookEntries?: WorldBookEntry[];
   latestStory: string;
   backpack: Item[];
   npcs: Npc[];
@@ -56,6 +61,9 @@ export interface DecisionResult {
   npcs: NpcUpdateRaw[];
   currentScene?: SceneRef;
   availableScenes: SceneRef[];
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 const FALLBACK_CHOICES: Choice[] = [
@@ -428,6 +436,10 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     ? ['【上一回合所在场景】', currentSceneContextText].join('\n')
     : '';
   const defaultDecisionUserPrompt = includeChoices ? buildDecisionUser({
+    outline: p.outline,
+    background: p.background,
+    characterName: p.characterName,
+    worldBookEntries: p.worldBookEntries,
     latestStory,
     backpackSummary,
     backpackJsonBlock,
@@ -444,6 +456,10 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     narrativePlanBlock,
     activeArcsBlock,
   }) : buildDecisionTrackingUser({
+    outline: p.outline,
+    background: p.background,
+    characterName: p.characterName,
+    worldBookEntries: p.worldBookEntries,
     latestStory,
     backpackSummary,
     backpackJsonBlock,
@@ -462,6 +478,14 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const renderedDecisionUserPrompt = includeChoices
     ? renderPromptTemplate(getDecisionUserTemplate(p.strictCustom), {
       latestStory,
+      outlineBlock: p.outline
+        ? [
+          `标题：${p.outline.title}`,
+          `梗概：${p.outline.synopsis}`,
+          p.outline.acts?.length ? `阶段：${p.outline.acts.join(' / ')}` : '',
+          p.outline.tone ? `文风：${p.outline.tone}` : '',
+        ].filter(Boolean).join('\n')
+        : '',
       backpackSummary,
       backpackJsonBlock,
       summaryBlock,
@@ -478,7 +502,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       defaultDecisionUserPrompt,
     }) || defaultDecisionUserPrompt
     : defaultDecisionUserPrompt;
-  const decisionUserPrompt = appendDeepSeekV4PureAnalysisMarker(appendMachineStateIfMissing(
+  const decisionUserPrompt = appendMachineStateIfMissing(
     renderedDecisionUserPrompt,
     {
       backpackJsonBlock,
@@ -489,10 +513,10 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       narrativePlanBlock,
       activeArcsBlock,
     },
-  ));
+  );
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: settings.apiBaseUrl, apiKey: settings.apiKey, format: settings.apiFormat },
       {
         model: settings.decisionModel,
@@ -504,7 +528,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
         signal,
       },
     );
-    const obj = extractJSON(text);
+    const obj = extractJSON(result.text);
     if (!obj) return null;
     const choices = includeChoices ? sanitizeChoices(obj) : [];
     if (includeChoices && !choices) return null;
@@ -517,6 +541,9 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       npcs: sanitizeNpcs(obj),
       currentScene: scenes.currentScene,
       availableScenes: scenes.availableScenes,
+      thinking: result.thinking,
+      rawOutput: result.text,
+      usage: result.usage,
     };
   };
 

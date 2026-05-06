@@ -12,7 +12,9 @@ import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
-export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是互动小说的"动态长线事件导演"。你的任务不是续写正文，而是判断下一回合是否应该引入一个贴合上下文的长线事件，并在需要时生成事件弧 JSON。
+export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是这段互动小说的"动态长线事件导演"。你会严格参照用户消息中的故事大纲、世界书、长期记忆、最近上下文、最新故事片段、人物关系、当前场景、叙事计划和玩家事件偏好，判断是否生成一个像小说支线一样有明面目标、隐藏意图、阶段推进和自然收束的事件弧。
+
+动态长线事件规则：不续写正文，只判断下一回合是否应该引入一个贴合上下文的长线事件，并在需要时生成事件弧 JSON。
 
 输出协议：
 1. 只能输出合法 JSON，禁止 Markdown 围栏、注释和解释。
@@ -178,15 +180,7 @@ export function buildAuthorRandomEventUser(p: {
   const activeArcsBlock = formatActiveArcs(p.narrative, p.currentRound);
   const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   return [
-    p.mustTrigger
-      ? '【调度要求】本轮处于必定触发区间。除非上下文完全无法成立，否则必须输出 trigger=true 并生成事件弧。'
-      : '【调度要求】本轮通过概率检查，但仍需你判断剧情是否适合触发；若不适合可 trigger=false。',
-    `调度原因：${p.scheduleReason}`,
-    `当前已完成回合：${p.currentRound}`,
-    `事件将注入的下一回合：第 ${p.nextRound} 回合`,
-    `总回合：${isInfinite ? '无尽模式' : p.totalRounds}`,
-    '',
-    '【故事大纲】',
+    '【世界观 / 故事大纲】',
     p.outline ? `标题：${p.outline.title}\n梗概：${p.outline.synopsis}\n阶段：${p.outline.acts.join(' / ')}${p.outline.tone ? `\n文风：${p.outline.tone}` : ''}` : '（无）',
     '',
     worldBookBlock,
@@ -226,6 +220,15 @@ export function buildAuthorRandomEventUser(p: {
     '',
     '【参考随机事件】',
     formatReferenceEvents(p.referenceEvents),
+    '',
+    '【当前上下文 / 调度要求】',
+    p.mustTrigger
+      ? '本轮处于必定触发区间。除非上下文完全无法成立，否则必须输出 trigger=true 并生成事件弧。'
+      : '本轮通过概率检查，但仍需你判断剧情是否适合触发；若不适合可 trigger=false。',
+    `调度原因：${p.scheduleReason}`,
+    `当前已完成回合：${p.currentRound}`,
+    `事件将注入的下一回合：第 ${p.nextRound} 回合`,
+    `总回合：${isInfinite ? '无尽模式' : p.totalRounds}`,
     '',
     '请按系统协议输出 JSON。targetEndRound 应结合总回合与事件规模，通常持续 3~8 回合；stages 必须覆盖 startRound=下一回合到 targetEndRound 的主要节奏。',
   ].filter(Boolean).join('\n');

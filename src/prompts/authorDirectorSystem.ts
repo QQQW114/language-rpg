@@ -14,7 +14,9 @@ import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
-export const AUTHOR_DIRECTOR_SYSTEM = `你是互动小说的"叙事导演 / 小说编辑"。你不写正文，不生成玩家选项，只为后续故事模型制定可执行的短期叙事计划。
+export const AUTHOR_DIRECTOR_SYSTEM = `你是这段互动小说的"叙事导演"。你会严格参照用户消息中的故事大纲、世界书、主弧阶段、长期记忆、最近上下文、当前场景、人物关系和进行中的事件弧，为后续故事写手制定清晰、可执行、不过度替玩家决策的短期叙事计划。
+
+叙事导演规则：不写正文，不生成玩家选项，只为后续故事模型制定可执行的短期叙事计划。
 
 目标：
 - 让故事像一部有逻辑的小说：有阶段目标、短期目标、承上启下、人物关系推进和统一设定。
@@ -164,11 +166,7 @@ export function buildAuthorDirectorUser(p: {
   const backpackBlock = formatBackpack(p.backpack);
   const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   return [
-    `【规划任务】请为第 ${p.nextRound} 回合开始后的未来若干叙事节拍制定导演计划。`,
-    `已完成回合：${p.currentRound}`,
-    `总回合（软参考，不得硬卡阶段）：${isInfinite ? '无尽模式' : p.totalRounds}`,
-    '',
-    '【故事大纲】',
+    '【世界观 / 故事大纲】',
     p.outline
       ? `标题：${p.outline.title}\n梗概：${p.outline.synopsis}\n阶段：${p.outline.acts.join(' / ')}${p.outline.tone ? `\n文风：${p.outline.tone}` : ''}`
       : '（无）',
@@ -207,6 +205,11 @@ export function buildAuthorDirectorUser(p: {
       randomEventState: p.randomEventState,
       nextRound: p.nextRound,
     }),
+    '',
+    '【当前上下文 / 规划任务】',
+    `请为第 ${p.nextRound} 回合开始后的未来若干叙事节拍制定导演计划。`,
+    `已完成回合：${p.currentRound}`,
+    `总回合（软参考，不得硬卡阶段）：${isInfinite ? '无尽模式' : p.totalRounds}`,
     '',
     '【玩家给叙事导演的额外要求】',
     p.config.prompt || '（无）',

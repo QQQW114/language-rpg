@@ -220,11 +220,28 @@ export interface GameContent {
 > 实测发现：主弧生成只读 outline 不读世界书，会把世界书定义的能力规则擅自简化（例：将 wb_2「主角可随时主动施用能力」误读为 outline 中"心中祈求"措辞，写成"情绪驱动"机制，与世界书直接矛盾）。
 >
 > 因此 `requestMasterArc` 与 `buildMasterArcUser` 必须接收当前旅程激活的 `worldBookEntries`（含 alwaysActive 与关键词触发条目两类）。System prompt 中已加最高优先级约束：「stages 不得违反任何 alwaysActive 世界书条目；与大纲冲突时以世界书为准」。
->
-> 调用方（`SetupPage` 与 `GamePage.regenerateMasterArc`）必须用 `flattenWorldBookEntries(worldBooks, content.worldBookIds)` 取出条目并传入。
+
+### 4.2.2 输入必含 initialScene（重要）
+
+主弧生成还必须接收创建旅程时的真实开局正文 `initialScene`：
+
+- 玩家点过「随机开局」时，传随机生成后的开局文本。
+- 玩家保持预设开局时，传出身自带 `background.startScene`。
+- 手动重新生成主弧时，传当前存档第 0 轮 assistant 开局消息。
+
+否则第一个 stage 只能根据出身简介与大纲泛化，容易忽略开场已经给出的地点、压力点、NPC 引子与即时危机。
+
+调用方（`SetupPage` 与 `GamePage.regenerateMasterArc`）必须同时传入 `initialScene`，并用 `flattenWorldBookEntries(worldBooks, content.worldBookIds)` 取出世界书条目。
 
 
 ### 4.3 System Prompt（落地于 `src/prompts/authorMasterArcSystem.ts`）
+
+当前实现采用新的提示词位置策略：
+
+- system prompt：只放主弧 JSON 输出规则、阶段设计规则、世界书一致性规则。
+- user prompt：放故事大纲、世界书、主角 / 出身、当前故事情节、玩家额外要求。
+- user prompt 末尾：放“你是此互动小说的主弧设计师”的任务身份与工作对象。
+- 主弧生成链路暂不追加 DeepSeek V4 `【思维模式要求】`，用于测试“任务身份压在 user 末尾”的效果。
 
 ```text
 你是互动小说的"主弧设计师"。在玩家创建旅程后，你将根据故事大纲、出身、玩家偏好，输出整段游戏的"主弧"——一组按剧情递进的阶段，每个阶段定义：进入条件、完成条件、期望节拍。

@@ -1,8 +1,7 @@
 import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
 import { DECISION_SYSTEM } from '@/prompts/decisionSystem';
 
-export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动小说主持人（TRPG GM），正在与玩家共同完成一段长篇角色扮演。
-{{roundInfo}}
+export const DEFAULT_STORY_SYSTEM_TEMPLATE = `{{roundInfo}}
 {{outlineBlock}}
 {{masterArcBlock}}
 {{stageJudgeBlock}}
@@ -29,8 +28,7 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动�
 
 export const DEFAULT_STORY_USER_TEMPLATE = `{{defaultUserMessage}}`;
 
-export const DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级的互动小说主理人，正在把玩家输入转化为一段连贯、有逻辑的中文互动小说。
-叙述人称必须完全服从下方【写作规范】中的人称规则；不要因历史文本里的"你/我/主角姓名"示例而切回旧人称。
+export const DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE = `叙述人称必须完全服从下方【写作规范】中的人称规则；不要因历史文本里的"你/我/主角姓名"示例而切回旧人称。
 {{roundInfo}}
 {{outlineBlock}}
 {{masterArcBlock}}
@@ -56,7 +54,7 @@ export const DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE = `你是一位世界顶级�
 
 请只输出本回合故事正文。你可以描写环境、NPC 反应和即时后果，但不要替玩家做出超出输入的关键决定。`;
 
-export const COMPACT_STORY_SYSTEM_TEMPLATE = `你是互动小说主持人。基于以下上下文，只写本回合直接发生的剧情。
+export const COMPACT_STORY_SYSTEM_TEMPLATE = `基于以下上下文，只写本回合直接发生的剧情。
 {{roundInfo}}
 {{masterArcBlock}}
 {{stageJudgeBlock}}

@@ -2,6 +2,9 @@
 
 import { readSSEDetailed, type StreamResult } from '@/lib/sse';
 import type { ApiFormat } from '@/types/settings';
+import { joinThinking, splitThinkingFromText } from '@/lib/thinking';
+import { normalizeLlmUsage } from '@/lib/llmUsage';
+import type { LlmUsage } from '@/types/llm';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -22,8 +25,16 @@ export interface ChatParams {
   signal?: AbortSignal;
 }
 
+export interface ChatResult {
+  text: string;
+  thinking?: string;
+  finishReason?: string;
+  usage?: LlmUsage;
+}
+
 export interface ChatStreamParams extends ChatParams {
   onDelta: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -48,12 +59,13 @@ async function readErrorBody(res: Response): Promise<string> {
 
 // ---- Chat Completions 格式 ----
 
-function buildChatBody(p: ChatParams, stream: boolean): Record<string, unknown> {
+function buildChatBody(p: ChatParams, stream: boolean, includeUsage = false): Record<string, unknown> {
   return {
     model: p.model,
     messages: p.messages,
     temperature: p.temperature ?? 0.9,
     stream,
+    ...(stream && includeUsage ? { stream_options: { include_usage: true } } : {}),
     ...(p.maxTokens ? { max_tokens: p.maxTokens } : {}),
   };
 }
@@ -90,6 +102,15 @@ function chatEndpoint(base: string): string {
   return joinUrl(base, 'chat/completions');
 }
 
+function shouldRetryWithoutStreamOptions(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes('stream_options')
+    || lower.includes('stream options')
+    || lower.includes('unrecognized request argument')
+    || lower.includes('unknown parameter')
+    || lower.includes('extra_forbidden');
+}
+
 // ---- 统一对外 API ----
 
 export async function chatStream(
@@ -109,9 +130,11 @@ export async function chatStreamDetailed(
   if (!p.model) throw new Error('未选择模型');
 
   const url = cfg.format === 'responses' ? responsesEndpoint(cfg.baseUrl) : chatEndpoint(cfg.baseUrl);
-  const body = cfg.format === 'responses' ? buildResponsesBody(p, true) : buildChatBody(p, true);
+  const buildBody = (includeUsage: boolean) =>
+    cfg.format === 'responses' ? buildResponsesBody(p, true) : buildChatBody(p, true, includeUsage);
+  let body = buildBody(true);
 
-  const res = await fetch(url, {
+  let res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -124,25 +147,59 @@ export async function chatStreamDetailed(
 
   if (!res.ok) {
     const msg = await readErrorBody(res);
+    if (cfg.format === 'chat' && shouldRetryWithoutStreamOptions(msg)) {
+      body = buildBody(false);
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cfg.apiKey}`,
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify(body),
+        signal: p.signal,
+      });
+      if (res.ok) {
+        return readSSEDetailed(res, {
+          onDelta: p.onDelta,
+          onThinkingDelta: p.onThinkingDelta,
+          signal: p.signal,
+          format: cfg.format,
+        });
+      }
+      const retryMsg = await readErrorBody(res);
+      throw new Error(`模型请求失败（${res.status}）：${retryMsg}`);
+    }
     throw new Error(`模型请求失败（${res.status}）：${msg}`);
   }
 
-  return readSSEDetailed(res, { onDelta: p.onDelta, signal: p.signal, format: cfg.format });
+  return readSSEDetailed(res, {
+    onDelta: p.onDelta,
+    onThinkingDelta: p.onThinkingDelta,
+    signal: p.signal,
+    format: cfg.format,
+  });
 }
 
 export async function chatJSON(
   cfg: ChatClientConfig,
   p: ChatParams,
 ): Promise<string> {
+  const result = await chatJSONDetailed(cfg, p);
+  return result.text;
+}
+
+export async function chatJSONDetailed(
+  cfg: ChatClientConfig,
+  p: ChatParams,
+): Promise<ChatResult> {
   if (!cfg.apiKey) throw new Error('未配置 API Key，请先在设置中填写');
   if (!cfg.baseUrl) throw new Error('未配置 API Base URL');
   if (!p.model) throw new Error('未选择模型');
 
   // Responses 格式：部分 Codex 代理的非流式响应会返回空 output；统一走流式再聚合。
   if (cfg.format === 'responses') {
-    let full = '';
-    await chatStream(cfg, { ...p, onDelta: (t) => { full += t; } });
-    return full;
+    return chatStreamDetailed(cfg, { ...p, onDelta: () => {} });
   }
 
   const url = chatEndpoint(cfg.baseUrl);
@@ -163,6 +220,18 @@ export async function chatJSON(
     throw new Error(`模型请求失败（${res.status}）：${msg}`);
   }
   const json = await res.json();
-  const content: string = json?.choices?.[0]?.message?.content ?? '';
-  return content;
+  const msg = json?.choices?.[0]?.message ?? {};
+  const split = splitThinkingFromText(String(msg.content ?? ''));
+  return {
+    text: split.text,
+    thinking: joinThinking(
+      typeof msg.reasoning_content === 'string' ? msg.reasoning_content : undefined,
+      typeof msg.reasoning === 'string' ? msg.reasoning : undefined,
+      typeof msg.thinking === 'string' ? msg.thinking : undefined,
+      typeof msg.thoughts === 'string' ? msg.thoughts : undefined,
+      split.thinking,
+    ),
+    finishReason: json?.choices?.[0]?.finish_reason,
+    usage: normalizeLlmUsage(json?.usage),
+  };
 }

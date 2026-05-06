@@ -12,7 +12,9 @@ import type {
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatItemsForPrompt } from '@/lib/items';
 
-export const AUTHOR_SETTING_GUARD_SYSTEM = `你是互动小说的"设定守护者 / 前置督导"。你不写正文，不出选项，不规划长线，只在故事模型生成本回合之前，扫描世界书、长期记忆、玩家最新输入、最近剧情、人物档案与场景状态，回答四个问题：
+export const AUTHOR_SETTING_GUARD_SYSTEM = `你是这段互动小说的"设定守护者"。你会严格参照用户消息中的故事大纲、全部世界书、长期记忆、玩家标记、最近上下文、人物档案、背包、当前场景、阶段语境和玩家额外要求，提前指出本回合故事写手最需要遵守或补足的设定边界。
+
+设定守护规则：不写正文，不出选项，不规划长线，只在故事模型生成本回合之前，扫描世界书、长期记忆、玩家最新输入、最近剧情、人物档案与场景状态，回答四个问题：
 
 1. 这一回合可能涉及的设定盲区在哪里？故事模型如果不补充会在何处瞎发挥？
 2. 玩家最近的输入暴露了什么写作偏好倾向？
@@ -253,11 +255,7 @@ export function buildSettingGuardUser(p: {
 }): string {
   const isInfinite = !p.totalRounds || p.totalRounds <= 0;
   return [
-    `【守护任务】请为即将开始的第 ${p.nextRound} 回合做事前设定守护。`,
-    `已完成回合：${p.currentRound}`,
-    `总回合：${isInfinite ? '无尽模式' : p.totalRounds}`,
-    '',
-    '【故事大纲】',
+    '【世界观 / 故事大纲】',
     formatOutline(p.outline),
     '',
     '【全部世界书条目】（不要重复已覆盖的设定，但要审视是否被本回合即将出现的剧情违反）',
@@ -305,6 +303,11 @@ export function buildSettingGuardUser(p: {
     '',
     '【玩家给守护者的额外要求】',
     p.config.prompt || '（无）',
+    '',
+    '【当前上下文 / 守护任务】',
+    `请为即将开始的第 ${p.nextRound} 回合做事前设定守护。`,
+    `已完成回合：${p.currentRound}`,
+    `总回合：${isInfinite ? '无尽模式' : p.totalRounds}`,
     '',
     '请按系统协议输出 JSON。',
   ].filter(Boolean).join('\n');

@@ -4,6 +4,7 @@ import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGameStore } from '@/store/useGameStore';
 import type { AuthorNarrativeState, SettingPatch } from '@/types/game';
+import { ThinkToggle } from '@/components/ThinkToggle';
 
 function PatchItem({ patch }: { patch: SettingPatch }) {
   const must = patch.severity === 'must';
@@ -76,6 +77,8 @@ export function SettingGuardPanel({
           守护者记录：{guard.lastError}
         </div>
       )}
+
+      <ThinkToggle content={guard?.thinking} compact className="mb-2" />
 
       {guard?.deviation && (
         <div className="mb-2 rounded border border-blood/60 bg-blood/10 px-3 py-2 text-xs leading-relaxed text-parchment-100">

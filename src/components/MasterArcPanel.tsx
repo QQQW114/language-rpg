@@ -3,6 +3,7 @@ import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGameStore } from '@/store/useGameStore';
 import type { AuthorNarrativeState, PlayerPace } from '@/types/game';
+import { ThinkToggle } from '@/components/ThinkToggle';
 
 function paceLabel(pace: PlayerPace): string {
   switch (pace) {
@@ -69,6 +70,7 @@ export function MasterArcPanel({
       <details className="mb-2 rounded border border-parchment-600/35 bg-parchment-900/30 px-3 py-2">
         <summary className="cursor-pointer list-none text-xs text-gold-light">整体走向</summary>
         <div className="mt-2 text-xs leading-relaxed text-parchment-200/75">{masterArc.summary}</div>
+        <ThinkToggle content={masterArc.thinking} compact />
       </details>
 
       <div className="mb-3 space-y-1">
@@ -127,6 +129,7 @@ export function MasterArcPanel({
           {judge.lastError && (
             <div className="mt-1 text-blood/80">判断记录：{judge.lastError}</div>
           )}
+          <ThinkToggle content={judge.thinking} compact />
         </div>
       )}
 

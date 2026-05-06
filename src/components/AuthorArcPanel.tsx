@@ -1,6 +1,7 @@
 import { ChevronDown, ScrollText } from 'lucide-react';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
 import type { AuthorNarrativeState, AuthorRandomEventState, StoryArc } from '@/types/game';
+import { ThinkToggle } from '@/components/ThinkToggle';
 
 function ArcItem({ arc, muted }: { arc: StoryArc; muted?: boolean }) {
   const stage = arc.stages[arc.currentStageIndex] ?? arc.stages[0];
@@ -68,6 +69,7 @@ export function AuthorArcPanel({
           {plan.currentStage && <div>阶段：{plan.currentStage}</div>}
           {plan.stageGoal && <div>目标：{plan.stageGoal}</div>}
           {plan.nextRoundFocus && <div>下一回合：{plan.nextRoundFocus}</div>}
+          <ThinkToggle content={plan.thinking} compact />
         </div>
       )}
       {narrative?.logicReview && (
@@ -83,6 +85,7 @@ export function AuthorArcPanel({
             {narrative.logicReview.repairDirectives.slice(0, 4).map((item, index) => (
               <div key={index}>· {item}</div>
             ))}
+            <ThinkToggle content={narrative.logicReview.thinking} compact />
           </div>
         </details>
       )}
@@ -94,7 +97,11 @@ export function AuthorArcPanel({
       {randomEventState?.lastError && (
         <div className="mt-2 text-[11px] text-blood/80 bg-blood/10 border border-blood/40 rounded px-2 py-1">
           事件生成记录：{randomEventState.lastError}
+          <ThinkToggle content={randomEventState.lastThinking} compact />
         </div>
+      )}
+      {!randomEventState?.lastError && (
+        <ThinkToggle content={randomEventState?.lastThinking} compact />
       )}
     </Card>
   );

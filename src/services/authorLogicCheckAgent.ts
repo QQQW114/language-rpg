@@ -12,10 +12,9 @@ import type {
   Npc,
   SceneRef,
 } from '@/types/game';
-import { chatJSON } from '@/services/llmClient';
+import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_LOGIC_CHECK_SYSTEM, buildAuthorLogicCheckUser } from '@/prompts/authorLogicCheckSystem';
 import { extractJSON, genId } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
 
 export interface AuthorLogicCheckRequest {
   settings: AppSettings;
@@ -106,10 +105,10 @@ function sanitizeReview(raw: unknown, currentRound: number): AuthorLogicReviewSt
 
 export async function requestAuthorLogicCheck(p: AuthorLogicCheckRequest): Promise<AuthorLogicReviewState | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = appendDeepSeekV4PureAnalysisMarker(buildAuthorLogicCheckUser(p));
+  const user = buildAuthorLogicCheckUser(p);
 
   const runOnce = async (temperature: number): Promise<AuthorLogicReviewState | undefined> => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
       {
         model,
@@ -121,7 +120,8 @@ export async function requestAuthorLogicCheck(p: AuthorLogicCheckRequest): Promi
         signal: p.signal,
       },
     );
-    return sanitizeReview(extractJSON(text), p.currentRound);
+    const review = sanitizeReview(extractJSON(result.text), p.currentRound);
+    return review ? { ...review, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
   };
 
   const first = await runOnce(0.25).catch((err) => {

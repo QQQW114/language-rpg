@@ -2,13 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Message, MemoryAnchor } from '@/types/game';
-import { OrnateDivider } from './ui/Ornaments';
+import { GoldLine } from './ui/GoldLine';
 import { Bookmark, BookmarkCheck, Check, Pencil, RotateCw, Sparkles, Trash2, X } from 'lucide-react';
 import { clsx } from '@/lib/utils';
+import { ThinkToggle } from '@/components/ThinkToggle';
 
 interface StoryViewProps {
   history: Message[];
-  streaming?: string;   // 当前正在流式输出的文本（可选）
+  streaming?: string;
+  streamingThinking?: string;
   phase: 'story' | 'choices' | 'manual' | 'ended';
   anchors?: MemoryAnchor[];
   onPinAnchor?: (msg: Message) => void;
@@ -33,6 +35,7 @@ const markdownComponents = {
 export function StoryView({
   history,
   streaming,
+  streamingThinking,
   phase,
   anchors,
   onPinAnchor,
@@ -52,7 +55,6 @@ export function StoryView({
   const [hintIndex, setHintIndex] = useState<number | undefined>();
   const [hintText, setHintText] = useState('');
 
-  // 建立 round -> anchor 的映射（一个 round 可能多次被锚定，但我们只取第一个标记 UI）
   const anchorByRound = new Map<number, MemoryAnchor>();
   for (const a of anchors ?? []) {
     if (!anchorByRound.has(a.round)) anchorByRound.set(a.round, a);
@@ -60,10 +62,7 @@ export function StoryView({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [history.length, streaming, phase]);
-
-  const iconButtonClass =
-    'p-1 rounded text-parchment-200/50 hover:text-gold-light hover:bg-parchment-800/80 transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
+  }, [history.length, streaming, streamingThinking, phase]);
 
   const saveEdit = (index: number, msg: Message) => {
     if (onEditMessage) onEditMessage(index, msg, editingText);
@@ -71,6 +70,12 @@ export function StoryView({
     setEditingIndex(undefined);
     setEditingText('');
   };
+
+  const streamingRoundLabel = (() => {
+    if (history.length === 0) return 0;
+    const last = history[history.length - 1];
+    return last.role === 'assistant' ? last.round + 1 : last.round;
+  })();
 
   return (
     <div className="prose-story">
@@ -87,45 +92,39 @@ export function StoryView({
           const regenWithHintEnabled = !!onRegenerateAssistantWithHint && (!canRegenerateAssistant || canRegenerateAssistant(i, m));
           const hasControls = onPinAnchor || onUnpinAnchor || editEnabled || deleteEnabled || regenEnabled || regenWithHintEnabled;
           return (
-            <div key={i} className="mb-4 group relative">
-              {i > 0 && <OrnateDivider>{`第 ${m.round} 回合`}</OrnateDivider>}
-              {editing ? (
-                <div className="rounded-md border border-gold/50 bg-parchment-900/50 p-3 shadow-glow-sm">
-                  <textarea
-                    value={editingText}
-                    onChange={(e) => setEditingText(e.target.value)}
-                    className="w-full min-h-[220px] resize-y rounded-md border border-parchment-600/50 bg-ink/40 px-3 py-2 font-serif text-sm leading-relaxed text-parchment-50 outline-none focus:border-gold/80"
-                  />
-                  <div className="mt-2 flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingIndex(undefined);
-                        setEditingText('');
-                      }}
-                      className="rounded border border-parchment-600/50 px-2 py-1 text-xs text-parchment-200/80 hover:border-gold/60 hover:text-gold-light"
-                    >
-                      <X size={12} className="inline mr-1" />取消
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editingText.trim()}
-                      onClick={() => {
-                        saveEdit(i, m);
-                      }}
-                      className="rounded border border-gold/60 px-2 py-1 text-xs text-gold-light hover:bg-gold/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <Check size={12} className="inline mr-1" />保存
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                  {m.content}
-                </ReactMarkdown>
+            <div
+              key={i}
+              className={clsx(
+                'group relative mb-6',
+                pinned && 'before:absolute before:-left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-gold/60',
               )}
+            >
+              {i > 0 && (
+                <div className="my-6 flex items-center gap-2 text-[10px] tracking-[0.3em] text-parchment-200/40 font-serif uppercase" style={{ textIndent: 0 }}>
+                  <span aria-hidden className="flex-1 h-px bg-gold-line opacity-60 origin-left animate-line-in" />
+                  <span className="shrink-0 italic">第 {m.round} 回</span>
+                  <span aria-hidden className="flex-1 h-px bg-gold-line opacity-60 origin-right animate-line-in" />
+                </div>
+              )}
+
+              {editing ? (
+                <AssistantEditor
+                  value={editingText}
+                  onChange={setEditingText}
+                  onCancel={() => { setEditingIndex(undefined); setEditingText(''); }}
+                  onSave={() => saveEdit(i, m)}
+                />
+              ) : (
+                <>
+                  <ThinkToggle content={m.thinking} />
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {m.content}
+                  </ReactMarkdown>
+                </>
+              )}
+
               {hinting && (
-                <div className="mt-3 rounded-md border border-gold/40 bg-parchment-900/50 p-3 shadow-glow-sm">
+                <div className="mt-3 rounded-md border border-gold/40 bg-parchment-900/50 p-3 shadow-glow-sm" style={{ textIndent: 0 }}>
                   <div className="mb-2 text-xs tracking-[0.25em] text-gold/70 font-serif uppercase">
                     增强重新请求 · 重要参考
                   </div>
@@ -136,192 +135,232 @@ export function StoryView({
                     className="w-full min-h-[110px] resize-y rounded-md border border-parchment-600/50 bg-ink/40 px-3 py-2 font-serif text-sm leading-relaxed text-parchment-50 outline-none focus:border-gold/80 placeholder:text-parchment-200/35"
                   />
                   <div className="mt-2 flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHintIndex(undefined);
-                        setHintText('');
-                      }}
-                      className="rounded border border-parchment-600/50 px-2 py-1 text-xs text-parchment-200/80 hover:border-gold/60 hover:text-gold-light"
-                    >
+                    <ToolbarBtn onClick={() => { setHintIndex(undefined); setHintText(''); }}>
                       <X size={12} className="inline mr-1" />取消
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!hintText.trim()}
+                    </ToolbarBtn>
+                    <ToolbarBtn
                       onClick={() => {
                         onRegenerateAssistantWithHint?.(i, m, hintText);
                         setHintIndex(undefined);
                         setHintText('');
                       }}
-                      className="rounded border border-gold/60 px-2 py-1 text-xs text-gold-light hover:bg-gold/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={!hintText.trim()}
+                      tone="gold"
                     >
                       <Sparkles size={12} className="inline mr-1" />确认重写
-                    </button>
+                    </ToolbarBtn>
                   </div>
                 </div>
               )}
-              {hasControls && (
-                <div
-                  className={clsx(
-                    'absolute -left-8 top-1 flex flex-col gap-1 transition-opacity',
-                    pinned || editing || hinting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-                  )}
-                >
+
+              {hasControls && !editing && !hinting && (
+                <FloatingToolbar visible={!!pinned} align="left">
                   {(onPinAnchor || onUnpinAnchor) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (pinned) onUnpinAnchor?.(pinned.id);
-                        else onPinAnchor?.(m);
-                      }}
+                    <ToolbarIcon
+                      onClick={() => (pinned ? onUnpinAnchor?.(pinned.id) : onPinAnchor?.(m))}
                       title={pinned ? '取消记忆锚点' : '标记为记忆锚点（模型会在后续叙事中呼应）'}
-                      className={clsx(iconButtonClass, pinned && 'text-gold-light')}
+                      active={!!pinned}
                     >
-                      {pinned ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
-                    </button>
+                      {pinned ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}
+                    </ToolbarIcon>
                   )}
                   {editEnabled && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingIndex(i);
-                        setEditingText(m.content);
-                      }}
+                    <ToolbarIcon
+                      onClick={() => { setEditingIndex(i); setEditingText(m.content); }}
                       title="编辑这次模型回复，并按新文本重新生成后续选项"
-                      className={clsx(iconButtonClass, editing && 'text-gold-light')}
                     >
-                      <Pencil size={16} />
-                    </button>
+                      <Pencil size={14} />
+                    </ToolbarIcon>
                   )}
                   {deleteEnabled && (
-                    <button
-                      type="button"
-                      onClick={() => onDeleteMessage?.(i, m)}
-                      title="删除这条记录"
-                      className={iconButtonClass}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    <ToolbarIcon onClick={() => onDeleteMessage?.(i, m)} title="删除这条记录">
+                      <Trash2 size={14} />
+                    </ToolbarIcon>
                   )}
                   {regenEnabled && (
-                    <button
-                      type="button"
-                      onClick={() => onRegenerateAssistant?.(i, m)}
-                      title="直接重新请求这次模型回复"
-                      className={iconButtonClass}
-                    >
-                      <RotateCw size={16} />
-                    </button>
+                    <ToolbarIcon onClick={() => onRegenerateAssistant?.(i, m)} title="直接重新请求这次模型回复">
+                      <RotateCw size={14} />
+                    </ToolbarIcon>
                   )}
                   {regenWithHintEnabled && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHintIndex(i);
-                        setHintText('');
-                      }}
+                    <ToolbarIcon
+                      onClick={() => { setHintIndex(i); setHintText(''); }}
                       title="增强重新请求：附加重要参考提示词"
-                      className={clsx(iconButtonClass, hinting && 'text-gold-light')}
                     >
-                      <Sparkles size={16} />
-                    </button>
+                      <Sparkles size={14} />
+                    </ToolbarIcon>
                   )}
-                </div>
+                </FloatingToolbar>
               )}
             </div>
           );
         }
+
         if (m.role === 'user') {
           const hasControls = modifyEnabled || deleteEnabled;
           return (
-            <div
-              key={i}
-              className="my-4 group relative pl-3 border-l-2 border-gold/50 text-parchment-200/80 italic"
-              style={{ textIndent: 0 }}
-            >
+            <div key={i} className="group relative my-4" style={{ textIndent: 0 }}>
               {editing ? (
-                <div className="rounded-md border border-gold/50 bg-parchment-900/50 p-3 shadow-glow-sm not-italic">
+                <div className="w-full max-w-[88%] rounded-md border border-gold/45 bg-parchment-900/55 p-3 shadow-glow-sm not-italic">
                   <textarea
                     value={editingText}
                     onChange={(e) => setEditingText(e.target.value)}
                     className="w-full min-h-[90px] resize-y rounded-md border border-parchment-600/50 bg-ink/40 px-3 py-2 font-serif text-sm leading-relaxed text-parchment-50 outline-none focus:border-gold/80"
                   />
                   <div className="mt-2 flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingIndex(undefined);
-                        setEditingText('');
-                      }}
-                      className="rounded border border-parchment-600/50 px-2 py-1 text-xs text-parchment-200/80 hover:border-gold/60 hover:text-gold-light"
-                    >
+                    <ToolbarBtn onClick={() => { setEditingIndex(undefined); setEditingText(''); }}>
                       <X size={12} className="inline mr-1" />取消
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editingText.trim()}
-                      onClick={() => saveEdit(i, m)}
-                      className="rounded border border-gold/60 px-2 py-1 text-xs text-gold-light hover:bg-gold/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
+                    </ToolbarBtn>
+                    <ToolbarBtn onClick={() => saveEdit(i, m)} disabled={!editingText.trim()} tone="gold">
                       <Check size={12} className="inline mr-1" />保存
-                    </button>
+                    </ToolbarBtn>
                   </div>
                 </div>
               ) : (
-                <>
-                  <span className="text-gold/70 mr-1">▸</span>
-                  <span>{m.content}</span>
-                </>
+                <div className="w-full pl-3 border-l-2 border-gold/45 text-parchment-200/85 italic">
+                  <span className="text-gold/60 mr-1">▸</span>
+                  <span className="font-serif text-[15px] leading-relaxed">{m.content}</span>
+                </div>
               )}
-              {hasControls && (
-                <div
-                  className={clsx(
-                    'absolute -left-8 top-0 flex flex-col gap-1 transition-opacity',
-                    editing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-                  )}
-                >
+              {hasControls && !editing && (
+                <FloatingToolbar visible={false} align="left">
                   {modifyEnabled && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingIndex(i);
-                        setEditingText(m.content);
-                      }}
+                    <ToolbarIcon
+                      onClick={() => { setEditingIndex(i); setEditingText(m.content); }}
                       title="编辑这条玩家行动/决策记录"
-                      className={clsx(iconButtonClass, editing && 'text-gold-light')}
                     >
-                      <Pencil size={16} />
-                    </button>
+                      <Pencil size={14} />
+                    </ToolbarIcon>
                   )}
                   {deleteEnabled && (
-                    <button
-                      type="button"
-                      onClick={() => onDeleteMessage?.(i, m)}
-                      title="删除这条记录"
-                      className={iconButtonClass}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    <ToolbarIcon onClick={() => onDeleteMessage?.(i, m)} title="删除这条记录">
+                      <Trash2 size={14} />
+                    </ToolbarIcon>
                   )}
-                </div>
+                </FloatingToolbar>
               )}
             </div>
           );
         }
         return null;
       })}
-      {streaming && (
+
+      {(streaming || streamingThinking) && (
         <div className="mb-4">
-          {history.length > 0 && <OrnateDivider>{`第 ${history[history.length - 1].round + (history[history.length - 1].role === 'assistant' ? 1 : 0)} 回合`}</OrnateDivider>}
+          {history.length > 0 && (
+            <div className="my-6 flex items-center gap-2 text-[10px] tracking-[0.3em] text-parchment-200/40 font-serif uppercase" style={{ textIndent: 0 }}>
+              <span aria-hidden className="flex-1 h-px bg-gold-line opacity-60 origin-left animate-line-in" />
+              <span className="shrink-0 italic">第 {streamingRoundLabel} 回</span>
+              <span aria-hidden className="flex-1 h-px bg-gold-line opacity-60 origin-right animate-line-in" />
+            </div>
+          )}
           <div className="caret">
+            <ThinkToggle content={streamingThinking} />
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {streaming}
+              {streaming || ''}
             </ReactMarkdown>
           </div>
         </div>
       )}
-      <div ref={endRef} />
+      <div ref={endRef} className="h-20" />
     </div>
+  );
+}
+
+function AssistantEditor({
+  value,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-gold/45 bg-parchment-900/50 p-3 shadow-glow-sm" style={{ textIndent: 0 }}>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full min-h-[220px] resize-y rounded-md border border-parchment-600/50 bg-ink/40 px-3 py-2 font-serif text-sm leading-relaxed text-parchment-50 outline-none focus:border-gold/80"
+      />
+      <div className="mt-2 flex justify-end gap-2">
+        <ToolbarBtn onClick={onCancel}>
+          <X size={12} className="inline mr-1" />取消
+        </ToolbarBtn>
+        <ToolbarBtn onClick={onSave} disabled={!value.trim()} tone="gold">
+          <Check size={12} className="inline mr-1" />保存
+        </ToolbarBtn>
+      </div>
+    </div>
+  );
+}
+
+function FloatingToolbar({
+  children,
+  visible,
+  align,
+}: {
+  children: React.ReactNode;
+  visible: boolean;
+  align: 'left' | 'right';
+}) {
+  return (
+    <div
+      className={clsx(
+        'absolute top-0 z-10 flex flex-col gap-0.5 transition-opacity duration-200',
+        align === 'left' ? '-left-8' : '-right-8',
+        visible
+          ? 'opacity-100'
+          : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+      )}
+      style={{ textIndent: 0 }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ToolbarIcon({
+  children,
+  active,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className={clsx(
+        'inline-flex h-7 w-7 items-center justify-center rounded text-parchment-200/65 transition-all duration-200',
+        'hover:text-gold-light hover:bg-parchment-700/60',
+        active && 'text-gold-light',
+        'disabled:opacity-30 disabled:cursor-not-allowed',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolbarBtn({
+  children,
+  tone = 'normal',
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 'normal' | 'gold' }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className={clsx(
+        'rounded border px-2 py-1 text-xs font-serif transition-all duration-200',
+        tone === 'gold'
+          ? 'border-gold/60 text-gold-light hover:bg-gold/10'
+          : 'border-parchment-600/50 text-parchment-200/85 hover:border-gold/55 hover:text-gold-light',
+        'disabled:opacity-40 disabled:cursor-not-allowed',
+      )}
+    >
+      {children}
+    </button>
   );
 }

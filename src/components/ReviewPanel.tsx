@@ -2,6 +2,7 @@ import type { AdventureReview } from '@/types/game';
 import { clsx } from '@/lib/utils';
 import { OrnateDivider } from './ui/Ornaments';
 import { Sparkles, Award, Quote } from 'lucide-react';
+import { ThinkToggle } from '@/components/ThinkToggle';
 
 const GRADE_COLOR: Record<AdventureReview['grade'], string> = {
   S: 'text-gold-light border-gold shadow-glow',
@@ -100,6 +101,8 @@ export function ReviewPanel({ review, loading, onRegenerate }: ReviewPanelProps)
           <p className="font-serif text-parchment-100 leading-relaxed italic">{review.comment}</p>
         </div>
       )}
+
+      <ThinkToggle content={review.thinking} />
 
       {onRegenerate && (
         <div className="text-center mt-6">

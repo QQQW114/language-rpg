@@ -36,11 +36,20 @@ import type { AuthorRandomEventConfig, Choice, GameSave, Item, Message, SceneRef
 import type { GameContent } from '@/types/game';
 import type { StrictCustomConfig } from '@/types/custom';
 import type { WorldBook, WorldBookEntry } from '@/types/content';
+import type { LlmUsage } from '@/types/llm';
 import { buildJourneyPackage } from '@/lib/journeyPackage';
 import { AuthorArcPanel } from '@/components/AuthorArcPanel';
 import { SettingGuardPanel } from '@/components/SettingGuardPanel';
 import { MasterArcPanel } from '@/components/MasterArcPanel';
+import { AgentThoughtsPanel } from '@/components/AgentThoughtsPanel';
 import { normalizeAuthorMasterArcConfig, normalizeAuthorSettingGuardConfig, normalizeAuthorStageJudgeConfig } from '@/lib/authorMode';
+import { TopBar } from '@/components/TopBar';
+import { SidebarTabs } from '@/components/SidebarTabs';
+import { AutoGoldLine, GoldLine } from '@/components/ui/GoldLine';
+import { ToastViewport } from '@/components/ui/Toast';
+import { confirmDialog } from '@/components/ui/ConfirmDialog';
+import { toast } from '@/lib/toast';
+import { Brain, Compass, ScrollText, ShieldCheck, UserRound } from 'lucide-react';
 
 const RECENT_TEXT_WINDOW = 2400;
 type GameTaskKind = 'story' | 'choices' | 'review';
@@ -59,8 +68,16 @@ type AgentBusyKind =
   | 'logicCheck'
   | 'masterArc'
   | 'review';
+type AgentThoughtKind = AgentBusyKind | 'summary';
 
-const AGENT_LABELS: Record<AgentBusyKind, string> = {
+interface AgentRecordPayload {
+  thinking?: string;
+  output?: unknown;
+  usage?: LlmUsage;
+  cacheHit?: boolean;
+}
+
+const AGENT_LABELS: Record<AgentThoughtKind, string> = {
   stageJudge: '心镜映念 · 揣度此意',
   settingGuard: '世书守护 · 查阅设定',
   memoryNow: '长卷整理 · 此事当记',
@@ -73,7 +90,24 @@ const AGENT_LABELS: Record<AgentBusyKind, string> = {
   logicCheck: '连贯校尺 · 查漏补缺',
   masterArc: '主弧铺设 · 勾勒全篇',
   review: '评卷点墨 · 定旅程之榜',
+  summary: '长卷压缩 · 摘要前文',
 };
+
+function formatAgentOutput(output: unknown): string | undefined {
+  if (typeof output === 'string') {
+    const text = output.trim();
+    return text || undefined;
+  }
+  if (output == null) return undefined;
+  try {
+    return JSON.stringify(output, (key, value) => (
+      key === 'thinking' || key === 'rawOutput' || key === 'usage' ? undefined : value
+    ), 2);
+  } catch {
+    const text = String(output).trim();
+    return text || undefined;
+  }
+}
 
 function gameTaskKey(save: GameSave, kind: GameTaskKind): string {
   // 同一存档同一类模型任务任一时刻只允许一个。
@@ -239,15 +273,14 @@ export default function GamePage() {
   const addEventToLibrary = useContentStore((s) => s.addEvent);
 
   const [streaming, setStreaming] = useState('');
+  const [streamingThinking, setStreamingThinking] = useState('');
   const [busy, setBusy] = useState(false);
   const [agentBusy, setAgentBusy] = useState<AgentBusyKind | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [regeneratingMasterArc, setRegeneratingMasterArc] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | undefined>();
-  const [exportMsg, setExportMsg] = useState<string | undefined>();
   const [backpackOpen, setBackpackOpen] = useState(false);
   const [npcOpen, setNpcOpen] = useState(false);
-  const [agentNotice, setAgentNotice] = useState<string | undefined>();
   const [stageAdvanceMsg, setStageAdvanceMsg] = useState<string | undefined>();
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -255,13 +288,30 @@ export default function GamePage() {
   const leavingPageRef = useRef(false);
   const prevStageIndexRef = useRef<number | null>(null);
 
+  const recordAgentRecord = useCallback((
+    saveId: string,
+    kind: AgentThoughtKind,
+    round: number,
+    payload: AgentRecordPayload,
+  ) => {
+    const content = payload.thinking?.trim();
+    const output = formatAgentOutput(payload.output);
+    if (!content && !output && !payload.usage && !payload.cacheHit) return;
+    useGameStore.getState().addAgentThought(saveId, {
+      kind,
+      label: AGENT_LABELS[kind],
+      round,
+      content,
+      output,
+      usage: payload.usage,
+      cacheHit: payload.cacheHit,
+    });
+  }, []);
+
   const outline = useMemo(() => outlines.find((o) => o.id === save?.content.outlineId), [outlines, save?.content.outlineId]);
   const background = useMemo(() => backgrounds.find((b) => b.id === save?.content.backgroundId), [backgrounds, save?.content.backgroundId]);
   const showAgentNotice = useCallback((msg: string) => {
-    setAgentNotice(msg);
-    window.setTimeout(() => {
-      if (mountedRef.current && !leavingPageRef.current) setAgentNotice(undefined);
-    }, 3000);
+    if (msg) toast.warn(msg);
   }, []);
   const activeEntriesCount = useMemo(
     () => save ? flattenWorldBookEntries(worldBooks, save.content.worldBookIds).length : 0,
@@ -309,8 +359,12 @@ export default function GamePage() {
     const actions = useGameStore.getState();
     const current = actions.saves[sourceSave.id] ?? sourceSave;
     setAgentBusy(includeChoices ? 'decisionWithChoices' : 'decisionTracking');
-    const { choices, grants, destroys, itemPatches, npcs, currentScene, availableScenes } = await requestChoices({
+    const { choices, grants, destroys, itemPatches, npcs, currentScene, availableScenes, thinking, rawOutput, usage } = await requestChoices({
       settings,
+      outline,
+      background,
+      characterName: current.content.characterName,
+      worldBookEntries: getActiveWorldBookEntriesForAgent(worldBooks, current, latestStory),
       latestStory,
       backpack: current.state.backpack ?? [],
       npcs: current.state.npcs ?? [],
@@ -330,6 +384,16 @@ export default function GamePage() {
 
     const afterDecision = useGameStore.getState().saves[sourceSave.id] ?? current;
     const grantKey = `round-${afterDecision.state.currentRound}`;
+    recordAgentRecord(
+      sourceSave.id,
+      includeChoices ? 'decisionWithChoices' : 'decisionTracking',
+      afterDecision.state.currentRound,
+      {
+        thinking,
+        output: rawOutput ?? { choices, grants, destroys, itemPatches, npcs, currentScene, availableScenes },
+        usage,
+      },
+    );
     actions.applyDecisionResult(sourceSave.id, grantKey, grants, destroys, itemPatches, afterDecision.state.currentRound);
     if (npcs?.length) actions.applyNpcUpdates(sourceSave.id, npcs, afterDecision.state.currentRound);
     if (includeChoices || currentScene || availableScenes.length) {
@@ -372,10 +436,15 @@ export default function GamePage() {
         signal,
       });
       if (memory) {
-        actions.setLongTermMemory(sourceSave.id, memory, completedRound);
+        recordAgentRecord(sourceSave.id, 'memory', completedRound, {
+          thinking: memory.thinking,
+          output: memory.rawOutput ?? memory.memory,
+          usage: memory.usage,
+        });
+        actions.setLongTermMemory(sourceSave.id, memory.memory, completedRound);
       }
     }
-  }, [settings, outline, background, worldBooks]);
+  }, [settings, outline, background, worldBooks, recordAgentRecord]);
 
   const runMemoryNow = useCallback(async (saveId: string, signal?: AbortSignal) => {
     const actions = useGameStore.getState();
@@ -409,9 +478,14 @@ export default function GamePage() {
       signal,
     });
     if (memory) {
-      actions.setLongTermMemory(saveId, memory, completedRound);
+      recordAgentRecord(saveId, 'memoryNow', completedRound, {
+        thinking: memory.thinking,
+        output: memory.rawOutput ?? memory.memory,
+        usage: memory.usage,
+      });
+      actions.setLongTermMemory(saveId, memory.memory, completedRound);
     }
-  }, [settings, outline, background, worldBooks]);
+  }, [settings, outline, background, worldBooks, recordAgentRecord]);
 
   const maybePrepareAuthorRandomEvent = useCallback(async (
     saveId: string,
@@ -495,6 +569,11 @@ export default function GamePage() {
       narrative: current.state.authorNarrative,
       signal,
     });
+    recordAgentRecord(saveId, 'randomEvent', nextRound, {
+      thinking: result.thinking,
+      output: result.rawOutput ?? result,
+      usage: result.usage,
+    });
 
     if (result.trigger && result.arc) {
       const arc = result.arc;
@@ -512,6 +591,7 @@ export default function GamePage() {
         cooldownUntilRound: nextRound + Math.max(0, config.dynamic.cooldownRounds),
         lastCheckedRound: nextRound,
         lastError: undefined,
+        lastThinking: result.thinking,
       });
       addEventToLibrary(storyArcToRandomEvent(arc));
     } else {
@@ -520,9 +600,10 @@ export default function GamePage() {
         currentProbability: missProbability,
         lastCheckedRound: nextRound,
         lastError: result.reason,
+        lastThinking: result.thinking,
       });
     }
-  }, [settings, outline, background, allEvents, addEventToLibrary, worldBooks]);
+  }, [settings, outline, background, allEvents, addEventToLibrary, worldBooks, recordAgentRecord]);
 
   const maybeUpdateAuthorDirectorPlan = useCallback(async (
     saveId: string,
@@ -576,6 +657,11 @@ export default function GamePage() {
     });
 
     if (!nextPlan) return;
+    recordAgentRecord(saveId, 'director', completedRound, {
+      thinking: nextPlan.thinking,
+      output: nextPlan.rawOutput ?? nextPlan,
+      usage: nextPlan.usage,
+    });
     const latest = useGameStore.getState().saves[saveId] ?? current;
     actions.setAuthorNarrativeState(saveId, {
       ...(latest.state.authorNarrative ?? narrative),
@@ -584,7 +670,7 @@ export default function GamePage() {
       completedArcs: latest.state.authorNarrative?.completedArcs ?? narrative.completedArcs,
       lastDirectorRound: completedRound,
     });
-  }, [settings, outline, background, worldBooks]);
+  }, [settings, outline, background, worldBooks, recordAgentRecord]);
 
   const maybeUpdateAuthorLogicReview = useCallback(async (
     saveId: string,
@@ -632,6 +718,11 @@ export default function GamePage() {
     });
 
     if (!review) return;
+    recordAgentRecord(saveId, 'logicCheck', completedRound, {
+      thinking: review.thinking,
+      output: review.rawOutput ?? review,
+      usage: review.usage,
+    });
     const latest = useGameStore.getState().saves[saveId] ?? current;
     actions.setAuthorNarrativeState(saveId, {
       ...(latest.state.authorNarrative ?? narrative),
@@ -640,7 +731,7 @@ export default function GamePage() {
       completedArcs: latest.state.authorNarrative?.completedArcs ?? narrative.completedArcs,
       lastLogicCheckRound: completedRound,
     });
-  }, [settings, outline, background, worldBooks]);
+  }, [settings, outline, background, worldBooks, recordAgentRecord]);
 
   const maybeRunSettingGuard = useCallback(async (
     saveId: string,
@@ -688,6 +779,11 @@ export default function GamePage() {
       }
 
       actions.applySettingGuardResult(saveId, result, completedRound);
+      recordAgentRecord(saveId, 'settingGuard', completedRound, {
+        thinking: result.thinking,
+        output: result.rawOutput ?? result,
+        usage: result.usage,
+      });
 
       if (config.candidatesAutoAccept) {
         const fresh = useGameStore.getState().saves[saveId];
@@ -704,7 +800,7 @@ export default function GamePage() {
       showAgentNotice('设定守护失利，沿用上次设定');
       return { memoryUrgent: false };
     }
-  }, [settings, outline, background, worldBooks, showAgentNotice]);
+  }, [settings, outline, background, worldBooks, showAgentNotice, recordAgentRecord]);
 
   const maybeRunStageJudge = useCallback(async (
     saveId: string,
@@ -753,6 +849,11 @@ export default function GamePage() {
       }
 
       actions.applyStageJudgeResult(saveId, result, completedRound);
+      recordAgentRecord(saveId, 'stageJudge', completedRound, {
+        thinking: result.thinking,
+        output: result.rawOutput ?? result,
+        usage: result.usage,
+      });
       if (config.autoAdvance && result.stageStatus.shouldAdvance) {
         actions.advanceMasterArcStage(saveId, result.stageStatus.advanceReasoning);
       }
@@ -762,7 +863,7 @@ export default function GamePage() {
       actions.setStageJudgeError(saveId, err?.message ?? String(err));
       showAgentNotice('阶段判断失利，沿用上次结果');
     }
-  }, [settings, outline, showAgentNotice, worldBooks]);
+  }, [settings, outline, showAgentNotice, worldBooks, recordAgentRecord]);
 
   // ----- 异步任务：故事 -----
   const runStory = useCallback(async () => {
@@ -778,6 +879,7 @@ export default function GamePage() {
     setBusy(true);
     setErrorMsg(undefined);
     setStreaming('');
+    setStreamingThinking('');
 
     const abort = new AbortController();
     abortRef.current = abort;
@@ -822,7 +924,7 @@ export default function GamePage() {
         : settings;
 
       setAgentBusy('story');
-      const full = await requestStory({
+      const storyResult = await requestStory({
         settings: storySettings,
         outline,
         background,
@@ -851,17 +953,31 @@ export default function GamePage() {
             setStreaming((prev) => prev + t);
           }
         },
+        onThinkingDelta: (t) => {
+          if (mountedRef.current && !leavingPageRef.current) {
+            setStreamingThinking((prev) => prev + t);
+          }
+        },
         signal: abort.signal,
       });
+      const full = storyResult.text;
 
       if (!full.trim()) throw new Error('模型未返回任何内容');
 
       const nextRound = state.currentRound;
-      actions.appendMessage(s.id, { role: 'assistant', content: full, round: nextRound });
+      actions.appendMessage(s.id, { role: 'assistant', content: full, round: nextRound, thinking: storyResult.thinking });
+      recordAgentRecord(s.id, 'story', nextRound, {
+        thinking: storyResult.thinking,
+        output: full,
+        usage: storyResult.usage,
+      });
       actions.incrementRound(s.id);
       actions.setLastPlayerInput(s.id, undefined);
       actions.updateStateOf(s.id, { regenerationHint: undefined });
-      if (mountedRef.current && !leavingPageRef.current) setStreaming('');
+      if (mountedRef.current && !leavingPageRef.current) {
+        setStreaming('');
+        setStreamingThinking('');
+      }
 
       // 固化本回合获得的道具 → 消耗已勾选的一次性物品 → 清空本轮选择
       actions.commitPendingGrants(s.id);
@@ -922,12 +1038,20 @@ export default function GamePage() {
               summary: res.newSummary,
               summarizedUntilIndex: res.newSummarizedUntilIndex,
             });
+            if (res) recordAgentRecord(s.id, 'summary', afterRound, {
+              thinking: res.thinking,
+              output: res.rawOutput ?? res.newSummary,
+              usage: res.usage,
+            });
           })
           .catch(() => {});
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        if (mountedRef.current && !leavingPageRef.current) setStreaming('');
+        if (mountedRef.current && !leavingPageRef.current) {
+          setStreaming('');
+          setStreamingThinking('');
+        }
         return;
       }
       const msg = err?.message ?? String(err);
@@ -938,7 +1062,7 @@ export default function GamePage() {
       if (mountedRef.current && !leavingPageRef.current) setAgentBusy(null);
       if (abortRef.current === abort) abortRef.current = null;
     }
-  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview, maybeRunSettingGuard, maybeRunStageJudge, runMemoryNow]);
+  }, [getSave, settings, outline, background, worldBooks, allEvents, applyDecisionForStory, maybePrepareAuthorRandomEvent, maybeUpdateAuthorDirectorPlan, maybeUpdateAuthorLogicReview, maybeRunSettingGuard, maybeRunStageJudge, runMemoryNow, recordAgentRecord]);
 
   // ----- 异步任务：选项 + 给予/销毁道具 -----
   const runChoices = useCallback(async () => {
@@ -979,6 +1103,11 @@ export default function GamePage() {
     try {
       const review = await requestReview({ settings, save: s, outline, background, signal: abort.signal });
       actions.setReview(s.id, review);
+      recordAgentRecord(s.id, 'review', s.state.currentRound, {
+        thinking: review.thinking,
+        output: review.rawOutput ?? review,
+        usage: review.usage,
+      });
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
       setErrorMsg(err?.message ?? String(err));
@@ -987,12 +1116,18 @@ export default function GamePage() {
       if (mountedRef.current && !leavingPageRef.current) setReviewing(false);
       if (mountedRef.current && !leavingPageRef.current) setAgentBusy(null);
     }
-  }, [getSave, settings, outline, background]);
+  }, [getSave, settings, outline, background, recordAgentRecord]);
 
   const regenerateMasterArc = useCallback(async () => {
     const current = getSave();
     if (!current || current.content.mode !== 'author' || !outline) return;
-    if (!confirm('重新生成主弧会丢失现有阶段节拍的完成记录，确定继续吗？')) return;
+    const ok = await confirmDialog({
+      title: '重新生成主弧',
+      message: '重新生成主弧会丢失现有阶段节拍的完成记录，确定继续吗？',
+      confirmText: '重新生成',
+      variant: 'danger',
+    });
+    if (!ok) return;
     const actions = useGameStore.getState();
     const config = normalizeAuthorMasterArcConfig(current.content.authorMasterArc);
     const abort = new AbortController();
@@ -1005,15 +1140,19 @@ export default function GamePage() {
         settings,
         outline,
         background,
+        initialScene: current.state.history.find((m) => m.role === 'assistant' && m.round === 0)?.content,
         characterName: current.content.characterName,
         config,
         worldBookEntries: flattenWorldBookEntries(worldBooks, current.content.worldBookIds),
         signal: abort.signal,
       }) ?? fallbackMasterArcFromOutline(outline, config);
       actions.setMasterArc(current.id, nextArc);
-      if (mountedRef.current && !leavingPageRef.current) {
-        setExportMsg('主弧已重新生成。');
-      }
+      recordAgentRecord(current.id, 'masterArc', current.state.currentRound, {
+        thinking: nextArc.thinking,
+        output: nextArc.rawOutput ?? nextArc,
+        usage: nextArc.usage,
+      });
+      toast.success('主弧已重新生成。');
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
       const msg = err?.message ?? String(err);
@@ -1024,7 +1163,7 @@ export default function GamePage() {
       if (mountedRef.current && !leavingPageRef.current) setRegeneratingMasterArc(false);
       if (mountedRef.current && !leavingPageRef.current) setAgentBusy(null);
     }
-  }, [getSave, settings, outline, background, worldBooks]);
+  }, [getSave, settings, outline, background, worldBooks, recordAgentRecord]);
 
   // ----- 调度器 -----
   const dispatch = useCallback(() => {
@@ -1147,6 +1286,7 @@ export default function GamePage() {
       !!save &&
       !busy &&
       !streaming &&
+      !streamingThinking &&
       save.state.phase !== 'story'
     );
   }
@@ -1158,6 +1298,7 @@ export default function GamePage() {
       historyIndex === latestAssistantIndex &&
       !busy &&
       !streaming &&
+      !streamingThinking &&
       save.state.phase !== 'story'
     );
   }
@@ -1180,6 +1321,7 @@ export default function GamePage() {
   function onRegenerateAssistant(historyIndex: number, msg: Message) {
     if (!save || !canModifyAssistant(historyIndex, msg)) return;
     setStreaming('');
+    setStreamingThinking('');
     setErrorMsg(undefined);
     busyRef.current = false;
     useGameStore.getState().regenerateAssistantMessage(save.id, historyIndex);
@@ -1188,6 +1330,7 @@ export default function GamePage() {
   function onRegenerateAssistantWithHint(historyIndex: number, msg: Message, hint: string) {
     if (!save || !canModifyAssistant(historyIndex, msg)) return;
     setStreaming('');
+    setStreamingThinking('');
     setErrorMsg(undefined);
     busyRef.current = false;
     useGameStore.getState().regenerateAssistantMessage(save.id, historyIndex, hint);
@@ -1195,14 +1338,12 @@ export default function GamePage() {
 
   async function onExportChatRecord() {
     if (!save) return;
-    setExportMsg(undefined);
     setErrorMsg(undefined);
     try {
       const fileName = `${safeFileName(save.name)}-聊天记录.md`;
       const result = await saveTextFile(formatChatRecord(save), fileName);
       if (result === 'cancelled') return;
-      setExportMsg(result === 'saved' ? '聊天记录已写入文件。' : '聊天记录已导出；文件名固定，便于覆盖旧文件。');
-      window.setTimeout(() => setExportMsg(undefined), 2200);
+      toast.success(result === 'saved' ? '聊天记录已写入文件。' : '聊天记录已导出。');
     } catch (err: any) {
       setErrorMsg(err?.message ?? String(err));
     }
@@ -1215,7 +1356,6 @@ export default function GamePage() {
 
   async function onExportJourneyPackage() {
     if (!save) return;
-    setExportMsg(undefined);
     setErrorMsg(undefined);
     try {
       const fileName = `${safeFileName(save.name)}-旅程包.json`;
@@ -1239,8 +1379,7 @@ export default function GamePage() {
         ],
       );
       if (result === 'cancelled') return;
-      setExportMsg(result === 'saved' ? '旅程包已写入文件。' : '旅程包已导出。');
-      window.setTimeout(() => setExportMsg(undefined), 2200);
+      toast.success(result === 'saved' ? '旅程包已写入文件。' : '旅程包已导出。');
     } catch (err: any) {
       setErrorMsg(err?.message ?? String(err));
     }
@@ -1269,87 +1408,64 @@ export default function GamePage() {
 
   return (
     <div className="min-h-full flex flex-col">
-      {stageAdvanceMsg && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-none px-5 py-2.5 rounded border border-gold/60 bg-gold/15 backdrop-blur-md text-gold-light font-serif text-sm tracking-[0.2em] shadow-lg animate-fade-in">
-          ◆ {stageAdvanceMsg} ◆
-        </div>
-      )}
-      {agentNotice && (
-        <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40 pointer-events-none px-4 py-1.5 rounded border border-blood/50 bg-blood/15 backdrop-blur-md text-parchment-100/90 font-serif text-xs tracking-wider animate-fade-in">
-          {agentNotice}
-        </div>
-      )}
-      {/* Top Bar */}
-      <div className="sticky top-0 z-20 bg-parchment-800/80 backdrop-blur-md border-b border-parchment-600/40 px-4 py-3 flex items-center gap-3">
-        <Button variant="ghost" onClick={() => leaveGamePage('/')}>
-          <Home size={16} />
-        </Button>
-        <div className="flex-1 max-w-2xl">
-          <RoundProgress current={save.state.currentRound} total={save.config.totalRounds} />
-        </div>
-        <div className="text-sm text-parchment-200/80 font-serif hidden md:block truncate max-w-[180px]">
-          {save.name}
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onExportChatRecord}
-          title="导出当前聊天记录（默认使用固定文件名，方便覆盖旧文件）"
-        >
-          <Download size={16} />
-          <span className="hidden sm:inline">聊天</span>
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onExportJourneyPackage}
-          title="导出可分享/可导入的完整旅程包（不包含 API Key）"
-        >
-          <Download size={16} />
-          <span className="hidden sm:inline">旅程包</span>
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setBackpackOpen(true)}
-          title="查看背包"
-        >
-          <Package size={16} />
-          <span className="hidden sm:inline">背包</span>
-          <span className="text-xs text-parchment-200/70">{backpack.length}</span>
-        </Button>
-        {(!save.config.totalRounds || save.config.totalRounds <= 0) && save.state.phase !== 'ended' && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              if (save.state.finalizeRequested) {
-                if (confirm('取消完结请求？下一回合将继续推进而不收束。')) {
-                  useGameStore.getState().clearFinalize(save.id);
-                }
-              } else {
-                if (confirm('确定要完结这段旅程吗？\n\n下一回合故事模型将为整段旅程书写结局，之后进入评分阶段。')) {
-                  useGameStore.getState().requestFinalize(save.id);
-                }
-              }
-            }}
-            title={save.state.finalizeRequested ? '已请求完结 · 点击取消' : '下一回合收束并出结局'}
-          >
-            <Flag size={16} className={save.state.finalizeRequested ? 'text-gold-light' : undefined} />
-            <span className="hidden sm:inline">{save.state.finalizeRequested ? '待完结' : '完结旅程'}</span>
-          </Button>
-        )}
-        <Button variant="ghost" onClick={() => leaveGamePage('/settings')}>
-          <Settings size={16} />
-        </Button>
-      </div>
+      <ToastViewport />
 
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 py-6 grid gap-6 md:grid-cols-[1fr_280px] lg:grid-cols-[1fr_320px]">
-        {/* Main column */}
+      {/* 阶段切换提示：金线 + 蜡封从顶部悬浮（替代旧版金色丝带） */}
+      {stageAdvanceMsg && (
+        <div className="fixed top-20 left-0 right-0 z-30 px-6 pointer-events-none">
+          <div className="max-w-3xl mx-auto">
+            <GoldLine
+              text={stageAdvanceMsg}
+              variant="none"
+              size="md"
+              state="extending"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* agent notice：暂保留（下个 step 会替换为 toast 队列） */}
+
+      <TopBar
+        saveName={save.name}
+        currentRound={save.state.currentRound}
+        totalRounds={save.config.totalRounds}
+        backpackCount={backpack.length}
+        isInfiniteMode={!save.config.totalRounds || save.config.totalRounds <= 0}
+        finalizeRequested={!!save.state.finalizeRequested}
+        isEnded={save.state.phase === 'ended'}
+        onHome={() => leaveGamePage('/')}
+        onSettings={() => leaveGamePage('/settings')}
+        onOpenBackpack={() => setBackpackOpen(true)}
+        onExportChat={onExportChatRecord}
+        onExportJourney={onExportJourneyPackage}
+        onToggleFinalize={async () => {
+          if (save.state.finalizeRequested) {
+            const ok = await confirmDialog({
+              title: '取消完结？',
+              message: '取消完结请求？下一回合将继续推进而不收束。',
+              confirmText: '取消完结',
+            });
+            if (ok) useGameStore.getState().clearFinalize(save.id);
+          } else {
+            const ok = await confirmDialog({
+              title: '完结此旅程',
+              message: '确定要完结这段旅程吗？\n\n下一回合故事模型将为整段旅程书写结局，之后进入评分阶段。',
+              confirmText: '收束并出结局',
+              variant: 'danger',
+            });
+            if (ok) useGameStore.getState().requestFinalize(save.id);
+          }
+        }}
+      />
+
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 py-6 grid gap-6 md:grid-cols-[1fr_300px] lg:grid-cols-[1fr_340px]">
+        {/* 主列 */}
         <div className="min-w-0">
           <StoryView
             history={save.state.history}
             streaming={streaming}
+            streamingThinking={streamingThinking}
             phase={save.state.phase}
             anchors={save.state.anchors}
             onPinAnchor={onPinAnchor}
@@ -1392,157 +1508,194 @@ export default function GamePage() {
             </div>
           )}
 
-          {exportMsg && (
-            <div className="mt-6 text-sm text-gold-light bg-gold/10 border border-gold/40 rounded px-4 py-3 font-serif animate-fade-in">
-              {exportMsg}
-            </div>
-          )}
 
-          {/* Bottom action area */}
-          <div className="mt-8 sticky bottom-0 bg-gradient-to-t from-ink via-ink/95 to-transparent pt-4 pb-4 -mx-4 px-4">
-            {busy && agentBusy && (
-              <div className="flex items-center justify-between text-sm text-parchment-200/70 font-serif mb-2">
-                <span className="animate-pulse-soft">· {AGENT_LABELS[agentBusy]} ·</span>
-                {agentBusy === 'story' && (
-                  <Button size="sm" variant="outline" onClick={onStop}>
-                    <StopCircle size={14} /> 中止
-                  </Button>
-                )}
-              </div>
-            )}
-            {busy && !agentBusy && save.state.phase === 'story' && (
-              <div className="flex items-center justify-between text-sm text-parchment-200/70 font-serif mb-2">
-                <span className="animate-pulse-soft">· 故事之笔正在书写 ·</span>
+          {/* 底部交互区 */}
+          <div className="mt-8 sticky bottom-0 -mx-4 px-4 pt-4 pb-4 bg-gradient-to-t from-ink via-ink/95 to-transparent">
+            {/* 加载态：金线 + 嵌入文字（核心 UI 语言） */}
+            <div className="mb-3">
+              <AutoGoldLine
+                visible={busy}
+                text={busy ? (agentBusy ? AGENT_LABELS[agentBusy] : '故事之笔正在书写') : ''}
+                variant="none"
+                size="md"
+              />
+            </div>
+
+            {busy && agentBusy === 'story' && (
+              <div className="mb-3 flex justify-end">
                 <Button size="sm" variant="outline" onClick={onStop}>
                   <StopCircle size={14} /> 中止
                 </Button>
               </div>
             )}
 
-            {interactive && doomedItems.length > 0 && (
-              <div className="mb-3 text-sm bg-blood/10 border border-blood/50 rounded px-3 py-2 font-serif">
-                <div className="text-blood/90 text-xs tracking-[0.3em] uppercase mb-1">本回合将失去</div>
-                <ul className="space-y-0.5">
-                  {doomedItems.map((it) => (
-                    <li key={it.id} className="text-parchment-200/90">
-                      <span className="text-blood line-through mr-2">{it.name}</span>
-                      {it.destroyReason && <span className="text-parchment-200/70 italic">— {it.destroyReason}</span>}
-                    </li>
-                  ))}
-                </ul>
-                <div className="text-[11px] text-parchment-200/50 mt-1">刷新选项可能给出不同的判定。</div>
-              </div>
-            )}
-
-            {interactive && backpack.length > 0 && (
-              <ItemSelector
-                items={backpack}
-                selectedIds={selectedItemIds}
-                onToggle={onToggleItem}
-                disabled={busy || needsDiscard > 0}
-              />
-            )}
-
-            {save.state.phase === 'choices' && (
-              <>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-xs tracking-[0.3em] text-gold/70 font-serif uppercase">
-                    {busy ? (agentBusy ? AGENT_LABELS[agentBusy] : '命运之轮旋转中…') : '抉择'}
+            {!busy && interactive && (
+              <div key={save.state.phase} className="animate-slide-up-in">
+                {doomedItems.length > 0 && (
+                  <div className="mb-3 text-sm bg-blood/10 border border-blood/50 rounded px-3 py-2 font-serif">
+                    <div className="text-blood/90 text-xs tracking-[0.3em] uppercase mb-1">本回合将失去</div>
+                    <ul className="space-y-0.5">
+                      {doomedItems.map((it) => (
+                        <li key={it.id} className="text-parchment-200/90">
+                          <span className="text-blood line-through mr-2">{it.name}</span>
+                          {it.destroyReason && <span className="text-parchment-200/70 italic">— {it.destroyReason}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="text-[11px] text-parchment-200/50 mt-1">刷新选项可能给出不同的判定。</div>
                   </div>
-                  {!busy && save.state.lastChoices && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={onConsumeRefresh}
-                      disabled={refreshesLeft <= 0 || needsDiscard > 0}
-                      title={refreshesLeft > 0 ? '重新生成当前选项与道具' : `尚无刷新机会（每 ${save.config.refreshChoiceEvery ?? 3} 回合 +1）`}
-                    >
-                      <Sparkles size={14} /> 刷新（{refreshesLeft}）
-                    </Button>
-                  )}
-                </div>
-                {save.state.lastChoices && (
-                  <ChoicePanel
-                    choices={save.state.lastChoices}
-                    onPick={onPick}
-                    onChangeChoices={onChangeCurrentChoices}
+                )}
+
+                {backpack.length > 0 && (
+                  <ItemSelector
+                    items={backpack}
+                    selectedIds={selectedItemIds}
+                    onToggle={onToggleItem}
                     disabled={busy || needsDiscard > 0}
                   />
                 )}
-                {!save.state.lastChoices && busy && (
-                  <div className="text-sm text-parchment-200/60 italic">（{agentBusy ? AGENT_LABELS[agentBusy] : '正在生成选项…'}）</div>
-                )}
-                {needsDiscard > 0 && (
-                  <div className="mt-3 text-sm text-blood bg-blood/10 border border-blood/50 rounded px-3 py-2 font-serif">
-                    背包超载，需丢弃 {needsDiscard} 件后才能继续。
-                  </div>
-                )}
-              </>
-            )}
 
-            {save.state.phase === 'manual' && (
-              <>
-                <div className="text-xs tracking-[0.3em] text-gold/70 font-serif uppercase mb-3">
-                  自由行动 · 第 {save.state.currentRound} 回合
-                </div>
-                <ManualInput
-                  onSubmit={onManualSubmit}
-                  disabled={busy || needsDiscard > 0}
-                  placeholder={
-                    save.state.authorNarrative?.stageJudge?.storyFocus.thisRound
-                      ? `叙事导演本回合预期：${save.state.authorNarrative.stageJudge.storyFocus.thisRound.slice(0, 40)}…\n（你可以无视此预期，自由描述想做的事）`
-                      : undefined
-                  }
-                />
-              </>
+                {save.state.phase === 'choices' && (
+                  <>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xs tracking-[0.3em] text-gold/70 font-serif uppercase">抉择</div>
+                      {save.state.lastChoices && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={onConsumeRefresh}
+                          disabled={refreshesLeft <= 0 || needsDiscard > 0}
+                          title={refreshesLeft > 0 ? '重新生成当前选项与道具' : `尚无刷新机会（每 ${save.config.refreshChoiceEvery ?? 3} 回合 +1）`}
+                        >
+                          <Sparkles size={14} /> 刷新（{refreshesLeft}）
+                        </Button>
+                      )}
+                    </div>
+                    {save.state.lastChoices && (
+                      <ChoicePanel
+                        choices={save.state.lastChoices}
+                        onPick={onPick}
+                        onChangeChoices={onChangeCurrentChoices}
+                        disabled={busy || needsDiscard > 0}
+                      />
+                    )}
+                    {needsDiscard > 0 && (
+                      <div className="mt-3 text-sm text-blood bg-blood/10 border border-blood/50 rounded px-3 py-2 font-serif">
+                        背包超载，需丢弃 {needsDiscard} 件后才能继续。
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {save.state.phase === 'manual' && (
+                  <>
+                    <div className="text-xs tracking-[0.3em] text-gold/70 font-serif uppercase mb-3">
+                      自由行动 · 第 {save.state.currentRound} 回合
+                    </div>
+                    <ManualInput
+                      onSubmit={onManualSubmit}
+                      disabled={busy || needsDiscard > 0}
+                      placeholder={
+                        save.state.authorNarrative?.stageJudge?.storyFocus.thisRound
+                          ? `叙事导演本回合预期：${save.state.authorNarrative.stageJudge.storyFocus.thisRound.slice(0, 40)}…\n（你可以无视此预期，自由描述想做的事）`
+                          : undefined
+                      }
+                    />
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
 
-        {/* Side panel */}
+        {/* 侧栏 5 tab */}
         <aside className="hidden md:block">
-          <div className="sticky top-[76px] max-h-[calc(100vh-92px)] overflow-y-auto pr-1 flex flex-col gap-4">
-            <CharacterPanel
-              characterName={save.content.characterName}
-              outline={outline}
-              background={background}
-              summary={save.state.summary}
-              longTermMemory={save.state.longTermMemory}
-              activeWorldBookCount={activeEntriesCount}
-              triggeredEventsCount={save.state.triggeredEvents.length}
-              refreshesLeft={refreshesLeft}
-              itemCount={backpack.length}
-            />
-            {save.content.mode === 'author' && (
-              <>
-                <MasterArcPanel
-                  saveId={save.id}
-                  narrative={save.state.authorNarrative}
-                  onRegenerate={busy ? undefined : regenerateMasterArc}
-                  regenerating={regeneratingMasterArc}
-                />
-                <AuthorArcPanel
-                  narrative={save.state.authorNarrative}
-                  randomEventState={save.state.authorRandomEventState}
-                />
-                <SettingGuardPanel
-                  saveId={save.id}
-                  narrative={save.state.authorNarrative}
-                />
-              </>
-            )}
-            <SceneMap
-              current={save.state.currentScene}
-              available={save.state.availableScenes ?? []}
-              history={save.state.sceneHistory ?? []}
-              onTravel={onTravel}
-              disabled={busy || needsDiscard > 0 || save.state.phase === 'ended'}
-            />
-            <NpcList npcs={save.state.npcs ?? []} onOpenAll={() => setNpcOpen(true)} />
-            <AnchorsList
-              anchors={save.state.anchors ?? []}
-              onRemove={(anchorId) => useGameStore.getState().removeAnchor(save.id, anchorId)}
-              onUpdateNote={(anchorId, note) => useGameStore.getState().updateAnchorNote(save.id, anchorId, note)}
+          <div className="sticky top-20 h-[calc(100vh-92px)]">
+            <SidebarTabs
+              tabs={[
+                {
+                  id: 'character',
+                  label: '角色',
+                  icon: <UserRound size={14} />,
+                  available: true,
+                  badge: (save.state.npcs?.length ?? 0) || undefined,
+                  content: (
+                    <>
+                      <CharacterPanel
+                        characterName={save.content.characterName}
+                        outline={outline}
+                        background={background}
+                        summary={save.state.summary}
+                        longTermMemory={save.state.longTermMemory}
+                        activeWorldBookCount={activeEntriesCount}
+                        triggeredEventsCount={save.state.triggeredEvents.length}
+                        refreshesLeft={refreshesLeft}
+                        itemCount={backpack.length}
+                      />
+                      <NpcList npcs={save.state.npcs ?? []} onOpenAll={() => setNpcOpen(true)} />
+                    </>
+                  ),
+                },
+                {
+                  id: 'narrative',
+                  label: '叙事',
+                  icon: <ScrollText size={14} />,
+                  available: save.content.mode === 'author',
+                  content: (
+                    <>
+                      <MasterArcPanel
+                        saveId={save.id}
+                        narrative={save.state.authorNarrative}
+                        onRegenerate={busy ? undefined : regenerateMasterArc}
+                        regenerating={regeneratingMasterArc}
+                      />
+                      <AuthorArcPanel
+                        narrative={save.state.authorNarrative}
+                        randomEventState={save.state.authorRandomEventState}
+                      />
+                    </>
+                  ),
+                },
+                {
+                  id: 'guard',
+                  label: '守护',
+                  icon: <ShieldCheck size={14} />,
+                  available: save.content.mode === 'author',
+                  content: (
+                    <SettingGuardPanel saveId={save.id} narrative={save.state.authorNarrative} />
+                  ),
+                },
+                {
+                  id: 'world',
+                  label: '世界',
+                  icon: <Compass size={14} />,
+                  available: true,
+                  content: (
+                    <>
+                      <SceneMap
+                        current={save.state.currentScene}
+                        available={save.state.availableScenes ?? []}
+                        history={save.state.sceneHistory ?? []}
+                        onTravel={onTravel}
+                        disabled={busy || needsDiscard > 0 || save.state.phase === 'ended'}
+                      />
+                      <AnchorsList
+                        anchors={save.state.anchors ?? []}
+                        onRemove={(anchorId) => useGameStore.getState().removeAnchor(save.id, anchorId)}
+                        onUpdateNote={(anchorId, note) => useGameStore.getState().updateAnchorNote(save.id, anchorId, note)}
+                      />
+                    </>
+                  ),
+                },
+                {
+                  id: 'thoughts',
+                  label: '记录',
+                  icon: <Brain size={14} />,
+                  available: !!(save.state.agentThoughts && save.state.agentThoughts.length > 0),
+                  badge: save.state.agentThoughts?.length || undefined,
+                  content: <AgentThoughtsPanel thoughts={save.state.agentThoughts} />,
+                },
+              ]}
             />
           </div>
         </aside>

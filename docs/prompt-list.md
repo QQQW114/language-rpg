@@ -4,17 +4,21 @@
 >
 > **本文是当前代码状态的真实快照，含执笔模式 Phase 1.0 + 1.0.5 的所有改动**。早期版本见 git 历史。
 >
-> 版本：截至「DeepSeek V4 思维模式 marker 接入所有模型 user 末尾 + 故事模型三档提示词模式 + 玩家偏好显式进入故事 prompt」之后的状态。
+> 版本：截至「统一 system=规则、user=资料/上下文/角色收尾 + 故事模型三档提示词模式 + 玩家偏好显式进入故事 prompt」之后的状态。
 
-## 0.1 DeepSeek V4 思维模式注入总则
+## 0.1 Prompt 结构总则
 
-参考 `docs/other/deepseek_v4_rolepaly_instruct-main` 的建议：**思维模式指令不放 system prompt，而拼到本次 user 消息末尾**。本项目所有 LLM 链路都按这个方向处理：
+当前统一采用：
 
-- **故事模型**：由设置项 `settings.storyPromptMode` 控制。默认模式不追加 marker；DeepSeek V4 主角特化追加 `【角色沉浸要求】`；DeepSeek V4 指令遵循特化追加 `【思维模式要求】`。
-- **JSON / 状态 / 分析类模型**：统一追加纯分析 `【思维模式要求】`，防止模型读到剧情后把自己当成主角，优先保障 JSON 协议、设定分析、节奏判断和状态维护。
+- **system prompt**：只放输出协议、边界、规则、模型应参照的原则；不放大段故事资料。
+- **user prompt 前段**：放世界观/故事大纲/世界书/主角出身、历史摘要、长期记忆等稳定资料。
+- **user prompt 中后段**：放最近上下文、最新故事片段、玩家本回合输入、当前场景/时间/天气、NPC/背包/事件弧等当前状态。
+- **user prompt 末尾**：放“你是 xxx”的模型身份段，简单说明职责、会严格参照什么、应该输出什么。
+- **故事模型**：仍由设置项 `settings.storyPromptMode` 控制三档叙事人称；DeepSeek V4 特化 marker 会放在最终角色职责段之前，最终仍以“故事写手”职责段收尾。
+- **JSON / 状态 / 分析类模型**：不再由 service 统一追加纯分析 marker，避免 marker 覆盖 user 末尾的身份职责段；各 prompt 自己以对应角色职责收尾。
 - 实现集中在 `src/lib/deepseekV4Prompt.ts`：
   - `buildDeepSeekV4StoryMarker(...)`：故事模型专用，按三档模式生成末尾 marker。
-  - `appendDeepSeekV4PureAnalysisMarker(...)`：非故事链路通用，追加纯分析 marker。
+  - `appendDeepSeekV4PureAnalysisMarker(...)`：保留工具函数，但当前非故事 service 不再统一调用。
 
 ## 0. 一回合的完整调度顺序（执笔模式）
 
@@ -136,11 +140,13 @@ decisionSystem.ts 当前关键约束：
 ### 2.1 主弧生成模型输入（必含 worldBook，否则会丢硬设定）
 
 ```
-outline + background + characterName + config (AuthorMasterArcConfig)
+outline + background + initialScene + characterName + config (AuthorMasterArcConfig)
 + worldBookEntries  ← 必须传，含 alwaysActive + 关键词触发条目
 ```
 
 **System prompt 最高优先级约束**：「stages 不得违反任何 alwaysActive 世界书条目；与大纲冲突时以世界书为准；大纲细节（如『脑中浮现完整记忆』）必须保留进 expectedBeats」。
+
+`initialScene` 使用创建旅程时的真实开局正文：随机开局则传随机生成文本，保持预设则传出身自带 `background.startScene`。这样主弧第一个阶段能读到最早的场景压力点，而不是只根据出身简介和大纲泛化。
 
 失败 fallback 为 `fallbackMasterArcFromOutline(outline, config)`：按 outline.acts 直接转换，每个 act 作为 stage.description。
 
@@ -206,7 +212,7 @@ outline + background + characterName + currentRound / nextRound + totalRounds
 - anchors / longTermMemory（关键的 RAG 类输入）
 - backpack + narrative + randomEventState
 
-这些链路的 user prompt 末尾也会追加 DeepSeek V4 纯分析 marker，保持“分析模型不入戏、最终严格按 JSON 协议输出”的格式。
+这些链路中，导演 / 审校 / 随机事件的 user prompt 末尾会追加 DeepSeek V4 纯分析 marker，保持“分析模型不入戏、最终严格按 JSON 协议输出”的格式。主弧生成模型暂不追加 marker，改为在 user 末尾放“主弧设计师”身份与任务定位。
 
 各 prompt 中都补了 `playerPace` 纪律：
 - 导演：immersive/exploratory 时计划更细

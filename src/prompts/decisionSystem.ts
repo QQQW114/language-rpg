@@ -1,6 +1,10 @@
 // 决策生成器提示词：约束模型只输出严格 JSON，包含 choices / grants / destroys / itemPatches / npcs / scenes
 
-export const DECISION_SYSTEM = `你是一个严格遵守输出协议的文字冒险决策助手。根据故事摘要、最近回合与最新故事片段，生成：
+import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
+
+export const DECISION_SYSTEM = `你是这段互动小说的"决策模型"。你会严格参照用户消息中的世界观、历史摘要、最近上下文、背包/NPC JSON、当前场景和最新故事片段，为玩家生成可执行选项，并把本回合已经发生的状态变化整理成 JSON。
+
+决策模型规则：根据故事摘要、最近回合与最新故事片段，生成：
 (a) 3~4 个玩家可选的行动分支；
 (b) 本回合故事中玩家已经【获得】的具体道具清单；
 (c) 本回合故事中玩家已经【失去/损毁】的背包道具清单；
@@ -68,7 +72,9 @@ availableScenes：
 例：
 {"choices":[{"id":"a","label":"打开冰箱翻找昨晚剩的苹果派","hint":"温和"}],"grants":[],"destroys":[],"itemPatches":[],"npcs":[],"currentScene":{"name":"自家厨房","description":"晨光斜切过料理台，冰箱嗡嗡作响","time":"清晨","weather":"晴朗微风"},"availableScenes":[{"name":"自己卧室","description":"未叠的被褥还留着温度"},{"name":"客厅","description":"电视默默亮着早间新闻"},{"name":"屋外小院","description":"蝉鸣与晾衣绳在风里"}]}`;
 
-export const DECISION_TRACKING_SYSTEM = `你是一个严格遵守输出协议的文字冒险状态追踪助手。根据故事摘要、最近回合与最新故事片段，只提取本回合造成的状态变化，用于维护背包、NPC 与场景。
+export const DECISION_TRACKING_SYSTEM = `你是这段互动小说的"状态追踪模型"。你会严格参照用户消息中的最新故事片段、背包/NPC JSON、当前场景和阶段语境，只提取已经发生的道具、人物、场景、时间和天气变化，不生成玩家选项。
+
+状态追踪模型规则：根据故事摘要、最近回合与最新故事片段，只提取本回合造成的状态变化，用于维护背包、NPC 与场景。
 
 本次任务【不生成玩家选项】。禁止生成行动分支、建议、choices 文案；如果因为旧上下文必须保留 choices 字段，也只能输出 "choices":[]。
 
@@ -134,6 +140,10 @@ availableScenes：
 - 若玩家正处于战斗、关键对话、无法移动的场景，availableScenes 可以为空数组 []。`;
 
 export interface BuildDecisionUserParams {
+  outline?: StoryOutline;
+  background?: Background;
+  characterName?: string;
+  worldBookEntries?: WorldBookEntry[];
   latestStory: string;
   backpackSummary: string;
   backpackJsonBlock?: string;
@@ -149,6 +159,44 @@ export interface BuildDecisionUserParams {
   stageNarrativeBlock?: string;
   narrativePlanBlock?: string;
   activeArcsBlock?: string;
+}
+
+function formatDecisionOutline(outline?: StoryOutline): string {
+  if (!outline) return '';
+  return [
+    '【世界观 / 故事大纲】',
+    `标题：${outline.title}`,
+    `梗概：${outline.synopsis}`,
+    outline.acts?.length ? `阶段：${outline.acts.join(' / ')}` : '',
+    outline.tone ? `文风：${outline.tone}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function formatDecisionBackground(background?: Background, characterName?: string): string {
+  if (!background) return '';
+  return [
+    '【主角 / 出身】',
+    `姓名：${characterName || '（未命名）'}`,
+    `出身：${background.name}`,
+    `描述：${background.description}`,
+    background.traits?.length ? `特质：${background.traits.join('、')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function formatDecisionWorldBook(entries?: WorldBookEntry[]): string {
+  if (!entries?.length) return '';
+  const always = entries.filter((e) => e.alwaysActive);
+  const triggered = entries.filter((e) => !e.alwaysActive);
+  const lines: string[] = ['【世界书 / 当前触发设定】'];
+  if (always.length) {
+    lines.push('常驻：');
+    always.slice(0, 8).forEach((e) => lines.push(`· ${e.name}：${e.content}`));
+  }
+  if (triggered.length) {
+    lines.push('本回合触发：');
+    triggered.slice(0, 8).forEach((e) => lines.push(`· ${e.name}：${e.content}`));
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
 }
 
 function appendDecisionContext(parts: string[], p: BuildDecisionUserParams): void {
@@ -175,6 +223,12 @@ function appendDecisionContext(parts: string[], p: BuildDecisionUserParams): voi
 
 export function buildDecisionUser(p: BuildDecisionUserParams): string {
   const parts: string[] = [];
+  const outlineBlock = formatDecisionOutline(p.outline);
+  const backgroundBlock = formatDecisionBackground(p.background, p.characterName);
+  const worldBookBlock = formatDecisionWorldBook(p.worldBookEntries);
+  if (outlineBlock) parts.push(outlineBlock, '');
+  if (worldBookBlock) parts.push(worldBookBlock, '');
+  if (backgroundBlock) parts.push(backgroundBlock, '');
   if (p.summary?.trim()) {
     parts.push('【历史摘要】', p.summary.trim(), '');
   }
@@ -217,6 +271,12 @@ export function buildDecisionUser(p: BuildDecisionUserParams): string {
 
 export function buildDecisionTrackingUser(p: BuildDecisionUserParams): string {
   const parts: string[] = [];
+  const outlineBlock = formatDecisionOutline(p.outline);
+  const backgroundBlock = formatDecisionBackground(p.background, p.characterName);
+  const worldBookBlock = formatDecisionWorldBook(p.worldBookEntries);
+  if (outlineBlock) parts.push(outlineBlock, '');
+  if (worldBookBlock) parts.push(worldBookBlock, '');
+  if (backgroundBlock) parts.push(backgroundBlock, '');
   if (p.summary?.trim()) {
     parts.push('【历史摘要】', p.summary.trim(), '');
   }

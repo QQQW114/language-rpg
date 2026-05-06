@@ -1,6 +1,7 @@
 import type { StrictCustomConfig } from './custom';
 import type { RandomEvent } from './content';
 import type { StoryStyleSettings } from './settings';
+import type { LlmUsage } from './llm';
 
 export type JourneyMode = 'adventure' | 'author';
 export type AuthorRandomEventMode = 'off' | 'pool' | 'dynamic';
@@ -89,6 +90,7 @@ export interface AuthorRandomEventState {
   currentProbability?: number;
   lastCheckedRound?: number;
   lastError?: string;
+  lastThinking?: string;
 }
 
 export interface NarrativePlanState {
@@ -111,6 +113,9 @@ export interface NarrativePlanState {
   pacingAdvice?: string;
   riskNotes?: string[];
   updatedAtRound: number;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 export interface SettingPatch {
@@ -162,6 +167,8 @@ export interface SettingGuardState {
   pendingAmbientBeats: SettingGuardAmbientBeat[];
   deviation?: SettingGuardDeviation;
   lastError?: string;
+  thinking?: string;
+  usage?: LlmUsage;
 }
 
 // ====== 阶段化叙事 ======
@@ -200,6 +207,9 @@ export interface MasterArcState {
   generatedAtRound: number;
   updatedAtRound: number;
   generationConfig?: AuthorMasterArcConfig;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 export type PlayerPace = 'immersive' | 'exploratory' | 'progressing' | 'hurrying';
@@ -231,6 +241,9 @@ export interface StageJudgeState {
   stageStatus: StageJudgeStatus;
   storyFocus: StageJudgeFocus;
   lastError?: string;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 export interface AuthorStageJudgeConfig {
@@ -268,6 +281,21 @@ export interface AuthorLogicReviewState {
   issues: AuthorLogicIssue[];
   repairDirectives: string[];
   nextRoundWarnings?: string[];
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
+export interface AgentThought {
+  id: string;
+  kind: string;
+  label: string;
+  round: number;
+  content?: string;
+  output?: string;
+  usage?: LlmUsage;
+  cacheHit?: boolean;
+  createdAt: number;
 }
 
 export type MessageRole = 'system' | 'user' | 'assistant';
@@ -276,6 +304,7 @@ export interface Message {
   role: MessageRole;
   content: string;
   round: number;
+  thinking?: string;
 }
 
 export interface Choice {
@@ -401,6 +430,7 @@ export interface GameState {
   sceneHistory: SceneRef[];                 // 历史见过/去过的场景，用于快速回访
   authorNarrative?: AuthorNarrativeState;    // 执笔模式叙事导演状态
   authorRandomEventState?: AuthorRandomEventState; // 执笔模式动态随机事件运行态
+  agentThoughts?: AgentThought[];             // 各模型调用记录（思维链 / 输出 / 缓存命中，前端默认隐藏）
   finalizeRequested?: boolean;              // 无尽模式下玩家主动触发"下一回合即最终回合"
 }
 
@@ -427,6 +457,9 @@ export interface AdventureReview {
   highlights: string[];
   comment: string;
   generatedAt: number;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 export interface GameSave {

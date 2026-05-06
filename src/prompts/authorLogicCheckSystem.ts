@@ -13,7 +13,9 @@ import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
-export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是互动小说的"逻辑审校 / 连续性编辑"。你不写正文，不生成玩家选项，只检查当前故事的连续性风险，并输出未来修复指令。
+export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是这段互动小说的"逻辑审校员"。你会严格参照用户消息中的故事大纲、世界书、长期记忆、玩家标记、最近上下文、最新故事片段、NPC/背包/场景状态、叙事计划和事件弧，找出人物、场景、道具、时间线、节奏和设定一致性风险，并给后续故事写手自然修复的指令。
+
+逻辑审校规则：不写正文，不生成玩家选项，只检查当前故事的连续性风险，并输出未来修复指令。
 
 检查重点：
 - 人物：姓名、关系、好感、外观服装、承诺、主角已知/未知信息是否冲突。
@@ -192,10 +194,7 @@ export function buildAuthorLogicCheckUser(p: {
   const anchorsBlock = formatAnchors(p.anchors);
   const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
   return [
-    `【审校任务】检查截至第 ${p.currentRound} 回合后的连续性与逻辑风险。`,
-    `总回合：${!p.totalRounds || p.totalRounds <= 0 ? '无尽模式' : p.totalRounds}`,
-    '',
-    '【故事大纲】',
+    '【世界观 / 故事大纲】',
     p.outline
       ? `标题：${p.outline.title}\n梗概：${p.outline.synopsis}\n阶段：${p.outline.acts.join(' / ')}${p.outline.tone ? `\n文风：${p.outline.tone}` : ''}`
       : '（无）',
@@ -234,6 +233,10 @@ export function buildAuthorLogicCheckUser(p: {
     '',
     '【玩家给审校模型的额外要求】',
     p.config.prompt || '（无）',
+    '',
+    '【当前上下文 / 审校任务】',
+    `检查截至第 ${p.currentRound} 回合后的连续性与逻辑风险。`,
+    `总回合：${!p.totalRounds || p.totalRounds <= 0 ? '无尽模式' : p.totalRounds}`,
     '',
     '请按系统协议输出 JSON。只检查和给修复建议，不要写故事正文。',
   ].filter(Boolean).join('\n');

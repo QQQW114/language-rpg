@@ -15,10 +15,10 @@ import type {
   SettingGuardPreference,
   SettingPatch,
 } from '@/types/game';
-import { chatJSON } from '@/services/llmClient';
+import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_SETTING_GUARD_SYSTEM, buildSettingGuardUser } from '@/prompts/authorSettingGuardSystem';
 import { extractJSON } from '@/lib/utils';
-import { appendDeepSeekV4PureAnalysisMarker } from '@/lib/deepseekV4Prompt';
+import type { LlmUsage } from '@/types/llm';
 
 export interface SettingGuardRequest {
   settings: AppSettings;
@@ -50,6 +50,9 @@ export interface SettingGuardResult {
   ambientBeats: Array<Omit<SettingGuardAmbientBeat, 'id' | 'suggestedAtRound' | 'consumed'>>;
   memoryUrgency: 'high' | 'normal' | 'none';
   deviation?: Omit<SettingGuardDeviation, 'flaggedAtRound'>;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
 }
 
 function cleanText(value: unknown, max: number): string | undefined {
@@ -181,10 +184,10 @@ function sanitizeSettingGuardResult(raw: unknown, p: SettingGuardRequest): Setti
 
 export async function requestSettingGuard(p: SettingGuardRequest): Promise<SettingGuardResult | undefined> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = appendDeepSeekV4PureAnalysisMarker(buildSettingGuardUser(p));
+  const user = buildSettingGuardUser(p);
 
   const runOnce = async (temperature: number): Promise<SettingGuardResult | undefined> => {
-    const text = await chatJSON(
+    const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
       {
         model,
@@ -196,7 +199,8 @@ export async function requestSettingGuard(p: SettingGuardRequest): Promise<Setti
         signal: p.signal,
       },
     );
-    return sanitizeSettingGuardResult(extractJSON(text), p);
+    const parsed = sanitizeSettingGuardResult(extractJSON(result.text), p);
+    return parsed ? { ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
   };
 
   const first = await runOnce(0.35).catch((err) => {
