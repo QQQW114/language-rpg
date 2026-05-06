@@ -228,4 +228,4 @@ LRPG_TEST_MODEL=deepseek-v4-flash
 
 ## License
 
-MIT
+由于项目越来越朝着 agent 的方向发展，后续可能会放弃一部分原本的方向，许可证已经改为 GPL-3.0 license。
