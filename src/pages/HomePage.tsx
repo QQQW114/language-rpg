@@ -4,10 +4,12 @@ import { useContentStore } from '@/store/useContentStore';
 import { Button } from '@/components/ui/Button';
 import { CornerFiligree, OrnateDivider } from '@/components/ui/Ornaments';
 import { TextStarfield } from '@/components/TextStarfield';
-import { BookOpen, Settings, Library, ScrollText, Trash2, PlayCircle, Upload } from 'lucide-react';
+import { BookMarked, BookOpen, Settings, Library, ScrollText, Trash2, PlayCircle, Upload, Sparkles } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/Dialog';
 import { instantiateJourneyPackage, parseJourneyPackage } from '@/lib/journeyPackage';
+import { parseLedgerJourneyZip } from '@/lib/ledgerJourneyPackage';
+import { importLedgerPackage } from '@/storage/ledgerRepository';
 import { confirmDialog } from '@/components/ui/ConfirmDialog';
 import { toast } from '@/lib/toast';
 
@@ -28,16 +30,30 @@ export default function HomePage() {
     if (!file) return;
     setImportError(undefined);
     try {
-      const text = await file.text();
-      const pkg = parseJourneyPackage(text);
-      const instantiated = instantiateJourneyPackage(pkg);
       const content = useContentStore.getState();
-      instantiated.resources.outlines.forEach(content.addOutline);
-      instantiated.resources.backgrounds.forEach(content.addBackground);
-      instantiated.resources.worldBooks.forEach(content.addWorldBook);
-      instantiated.resources.events.forEach(content.addEvent);
-      const id = importSave(instantiated.save);
-      setActive(id);
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        const pkg = parseLedgerJourneyZip(await file.arrayBuffer());
+        pkg.resources?.outlines?.forEach(content.addOutline);
+        pkg.resources?.backgrounds?.forEach(content.addBackground);
+        pkg.resources?.worldBooks?.forEach(content.addWorldBook);
+        pkg.resources?.events?.forEach(content.addEvent);
+        const save = await importLedgerPackage(pkg);
+        useGameStore.setState((s) => ({
+          saves: { ...s.saves, [save.id]: save },
+          activeSaveId: save.id,
+        }));
+        setActive(save.id);
+      } else {
+        const text = await file.text();
+        const pkg = parseJourneyPackage(text);
+        const instantiated = instantiateJourneyPackage(pkg);
+        instantiated.resources.outlines.forEach(content.addOutline);
+        instantiated.resources.backgrounds.forEach(content.addBackground);
+        instantiated.resources.worldBooks.forEach(content.addWorldBook);
+        instantiated.resources.events.forEach(content.addEvent);
+        const id = importSave(instantiated.save);
+        setActive(id);
+      }
       nav('/game');
     } catch (err: any) {
       const m = err?.message ?? String(err); setImportError(m); toast.danger(`导入失败：${m}`);
@@ -75,6 +91,26 @@ export default function HomePage() {
           <Button size="lg" onClick={() => nav('/setup')} className="w-64">
             <ScrollText size={18} /> 启程 · 开始新旅程
           </Button>
+          <Button
+            size="lg"
+            variant="outline"
+            onClick={() => nav('/setup', {
+              state: {
+                preset: {
+                  outlineId: 'outline_misplaced_youth',
+                  backgroundId: 'bg_freshman_xiyu',
+                  worldBookIds: ['wb_misplaced_youth'],
+                  workspaceTemplateIds: ['wst_misplaced_youth'],
+                  characterName: '曦宇',
+                  journeyMode: 'author',
+                  step: 'config',
+                },
+              },
+            })}
+            className="w-64"
+          >
+            <Sparkles size={18} /> 错位青春 · 一键启程
+          </Button>
           {hasSaves && (
             <Button size="lg" variant="outline" onClick={() => setShowSaves(true)} className="w-64">
               <PlayCircle size={18} /> 继续旅程（{saveList.length}）
@@ -86,7 +122,7 @@ export default function HomePage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json,application/json"
+            accept=".zip,.json,application/zip,application/json"
             className="hidden"
             onChange={(e) => onImportJourneyFile(e.target.files?.[0])}
           />
@@ -99,6 +135,11 @@ export default function HomePage() {
             <Button variant="ghost" onClick={() => nav('/library')}>
               <Library size={16} /> 书库
             </Button>
+            {hasSaves && (
+              <Button variant="ghost" onClick={() => nav('/workspace')}>
+                <BookMarked size={16} /> 司书库
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => nav('/settings')}>
               <Settings size={16} /> 设置
             </Button>

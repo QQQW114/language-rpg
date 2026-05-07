@@ -1,32 +1,37 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
-  Background, RandomEvent, StoryOutline, WorldBook, WorldBookEntry, ImportBundle,
+  Background, RandomEvent, StoryOutline, WorldBook, WorldBookEntry, ImportBundle, WorkspaceTemplate,
 } from '@/types/content';
 import { PRESET_OUTLINES } from '@/presets/outlines';
 import { PRESET_BACKGROUNDS } from '@/presets/backgrounds';
 import { PRESET_WORLDBOOKS } from '@/presets/worldbooks';
 import { PRESET_EVENTS } from '@/presets/events';
+import { PRESET_WORKSPACE_TEMPLATES } from '@/presets/workspaceTemplates';
 
 interface ContentState {
   customOutlines: StoryOutline[];
   customBackgrounds: Background[];
   customWorldBooks: WorldBook[];
   customEvents: RandomEvent[];
+  customWorkspaceTemplates: WorkspaceTemplate[];
 
   importBundle: (b: ImportBundle) => { added: number };
   addOutline: (o: StoryOutline) => void;
   addBackground: (b: Background) => void;
   addWorldBook: (w: WorldBook) => void;
   addEvent: (e: RandomEvent) => void;
+  addWorkspaceTemplate: (t: WorkspaceTemplate) => void;
   updateOutline: (o: StoryOutline) => void;
   updateBackground: (b: Background) => void;
   updateWorldBook: (w: WorldBook) => void;
   updateEvent: (e: RandomEvent) => void;
+  updateWorkspaceTemplate: (t: WorkspaceTemplate) => void;
   removeOutline: (id: string) => void;
   removeBackground: (id: string) => void;
   removeWorldBook: (id: string) => void;
   removeEvent: (id: string) => void;
+  removeWorkspaceTemplate: (id: string) => void;
   clearCustom: () => void;
 }
 
@@ -37,6 +42,7 @@ export const useContentStore = create<ContentState>()(
       customBackgrounds: [],
       customWorldBooks: [],
       customEvents: [],
+      customWorkspaceTemplates: [],
 
       importBundle: (b) => {
         let added = 0;
@@ -45,6 +51,7 @@ export const useContentStore = create<ContentState>()(
           const backgrounds = [...s.customBackgrounds];
           const worldBooks = [...s.customWorldBooks];
           const events = [...s.customEvents];
+          const workspaceTemplates = [...s.customWorkspaceTemplates];
           const push = <T extends { id: string }>(arr: T[], item: T) => {
             if (!arr.some((x) => x.id === item.id)) {
               arr.push(item);
@@ -55,11 +62,13 @@ export const useContentStore = create<ContentState>()(
           b.backgrounds?.forEach((x) => push(backgrounds, x));
           b.worldBooks?.forEach((w) => push(worldBooks, w));
           b.events?.forEach((e) => push(events, e));
+          b.workspaceTemplates?.forEach((t) => push(workspaceTemplates, t));
           return {
             customOutlines: outlines,
             customBackgrounds: backgrounds,
             customWorldBooks: worldBooks,
             customEvents: events,
+            customWorkspaceTemplates: workspaceTemplates,
           };
         });
         return { added };
@@ -89,6 +98,12 @@ export const useContentStore = create<ContentState>()(
             ? s.customEvents
             : [...s.customEvents, e],
         })),
+      addWorkspaceTemplate: (t) =>
+        set((s) => ({
+          customWorkspaceTemplates: s.customWorkspaceTemplates.some((x) => x.id === t.id)
+            ? s.customWorkspaceTemplates
+            : [...s.customWorkspaceTemplates, t],
+        })),
 
       updateOutline: (o) =>
         set((s) => ({ customOutlines: upsertById(s.customOutlines, o) })),
@@ -98,6 +113,8 @@ export const useContentStore = create<ContentState>()(
         set((s) => ({ customWorldBooks: upsertById(s.customWorldBooks, w) })),
       updateEvent: (e) =>
         set((s) => ({ customEvents: upsertById(s.customEvents, e) })),
+      updateWorkspaceTemplate: (t) =>
+        set((s) => ({ customWorkspaceTemplates: upsertById(s.customWorkspaceTemplates, t) })),
 
       removeOutline: (id) =>
         set((s) => ({ customOutlines: s.customOutlines.filter((x) => x.id !== id) })),
@@ -107,6 +124,8 @@ export const useContentStore = create<ContentState>()(
         set((s) => ({ customWorldBooks: s.customWorldBooks.filter((x) => x.id !== id) })),
       removeEvent: (id) =>
         set((s) => ({ customEvents: s.customEvents.filter((x) => x.id !== id) })),
+      removeWorkspaceTemplate: (id) =>
+        set((s) => ({ customWorkspaceTemplates: s.customWorkspaceTemplates.filter((x) => x.id !== id) })),
 
       clearCustom: () =>
         set({
@@ -114,6 +133,7 @@ export const useContentStore = create<ContentState>()(
           customBackgrounds: [],
           customWorldBooks: [],
           customEvents: [],
+          customWorkspaceTemplates: [],
         }),
     }),
     { name: 'lrpg.content' },
@@ -147,6 +167,10 @@ export function selectAllWorldBooks(s: ContentState): WorldBook[] {
 }
 export function selectAllEvents(s: ContentState): RandomEvent[] {
   return mergePresetAndCustom(PRESET_EVENTS, s.customEvents);
+}
+
+export function selectAllWorkspaceTemplates(s: ContentState): WorkspaceTemplate[] {
+  return mergePresetAndCustom(PRESET_WORKSPACE_TEMPLATES, s.customWorkspaceTemplates);
 }
 
 export function flattenWorldBookEntries(books: WorldBook[], ids: string[]): WorldBookEntry[] {

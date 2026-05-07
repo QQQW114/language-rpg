@@ -1,7 +1,8 @@
-﻿import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  BookMarked,
   BookOpen,
   ChevronRight,
   Dices,
@@ -14,7 +15,7 @@ import {
   Wand2,
   X,
 } from 'lucide-react';
-import { useContentStore, selectAllOutlines, selectAllBackgrounds, selectAllWorldBooks, selectAllEvents, flattenWorldBookEntries } from '@/store/useContentStore';
+import { useContentStore, selectAllOutlines, selectAllBackgrounds, selectAllWorldBooks, selectAllEvents, selectAllWorkspaceTemplates, flattenWorldBookEntries } from '@/store/useContentStore';
 import { useGameStore } from '@/store/useGameStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
@@ -45,17 +46,20 @@ import type { RandomEvent } from '@/types/content';
 import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorMasterArcConfig, AuthorRandomEventConfig, AuthorSettingGuardConfig, AuthorStageJudgeConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
 import { fallbackMasterArcFromOutline, requestMasterArc } from '@/services/authorMasterArcAgent';
+import { applyWorkspaceTemplatesToSave, templateMatchesJourney } from '@/lib/workspaceTemplates';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
 
 export default function SetupPage() {
   const nav = useNavigate();
+  const location = useLocation();
   const settings = useSettingsStore((s) => s.settings);
 
   const outlines = useContentStore(selectAllOutlines);
   const backgrounds = useContentStore(selectAllBackgrounds);
   const worldBooks = useContentStore(selectAllWorldBooks);
   const events = useContentStore(selectAllEvents);
+  const workspaceTemplates = useContentStore(selectAllWorkspaceTemplates);
 
   const createSave = useGameStore((s) => s.createSave);
   const strictCustomDraft = useStrictCustomStore((s) => s.config);
@@ -106,6 +110,8 @@ export default function SetupPage() {
   const [showAdventureEventLibrary, setShowAdventureEventLibrary] = useState(false);
   const [showAuthorPoolLibrary, setShowAuthorPoolLibrary] = useState(false);
   const [showAuthorReferenceLibrary, setShowAuthorReferenceLibrary] = useState(false);
+  const [selectedWorkspaceTemplateIds, setSelectedWorkspaceTemplateIds] = useState<string[]>([]);
+  const presetAppliedRef = useRef(false);
 
   const addOutline = useContentStore((s) => s.addOutline);
   const addBackground = useContentStore((s) => s.addBackground);
@@ -128,6 +134,16 @@ export default function SetupPage() {
   );
   const strictDetailCount = strictCustomDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
   const authorDetailCount = authorDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
+  const recommendedWorkspaceTemplateIds = useMemo(
+    () => workspaceTemplates
+      .filter((template) => templateMatchesJourney(template, { outlineId, backgroundId, worldBookIds }))
+      .map((template) => template.id),
+    [workspaceTemplates, outlineId, backgroundId, worldBookIds],
+  );
+  const selectedWorkspaceTemplates = useMemo(
+    () => workspaceTemplates.filter((template) => selectedWorkspaceTemplateIds.includes(template.id)),
+    [workspaceTemplates, selectedWorkspaceTemplateIds],
+  );
 
   // 选中 outline 时默认挂载其关联的世界书
   useEffect(() => {
@@ -136,10 +152,63 @@ export default function SetupPage() {
     }
   }, [selectedOutline]);
 
+  // 来自 HomePage 等路由的预选参数：一键载入预设并跳过前两步
+  useEffect(() => {
+    if (presetAppliedRef.current) return;
+    const state = location.state as {
+      preset?: {
+        outlineId?: string;
+        backgroundId?: string;
+        worldBookIds?: string[];
+        workspaceTemplateIds?: string[];
+        characterName?: string;
+        journeyMode?: JourneyMode;
+        step?: Step;
+      };
+    } | null;
+    const preset = state?.preset;
+    if (!preset) return;
+    presetAppliedRef.current = true;
+    const outlineExists = preset.outlineId && outlines.some((o) => o.id === preset.outlineId);
+    const backgroundExists = preset.backgroundId && backgrounds.some((b) => b.id === preset.backgroundId);
+    if (outlineExists) setOutlineId(preset.outlineId);
+    if (backgroundExists) setBackgroundId(preset.backgroundId);
+    if (preset.worldBookIds?.length) {
+      const valid = preset.worldBookIds.filter((id) => worldBooks.some((w) => w.id === id));
+      if (valid.length) setWorldBookIds(valid);
+    }
+    if (preset.workspaceTemplateIds?.length) {
+      const valid = preset.workspaceTemplateIds.filter((id) => workspaceTemplates.some((t) => t.id === id));
+      if (valid.length) setSelectedWorkspaceTemplateIds(valid);
+    }
+    if (preset.characterName) setCharacterName(preset.characterName);
+    if (preset.journeyMode) {
+      setJourneyMode(preset.journeyMode);
+      if (preset.journeyMode === 'author') {
+        setManualInputEvery(1);
+      }
+    }
+    if (preset.step && outlineExists && backgroundExists) {
+      setStep(preset.step);
+    } else if (outlineExists && backgroundExists) {
+      setStep('config');
+    } else if (outlineExists) {
+      setStep('background');
+    }
+    // 清掉 history.state，避免后退/刷新时再次自动跳转
+    nav(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 切换 background 时，清空之前的随机开局覆盖
   useEffect(() => {
     setCustomStartScene(undefined);
   }, [backgroundId]);
+
+  useEffect(() => {
+    const existing = new Set(workspaceTemplates.map((item) => item.id));
+    setSelectedWorkspaceTemplateIds((prev) => prev.filter((id) => existing.has(id)));
+  }, [workspaceTemplates]);
 
   // ---- 随机生成 ----
   const ensureApi = (): boolean => {
@@ -483,6 +552,22 @@ export default function SetupPage() {
           });
         }
       }
+      if (selectedWorkspaceTemplates.length) {
+        try {
+          const createdSave = useGameStore.getState().saves[saveId];
+          await applyWorkspaceTemplatesToSave({
+            saveId,
+            currentRound: createdSave?.state.currentRound ?? 0,
+            templates: selectedWorkspaceTemplates,
+            characterName: characterName.trim() || undefined,
+            saveName,
+            outline: selectedOutline,
+            background: selectedBackground,
+          });
+        } catch (err) {
+          console.warn('[workspaceTemplates] apply failed', err);
+        }
+      }
       nav('/game');
     } catch (err: any) {
       setGenError(err?.message ?? String(err));
@@ -810,6 +895,68 @@ export default function SetupPage() {
               )}
             </div>
 
+            <OrnateDivider>司书库模板</OrnateDivider>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div className="text-xs text-parchment-200/70 leading-relaxed">
+                司书库模板会在启程时复制到“当前旅程自己的司书库”，适合预设角色、关系、场景、规则与伏笔；复制后可在旅程内单独编辑。
+              </div>
+              {!!recommendedWorkspaceTemplateIds.length && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSelectedWorkspaceTemplateIds((prev) =>
+                    Array.from(new Set([...prev, ...recommendedWorkspaceTemplateIds])),
+                  )}
+                >
+                  <BookMarked size={14} /> 选择推荐
+                </Button>
+              )}
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {workspaceTemplates.map((template) => {
+                const recommended = recommendedWorkspaceTemplateIds.includes(template.id);
+                const selected = selectedWorkspaceTemplateIds.includes(template.id);
+                return (
+                  <label
+                    key={template.id}
+                    className={`flex items-start gap-2 bg-parchment-800/60 border rounded px-3 py-2 cursor-pointer hover:border-gold/60 ${
+                      selected
+                        ? 'border-gold/70 shadow-glow-sm'
+                        : recommended
+                          ? 'border-gold/35'
+                          : 'border-parchment-600/40'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => setSelectedWorkspaceTemplateIds(toggle(selectedWorkspaceTemplateIds, template.id))}
+                      className="mt-1 accent-gold"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-parchment-100 text-sm">
+                        {template.name}
+                        {recommended && <span className="ml-2 text-[10px] text-gold/75 tracking-wider uppercase">· 推荐 ·</span>}
+                      </div>
+                      <div className="text-xs text-parchment-200/60">
+                        {template.docs.length} 份文件
+                        {template.description ? ` · ${template.description}` : ''}
+                      </div>
+                      <div className="mt-1 text-[11px] text-parchment-200/45 truncate">
+                        {template.docs.slice(0, 3).map((doc) => doc.path).join(' / ')}
+                        {template.docs.length > 3 ? ` / …` : ''}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+              {workspaceTemplates.length === 0 && (
+                <div className="text-sm text-parchment-200/60 md:col-span-2">
+                  尚无司书库模板。可在主界面“书库 → 导入”粘贴带 workspaceTemplates 的 JSON，或从旅程卷宗 ZIP 提取。
+                </div>
+              )}
+            </div>
+
             {journeyMode === 'adventure' && (
               <>
                 <OrnateDivider>随机事件</OrnateDivider>
@@ -920,6 +1067,14 @@ export default function SetupPage() {
                 <div className="font-serif text-parchment-50 mb-2">
                   {selectedBackground.coverEmoji} {selectedBackground.name}
                 </div>
+                {!!selectedWorkspaceTemplates.length && (
+                  <>
+                    <div className="text-xs text-parchment-200/70">司书库模板</div>
+                    <div className="text-xs text-gold/75 mb-2">
+                      将导入 {selectedWorkspaceTemplates.length} 个模板 / {selectedWorkspaceTemplates.reduce((sum, t) => sum + t.docs.length, 0)} 份文件
+                    </div>
+                  </>
+                )}
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs text-parchment-200/70">
                     开局场景 {customStartScene && <span className="text-gold-light">· 已随机 ·</span>}
