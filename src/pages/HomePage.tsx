@@ -94,22 +94,10 @@ export default function HomePage() {
           <Button
             size="lg"
             variant="outline"
-            onClick={() => nav('/setup', {
-              state: {
-                preset: {
-                  outlineId: 'outline_misplaced_youth',
-                  backgroundId: 'bg_freshman_xiyu',
-                  worldBookIds: ['wb_misplaced_youth'],
-                  workspaceTemplateIds: ['wst_misplaced_youth'],
-                  characterName: '曦宇',
-                  journeyMode: 'author',
-                  step: 'config',
-                },
-              },
-            })}
+            onClick={() => nav('/presets')}
             className="w-64"
           >
-            <Sparkles size={18} /> 错位青春 · 一键启程
+            <Sparkles size={18} /> 执笔模式 · 一键启程
           </Button>
           {hasSaves && (
             <Button size="lg" variant="outline" onClick={() => setShowSaves(true)} className="w-64">
