@@ -1,11 +1,11 @@
-import { Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
-import { Input, Textarea } from '@/components/ui/Input';
+import { Textarea } from '@/components/ui/Input';
 import { OrnateDivider } from '@/components/ui/Ornaments';
 import { useStrictCustomStore } from '@/store/useStrictCustomStore';
 import { clsx } from '@/lib/utils';
-import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
+import type { StrictCustomConfig } from '@/types/custom';
 import {
   COMPACT_STORY_SYSTEM_TEMPLATE,
   DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE,
@@ -22,9 +22,6 @@ interface StrictCustomEditorProps {
   config?: StrictCustomConfig;
   update?: (patch: Partial<StrictCustomConfig>) => void;
   reset?: () => void;
-  addDirective?: () => void;
-  updateDirective?: (id: string, patch: Partial<StrictRoundDirective>) => void;
-  removeDirective?: (id: string) => void;
   showEnableToggle?: boolean;
   enableLabel?: string;
   enableDescription?: string;
@@ -35,12 +32,9 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
   const config = props.config ?? store.config;
   const update = props.update ?? store.update;
   const reset = props.reset ?? store.reset;
-  const addDirective = props.addDirective ?? store.addDirective;
-  const updateDirective = props.updateDirective ?? store.updateDirective;
-  const removeDirective = props.removeDirective ?? store.removeDirective;
   const showEnableToggle = props.showEnableToggle ?? true;
   const title = props.title ?? '严格自定义模式';
-  const description = props.description ?? '用更高优先级的导演提示控制故事节奏、隐藏设定揭示和指定回合内容。启用后，新创建的旅程会固化当前配置。';
+  const description = props.description ?? '用更高优先级的导演提示控制故事节奏、隐藏设定揭示和选项偏好。启用后，新创建的旅程会固化当前配置。';
 
   return (
     <div>
@@ -68,7 +62,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
             <div>
               <CardTitle className="mb-1">{props.enableLabel ?? '启用严格自定义'}</CardTitle>
               <CardMeta>
-                {props.enableDescription ?? '开启后，新旅程会注入上方规则、详细大纲和选项偏好；提示词链路模板是否覆盖由下方独立开关控制。'}
+                {props.enableDescription ?? '开启后，新旅程会注入上方规则和选项偏好；提示词链路模板是否覆盖由下方独立开关控制。'}
               </CardMeta>
             </div>
           </label>
@@ -202,7 +196,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
           onChange={(e) => update({ storySystemPrompt: e.target.value })}
           rows={8}
           placeholder="默认显示项目原本的故事 system prompt；可直接在此编辑。"
-          hint="覆盖开关打开后会直接作为故事模型 system prompt。建议保留 {{writingRulesBlock}} 以跟随故事提示词模式，保留 {{strictCustomBlock}} 以注入上方严格规则和详细大纲。"
+          hint="覆盖开关打开后会直接作为故事模型 system prompt。建议保留 {{writingRulesBlock}} 以跟随故事提示词模式，保留 {{strictCustomBlock}} 以注入上方严格规则。"
         />
         <Textarea
           label="故事模型 · User 提示词模板"
@@ -210,7 +204,7 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
           onChange={(e) => update({ storyUserPrompt: e.target.value })}
           rows={8}
           placeholder="默认：{{defaultUserMessage}}"
-          hint="会直接作为每回合故事请求的 user 消息。{{defaultUserMessage}} 包含玩家输入、道具使用和重新生成参考。"
+          hint="会直接作为每回合故事请求的 user 消息。{{defaultUserMessage}} 包含玩家输入、能力使用和重新生成参考。"
         />
         <Textarea
           label="决策模型 · System 提示词模板"
@@ -228,73 +222,6 @@ export function StrictCustomEditor(props: StrictCustomEditorProps = {}) {
           placeholder="默认显示项目原本的决策 user prompt；可直接在此编辑。"
           hint="覆盖开关打开后会直接作为决策模型 user prompt。保留 {{strictCustomDecisionBlock}} 才会让上方选项生成偏好参与请求。"
         />
-      </div>
-
-      <OrnateDivider>详细大纲</OrnateDivider>
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div className="text-sm text-parchment-200/70 leading-relaxed">
-          可添加多个「从多少回合到多少回合」的提示词。程序会在对应回合自动注入。
-        </div>
-        <Button variant="outline" onClick={addDirective}>
-          <Plus size={16} /> 添加定义项
-        </Button>
-      </div>
-
-      <div className="space-y-4">
-        {config.detailedOutline.map((item, index) => (
-          <Card key={item.id} className="p-4">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="font-serif text-gold-light">
-                定义项 {index + 1}
-                <span className="ml-2 text-xs text-parchment-200/60">
-                  [{item.startRound}]-[{item.endRound}] 回合
-                </span>
-              </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => removeDirective(item.id)}
-                title="删除此定义项"
-              >
-                <Trash2 size={14} />
-              </Button>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                label="起始回合"
-                type="number"
-                min={0}
-                max={999}
-                value={item.startRound}
-                onChange={(e) => updateDirective(item.id, { startRound: Number(e.target.value) || 0 })}
-              />
-              <Input
-                label="结束回合"
-                type="number"
-                min={0}
-                max={999}
-                value={item.endRound}
-                onChange={(e) => updateDirective(item.id, { endRound: Number(e.target.value) || item.startRound })}
-              />
-            </div>
-            <Textarea
-              label={`[${item.startRound}]-[${item.endRound}] 回合提示词`}
-              value={item.prompt}
-              onChange={(e) => updateDirective(item.id, { prompt: e.target.value })}
-              rows={4}
-              placeholder="主角：xxx；事件：xxx；风格：xxx；限制：xxx"
-              hint="建议写清：本段该发生什么、不该发生什么、隐藏信息是否允许揭示、收束到哪个压力点。"
-            />
-          </Card>
-        ))}
-
-        {config.detailedOutline.length === 0 && (
-          <Card className="text-sm text-parchment-200/70">
-            尚未添加详细大纲。点击「添加定义项」创建例如：
-            <span className="text-gold-light mx-1">[1]-[10] 回合：主角 xxx，事件 xxx，风格 xxx</span>
-            的注入规则。
-          </Card>
-        )}
       </div>
     </div>
   );

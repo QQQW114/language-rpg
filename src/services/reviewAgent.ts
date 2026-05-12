@@ -6,12 +6,15 @@ import type { StoryOutline, Background } from '@/types/content';
 import { chatJSONDetailed } from './llmClient';
 import { REVIEW_SYSTEM, buildReviewUser } from '@/prompts/reviewSystem';
 import { extractJSON, clamp, nowMs } from '@/lib/utils';
+import { withPromptTrace } from '@/lib/agentTrace';
 
 export interface ReviewRequest {
   settings: AppSettings;
   save: GameSave;
   outline?: StoryOutline;
   background?: Background;
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -93,11 +96,13 @@ export async function requestReview(p: ReviewRequest): Promise<AdventureReview> 
           { role: 'system', content: REVIEW_SYSTEM },
           { role: 'user', content: userPrompt },
         ],
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal,
       },
     );
     const review = sanitize(extractJSON(result.text));
-    return review ? { ...review, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : null;
+    return review ? withPromptTrace({ ...review, thinking: result.thinking, rawOutput: result.text, usage: result.usage }, result.trace) : null;
   };
 
   try {

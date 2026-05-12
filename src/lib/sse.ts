@@ -16,11 +16,22 @@ export interface StreamOptions {
 export interface StreamResult {
   text: string;
   thinking?: string;
+  reasoningContent?: string;
   finishReason?: string;
   usage?: LlmUsage;
+  toolCalls?: StreamToolCall[];
 }
 
 type RawFrame = Record<string, unknown>;
+
+export interface StreamToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
 
 function extractChatDelta(frame: RawFrame): string | undefined {
   const choices = (frame as any).choices;
@@ -39,6 +50,33 @@ function extractChatThinkingDelta(frame: RawFrame): string | undefined {
     delta?.thinking ??
     delta?.thoughts;
   return typeof content === 'string' ? content : undefined;
+}
+
+interface PartialToolCall {
+  id?: string;
+  type?: 'function';
+  name?: string;
+  arguments: string;
+}
+
+function extractChatToolCallDeltas(frame: RawFrame): Array<{
+  index: number;
+  id?: string;
+  type?: 'function';
+  name?: string;
+  arguments?: string;
+}> {
+  const choices = (frame as any).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return [];
+  const toolCalls = choices[0]?.delta?.tool_calls;
+  if (!Array.isArray(toolCalls)) return [];
+  return toolCalls.map((call: any, fallbackIndex: number) => ({
+    index: Number.isFinite(call?.index) ? Number(call.index) : fallbackIndex,
+    id: typeof call?.id === 'string' ? call.id : undefined,
+    type: call?.type === 'function' ? 'function' : undefined,
+    name: typeof call?.function?.name === 'string' ? call.function.name : undefined,
+    arguments: typeof call?.function?.arguments === 'string' ? call.function.arguments : undefined,
+  }));
 }
 
 function extractResponsesDelta(frame: RawFrame): string | undefined {
@@ -204,6 +242,7 @@ export async function readSSEDetailed(
   let finishReason: string | undefined;
   let nativeThinking = '';
   let usage: LlmUsage | undefined;
+  const partialToolCalls = new Map<number, PartialToolCall>();
 
   const extractor = opts.format === 'responses' ? extractResponsesDelta : extractChatDelta;
   const thinkingExtractor = opts.format === 'responses' ? extractResponsesThinkingDelta : extractChatThinkingDelta;
@@ -215,7 +254,25 @@ export async function readSSEDetailed(
       .filter(Boolean)
       .join('\n\n')
       || undefined;
-    return { ...result, thinking, finishReason, usage };
+    const toolCalls = Array.from(partialToolCalls.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([index, call]) => ({
+        id: call.id || `tool_call_${index}`,
+        type: 'function' as const,
+        function: {
+          name: call.name || '',
+          arguments: call.arguments || '',
+        },
+      }))
+      .filter((call) => call.function.name);
+    return {
+      ...result,
+      thinking,
+      reasoningContent: nativeThinking.trim() || undefined,
+      finishReason,
+      usage,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+    };
   };
 
   try {
@@ -248,6 +305,17 @@ export async function readSSEDetailed(
 
         finishReason = detectFinishReason(frame) ?? finishReason;
         usage = mergeLlmUsage(usage, extractUsage(frame));
+        if (opts.format !== 'responses') {
+          for (const delta of extractChatToolCallDeltas(frame)) {
+            const existing = partialToolCalls.get(delta.index) ?? { arguments: '' };
+            partialToolCalls.set(delta.index, {
+              id: delta.id ?? existing.id,
+              type: delta.type ?? existing.type ?? 'function',
+              name: delta.name ?? existing.name,
+              arguments: existing.arguments + (delta.arguments ?? ''),
+            });
+          }
+        }
         const thinkingDelta = thinkingExtractor(frame);
         if (thinkingDelta) {
           nativeThinking += thinkingDelta;

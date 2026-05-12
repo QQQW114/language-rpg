@@ -1,7 +1,9 @@
 import type {
   AuthorDirectorConfig,
+  AuthorEventBeatConfig,
   AuthorLogicCheckConfig,
   AuthorMasterArcConfig,
+  AuthorOrchestratorConfig,
   AuthorRandomEventConfig,
   AuthorRandomEventMode,
   AuthorSettingGuardConfig,
@@ -44,7 +46,7 @@ export const DEFAULT_AUTHOR_LOGIC_CHECK_CONFIG: AuthorLogicCheckConfig = {
   enabled: true,
   everyRounds: 3,
   prompt:
-    '重点检查人物外观/关系、时间天气、场景位置、背包道具、承诺与伏笔、大纲阶段是否前后矛盾。只给未来修复建议，不要重写已发生正文。',
+    '重点检查人物外观/关系、时间天气、场景位置、能力、承诺与伏笔、大纲阶段是否前后矛盾。只给未来修复建议，不要重写已发生正文。',
 };
 
 export const DEFAULT_AUTHOR_SETTING_GUARD_CONFIG: AuthorSettingGuardConfig = {
@@ -66,6 +68,18 @@ export const DEFAULT_AUTHOR_STAGE_JUDGE_CONFIG: AuthorStageJudgeConfig = {
   prompt:
     '优先尊重玩家当下节奏；当玩家在观察、犹豫、内心独白或试探环境时，判定为 immersive/exploratory，并要求故事模型每回合只推进一个微节拍。',
   autoAdvance: true,
+};
+
+export const DEFAULT_AUTHOR_ORCHESTRATOR_CONFIG: AuthorOrchestratorConfig = {
+  enabled: true,
+  minIntervalRounds: 1,
+  prompt:
+    '只判断哪些辅助模型需要被调用。不要写剧情，不要识别详细玩家意图，不要生成记忆候选；当某个状态过期、不合适、可能偏离或出现重大变化时才建议调用对应模型。',
+};
+
+export const DEFAULT_AUTHOR_EVENT_BEAT_CONFIG: AuthorEventBeatConfig = {
+  enabled: true,
+  prompt: '',
 };
 
 function positiveInt(value: unknown, fallback: number, min = 1, max = 999): number {
@@ -194,6 +208,27 @@ export function normalizeAuthorStageJudgeConfig(
   };
 }
 
+export function normalizeAuthorOrchestratorConfig(
+  input?: Partial<AuthorOrchestratorConfig>,
+): AuthorOrchestratorConfig {
+  const base = DEFAULT_AUTHOR_ORCHESTRATOR_CONFIG;
+  return {
+    enabled: input?.enabled !== false,
+    minIntervalRounds: positiveInt(input?.minIntervalRounds, base.minIntervalRounds, 1, 20),
+    prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
+  };
+}
+
+export function normalizeAuthorEventBeatConfig(
+  input?: Partial<AuthorEventBeatConfig>,
+): AuthorEventBeatConfig {
+  const base = DEFAULT_AUTHOR_EVENT_BEAT_CONFIG;
+  return {
+    enabled: input?.enabled !== false,
+    prompt: (input?.prompt ?? base.prompt).trim().slice(0, 3000),
+  };
+}
+
 export function currentStageForRound(arc: StoryArc, round: number): StoryArcStage | undefined {
   return arc.stages.find((stage) => round >= stage.startRound && round <= stage.endRound)
     ?? arc.stages[arc.currentStageIndex]
@@ -207,13 +242,30 @@ export function formatStoryArcForPrompt(arc: StoryArc, round: number): string {
     : `调度参考：记录回合 ${arc.startRound} 起（非硬性剧情期限）`;
   const npcNames = arc.involvedNpcNames?.length ? `；涉及人物：${arc.involvedNpcNames.join('、')}` : '';
   const tags = arc.tags?.length ? `；标签：${arc.tags.join('、')}` : '';
+  const lifecycle = arc.lifecycle ? `；生命周期：${arc.lifecycle}` : '';
+  const progress = arc.progressPercent !== undefined ? `；完成度：${arc.progressPercent}%` : '';
   const lines = [
-    `· ${arc.status === 'pending' ? '即将引入' : '进行中'}《${arc.title}》（${range}${npcNames}${tags}）`,
+    `· ${arc.status === 'pending' ? '即将引入' : arc.status === 'completed' ? '已完成' : arc.status === 'cancelled' ? '已取消' : '进行中'}《${arc.title}》（${range}${npcNames}${tags}${lifecycle}${progress}）`,
     `  事件摘要：${arc.summary}`,
     `  叙事指令：${arc.directive}`,
   ];
+  if (arc.surfaceGoal) {
+    lines.push(`  明面目标：${arc.surfaceGoal}`);
+  }
   if (arc.hiddenIntent) {
     lines.push(`  幕后真实意图：${arc.hiddenIntent}（仅供规划，不得在玩家未发现前直接剧透）`);
+  }
+  if (arc.completionCriteria?.length) {
+    lines.push(`  完成标准：${arc.completionCriteria.join('；')}`);
+  }
+  if (arc.failureCriteria?.length || arc.abandonCriteria?.length) {
+    lines.push(`  失败/延后标准：${[...(arc.failureCriteria ?? []), ...(arc.abandonCriteria ?? [])].join('；')}`);
+  }
+  if (arc.worldProgressDelta !== undefined || arc.relationshipDeltas?.length) {
+    const rel = arc.relationshipDeltas?.map((d) =>
+      `${d.npcName || d.npcId || '角色'}${d.affinityDelta ? ` 好感${d.affinityDelta > 0 ? '+' : ''}${d.affinityDelta}` : ''}${d.trustDelta ? ` 信任${d.trustDelta > 0 ? '+' : ''}${d.trustDelta}` : ''}${d.note ? `（${d.note}）` : ''}`,
+    ).join('；');
+    lines.push(`  结算影响：${arc.worldProgressDelta !== undefined ? `世界/阶段进度 ${arc.worldProgressDelta > 0 ? '+' : ''}${arc.worldProgressDelta}` : ''}${rel ? `；${rel}` : ''}`);
   }
   if (stage) {
     lines.push(`  当前事件阶段：「${stage.title}」——${stage.goal}`);
@@ -221,5 +273,6 @@ export function formatStoryArcForPrompt(arc: StoryArc, round: number): string {
     if (stage.avoid) lines.push(`  避免：${stage.avoid}`);
   }
   if (arc.progressNote) lines.push(`  进度记录：${arc.progressNote}`);
+  if (arc.writingBoundary) lines.push(`  写作边界：${arc.writingBoundary}`);
   return lines.join('\n');
 }

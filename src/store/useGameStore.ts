@@ -30,6 +30,26 @@ import type {
   NarrativeStageBeat,
   StageJudgeState,
   AgentThought,
+  OrchestratorCallKey,
+  OrchestratorState,
+  OrchestratorFocusArea,
+  OrchestratorPlanSignal,
+  OrchestratorDirectorMode,
+  OrchestratorPlanningMode,
+  OrchestratorTurnType,
+  NarrativeEventLifecycle,
+  NarrativeEventUpdate,
+  OutlineMappingAlignment,
+  OutlineMappingState,
+  NarrativeBriefCharacter,
+  NarrativeBriefEvent,
+  NarrativeBriefScene,
+  AuthorCharacterPlanState,
+  AuthorScenePlanState,
+  AuthorEventPlanState,
+  EventBeatState,
+  EventBeatVerdict,
+  OrchestratorPhase1Result,
 } from '@/types/game';
 import type { SettingGuardResult } from '@/services/authorSettingGuardAgent';
 import type { StageJudgeResult } from '@/services/authorStageJudgeAgent';
@@ -38,23 +58,41 @@ import { createItem, type RawGrant, type RawDestroy, type RawItemPatch } from '@
 import { useContentStore } from '@/store/useContentStore';
 import {
   normalizeAuthorMasterArcConfig,
+  normalizeAuthorEventBeatConfig,
+  normalizeAuthorOrchestratorConfig,
   normalizeAuthorSettingGuardConfig,
   normalizeAuthorStageJudgeConfig,
 } from '@/lib/authorMode';
 import { hasCacheHit, normalizeLlmUsage } from '@/lib/llmUsage';
+import {
+  addAgentCall,
+  captureSnapshot as persistSnapshot,
+  deleteSaveData,
+  loadAllSaves,
+  persistRuntimeSave,
+  putSaveMeta,
+  findRollbackSnapshot,
+  pruneAfter,
+  restoreSnapshotState,
+  syncRoundsFromSave,
+} from '@/storage/ledgerRepository';
+import type { SnapshotLabel } from '@/types/ledger';
+import type { AgentPromptTrace } from '@/types/ledger';
 
 const SETTING_GUARD_CANDIDATE_LIMIT = 24;
 
 interface GameStoreState {
   saves: Record<string, GameSave>;
   activeSaveId?: string;
+  ledgerHydrated: boolean;
 
+  hydrateFromLedger: () => Promise<void>;
   createSave: (p: {
     name?: string;
     config: GameConfig;
     content: GameContent;
     initialScene?: string;      // 开局文本，会作为第 0 轮 assistant 消息
-    initialItems?: Item[];      // 出身自带的物品
+    initialItems?: Item[];      // 出身自带的能力
   }) => string;
   importSave: (save: GameSave) => string;
   setActive: (id: string | undefined) => void;
@@ -63,13 +101,18 @@ interface GameStoreState {
   updateContentOf: (id: string, patch: Partial<GameContent>) => void;
   updateStateOf: (id: string, patch: Partial<GameState>) => void;
   replaceState: (id: string, updater: (prev: GameState) => GameState) => void;
+  captureSnapshot: (id: string, label: SnapshotLabel, round?: number) => void;
   setLongTermMemory: (id: string, memory: string, round: number) => void;
   appendMessage: (id: string, msg: Message) => void;
+  updateAssistantRuntimeStats: (id: string, round: number, patch: Pick<Message, 'toolEvents' | 'runtimeStats'>) => void;
   addAgentThought: (id: string, thought: Omit<AgentThought, 'id' | 'createdAt'> & { id?: string; createdAt?: number }) => void;
   updateMessage: (id: string, historyIndex: number, content: string) => void;
   deleteMessage: (id: string, historyIndex: number) => void;
   updateAssistantMessage: (id: string, historyIndex: number, content: string) => void;
   regenerateAssistantMessage: (id: string, historyIndex: number, hint?: string) => void;
+  rollbackEditMessage: (id: string, historyIndex: number, content: string) => void;
+  rollbackDeleteMessage: (id: string, historyIndex: number) => void;
+  rollbackRegenerateAssistant: (id: string, historyIndex: number, hint?: string) => void;
   setPhase: (id: string, phase: GamePhase) => void;
   setChoices: (id: string, choices?: Choice[]) => void;
   setLastPlayerInput: (id: string, text?: string) => void;
@@ -80,7 +123,7 @@ interface GameStoreState {
   grantRefresh: (id: string, amount?: number) => void;
   consumeRefresh: (id: string) => boolean;     // 返回是否成功消耗
 
-  // ---- 背包 / 道具 ----
+  // ---- 能力 ----
   applyDecisionResult: (id: string, grantKey: string, grants: RawGrant[], destroys: RawDestroy[], itemPatches: RawItemPatch[], round: number) => RawDestroy[];
   commitPendingGrants: (id: string) => void;     // 固化 grants + 移除 pendingDestroy 项
   toggleSelectItem: (id: string, itemId: string) => void;
@@ -109,6 +152,7 @@ interface GameStoreState {
   upsertAuthorArc: (id: string, arc: StoryArc) => void;
   completeAuthorArc: (id: string, arcId: string, round?: number) => void;
   advanceAuthorArcs: (id: string, currentRound: number) => void;
+  applyAuthorEventUpdates: (id: string, updates: NarrativeEventUpdate[], round?: number) => void;
   applySettingGuardResult: (id: string, result: SettingGuardResult, completedRound: number) => void;
   acceptSettingCandidate: (id: string, candidateId: string) => void;
   rejectSettingCandidate: (id: string, candidateId: string) => void;
@@ -122,6 +166,13 @@ interface GameStoreState {
   markStageBeatAchieved: (id: string, beatId: string, round?: number) => void;
   applyStageJudgeResult: (id: string, result: StageJudgeResult, completedRound: number) => void;
   setStageJudgeError: (id: string, error: string | undefined) => void;
+  setOrchestratorState: (id: string, state: OrchestratorState) => void;
+  setOrchestratorError: (id: string, error: string | undefined) => void;
+  setAuthorOutlineMapping: (id: string, state: OutlineMappingState | undefined, round?: number) => void;
+  setAuthorCharacterPlan: (id: string, state: AuthorCharacterPlanState | undefined, round?: number) => void;
+  setAuthorScenePlan: (id: string, state: AuthorScenePlanState | undefined, round?: number) => void;
+  setAuthorEventPlan: (id: string, state: AuthorEventPlanState | undefined, round?: number) => void;
+  setAuthorEventBeat: (id: string, state: EventBeatState | undefined, round?: number) => void;
 
   // ---- 记忆锚点 ----
   addAnchor: (id: string, anchor: Omit<MemoryAnchor, 'id' | 'createdAt'>) => void;
@@ -131,6 +182,24 @@ interface GameStoreState {
 
 function touch(save: GameSave, patch: Partial<GameSave>): GameSave {
   return { ...save, ...patch, updatedAt: nowMs() };
+}
+
+function reportLedgerError(action: string, err: unknown): void {
+  console.warn(`[ledger] ${action} failed`, err);
+}
+
+function persistMetaSoon(save: GameSave): void {
+  void putSaveMeta(save).catch((err) => reportLedgerError('putSaveMeta', err));
+}
+
+function persistRuntimeSoon(save: GameSave): void {
+  void persistRuntimeSave(save).catch((err) => reportLedgerError('persistRuntimeSave', err));
+}
+
+function canRollbackRound(save: GameSave, round: number): boolean {
+  const currentRound = Math.max(0, Math.floor(Number(save.state.currentRound) || 0));
+  const targetRound = Math.max(0, Math.floor(Number(round) || 0));
+  return targetRound >= Math.max(0, currentRound - 1) && targetRound <= currentRound;
 }
 
 function isLegacyAuthorSave(save: GameSave): boolean {
@@ -155,6 +224,16 @@ function latestAssistantIndex(history: Message[]): number {
     if (history[i].role === 'assistant') return i;
   }
   return -1;
+}
+
+function latestUserContent(history: Message[]): string | undefined {
+  return [...history].reverse().find((m) => m.role === 'user')?.content;
+}
+
+function phaseAfterAssistant(config: GameConfig, round: number): GamePhase {
+  const afterRound = round + 1;
+  if ((config.totalRounds ?? 0) > 0 && afterRound >= config.totalRounds) return 'ended';
+  return afterRound % Math.max(config.manualInputEvery, 1) === 0 ? 'manual' : 'choices';
 }
 
 function clearPendingDecisionItems(
@@ -401,11 +480,63 @@ function normalizeAgentThoughts(raw: unknown): AgentThought[] {
       round: Math.max(0, Math.floor(Number(obj.round) || 0)),
       content: content || undefined,
       output: output || undefined,
+      prompt: normalizePromptTrace(obj.prompt),
       usage,
       cacheHit,
       createdAt: Number(obj.createdAt) || nowMs(),
     } satisfies AgentThought;
   }).filter(Boolean) as AgentThought[];
+}
+
+function normalizePromptTrace(raw: unknown): AgentPromptTrace | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as AgentPromptTrace;
+  const clip = (text: unknown, max: number) => {
+    const value = typeof text === 'string' ? text.trim() : '';
+    return value ? value.slice(0, max) : undefined;
+  };
+  const messages = Array.isArray(obj.messages)
+    ? obj.messages.slice(-60).map((m) => ({
+      role: String((m as any).role ?? '').slice(0, 20) || 'user',
+      content: clip((m as any).content, 32000) ?? '',
+    })).filter((m) => m.content)
+    : undefined;
+  const system = clip(obj.system, 24000);
+  const user = clip(obj.user, 32000);
+  const inputSummary = clip(obj.inputSummary, 500);
+  if (!system && !user && !messages?.length && !inputSummary) return undefined;
+  return { system, user, messages, inputSummary };
+}
+
+const NARRATIVE_EVENT_LIFECYCLES: NarrativeEventLifecycle[] = [
+  'candidate',
+  'active',
+  'progressing',
+  'turning',
+  'completed',
+  'soft_failed',
+  'missed',
+  'delayed',
+  'reframed',
+  'archived',
+];
+
+function normalizeStringList(raw: unknown, maxItems: number, maxChars: number): string[] | undefined {
+  const arr = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(/[;；、\n]/)
+      : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of arr) {
+    const text = String(item ?? '').trim().slice(0, maxChars);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= maxItems) break;
+  }
+  return out.length ? out : undefined;
 }
 
 function normalizeStoryArc(raw: unknown): StoryArc | undefined {
@@ -418,6 +549,32 @@ function normalizeStoryArc(raw: unknown): StoryArc | undefined {
   const startRound = Math.max(1, Math.floor(Number(obj.startRound) || 1));
   const targetEndRound = Number.isFinite(obj.targetEndRound)
     ? Math.max(startRound, Math.floor(Number(obj.targetEndRound)))
+    : undefined;
+  const lifecycle = NARRATIVE_EVENT_LIFECYCLES.includes(obj.lifecycle as NarrativeEventLifecycle)
+    ? obj.lifecycle as NarrativeEventLifecycle
+    : undefined;
+  const relationshipDeltas = Array.isArray(obj.relationshipDeltas)
+    ? obj.relationshipDeltas.slice(0, 10).map((item) => {
+      const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const npcId = String(row.npcId ?? '').trim().slice(0, 40);
+      const npcName = String(row.npcName ?? '').trim().slice(0, 30);
+      if (!npcId && !npcName) return undefined;
+      const affinityDelta = Number(row.affinityDelta);
+      const trustDelta = Number(row.trustDelta);
+      return {
+        npcId: npcId || undefined,
+        npcName: npcName || undefined,
+        affinityDelta: Number.isFinite(affinityDelta) ? clamp(Math.round(affinityDelta), -100, 100) : undefined,
+        trustDelta: Number.isFinite(trustDelta) ? clamp(Math.round(trustDelta), -100, 100) : undefined,
+        note: String(row.note ?? '').trim().slice(0, 120) || undefined,
+      };
+    }).filter(Boolean) as StoryArc['relationshipDeltas']
+    : undefined;
+  const progressPercent = Number.isFinite(obj.progressPercent)
+    ? clamp(Math.round(Number(obj.progressPercent)), 0, 100)
+    : undefined;
+  const worldProgressDelta = Number.isFinite(obj.worldProgressDelta)
+    ? clamp(Math.round(Number(obj.worldProgressDelta)), -100, 100)
     : undefined;
   const stages: StoryArc['stages'] = [];
   if (Array.isArray(obj.stages)) {
@@ -449,7 +606,19 @@ function normalizeStoryArc(raw: unknown): StoryArc | undefined {
     title: title.slice(0, 80),
     summary: (summary || title).slice(0, 500),
     directive: directive.slice(0, 1200),
+    lifecycle,
+    surfaceGoal: obj.surfaceGoal?.trim().slice(0, 500) || undefined,
     hiddenIntent: obj.hiddenIntent?.trim().slice(0, 800) || undefined,
+    completionCriteria: normalizeStringList(obj.completionCriteria, 8, 100),
+    failureCriteria: normalizeStringList(obj.failureCriteria, 8, 100),
+    abandonCriteria: normalizeStringList(obj.abandonCriteria, 8, 100),
+    worldProgressDelta,
+    relationshipDeltas,
+    progressPercent,
+    writingBoundary: obj.writingBoundary?.trim().slice(0, 220) || undefined,
+    isMilestone: obj.isMilestone === true,
+    milestoneOf: obj.milestoneOf?.trim().slice(0, 160) || undefined,
+    alternateOutcomePath: obj.alternateOutcomePath?.trim().slice(0, 260) || undefined,
     involvedNpcIds: Array.isArray(obj.involvedNpcIds)
       ? obj.involvedNpcIds.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 10)
       : [],
@@ -481,6 +650,319 @@ function normalizeStoryArcList(raw: unknown): StoryArc[] {
     if (out.length >= 30) break;
   }
   return out;
+}
+
+function computeArcProgressPercent(arc: StoryArc, round: number, stageIndex = arc.currentStageIndex): number | undefined {
+  if (!arc.stages.length) return arc.progressPercent;
+  const byStage = Math.round(((Math.max(0, stageIndex) + 1) / arc.stages.length) * 100);
+  if (arc.targetEndRound && arc.targetEndRound > arc.startRound) {
+    const byRound = Math.round(((round - arc.startRound) / (arc.targetEndRound - arc.startRound)) * 100);
+    return clamp(Math.max(arc.progressPercent ?? 0, byStage, byRound), 0, 99);
+  }
+  return clamp(Math.max(arc.progressPercent ?? 0, byStage), 0, 99);
+}
+
+function activeArcLifecycle(arc: StoryArc, fallback: NarrativeEventLifecycle = 'progressing'): NarrativeEventLifecycle {
+  if (arc.lifecycle === 'turning' || arc.lifecycle === 'soft_failed' || arc.lifecycle === 'delayed' || arc.lifecycle === 'reframed') {
+    return arc.lifecycle;
+  }
+  return fallback;
+}
+
+function isTerminalArcLifecycle(lifecycle: NarrativeEventLifecycle | undefined): boolean {
+  return lifecycle === 'completed' || lifecycle === 'soft_failed' || lifecycle === 'missed' || lifecycle === 'archived';
+}
+
+function matchArcUpdate(arc: StoryArc, update: NarrativeEventUpdate): boolean {
+  const id = update.arcId?.trim();
+  const title = update.title?.trim();
+  return !!(
+    (id && arc.id === id)
+    || (title && arc.title === title)
+  );
+}
+
+function applyArcUpdate(arc: StoryArc, update: NarrativeEventUpdate, round: number): StoryArc {
+  const lifecycle = NARRATIVE_EVENT_LIFECYCLES.includes(update.lifecycle as NarrativeEventLifecycle)
+    ? update.lifecycle
+    : arc.lifecycle;
+  const progressPercent = Number.isFinite(update.progressPercent)
+    ? clamp(Math.round(Number(update.progressPercent)), 0, 100)
+    : arc.progressPercent;
+  const currentStageIndex = Number.isFinite(update.currentStageIndex)
+    ? clamp(Math.floor(Number(update.currentStageIndex)), 0, Math.max(0, arc.stages.length - 1))
+    : arc.currentStageIndex;
+  const progressNote = update.progressNote?.trim()
+    || (update.reason?.trim() ? `导演更新：${update.reason.trim()}` : arc.progressNote);
+  return {
+    ...arc,
+    lifecycle,
+    progressPercent,
+    currentStageIndex,
+    progressNote: progressNote?.slice(0, 500) || undefined,
+    status: isTerminalArcLifecycle(lifecycle) ? 'completed' : arc.status === 'pending' ? 'pending' : 'active',
+    updatedAtRound: round,
+  };
+}
+
+const OUTLINE_MAPPING_ALIGNMENTS: OutlineMappingAlignment[] = [
+  'aligned',
+  'drifting',
+  'bridging',
+  'ready_to_advance',
+  'uncertain',
+];
+
+function normalizeBriefCharacter(raw: unknown): NarrativeBriefCharacter | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<NarrativeBriefCharacter>;
+  const name = String(obj.name ?? '').trim().slice(0, 30);
+  if (!name) return undefined;
+  return {
+    name,
+    role: obj.role?.trim().slice(0, 40) || undefined,
+    surfaceGoal: obj.surfaceGoal?.trim().slice(0, 180) || undefined,
+    hiddenIntent: obj.hiddenIntent?.trim().slice(0, 180) || undefined,
+    visibleBehavior: obj.visibleBehavior?.trim().slice(0, 220) || undefined,
+    doNotReveal: normalizeStringList(obj.doNotReveal, 6, 90),
+  };
+}
+
+function normalizeBriefEvent(raw: unknown): NarrativeBriefEvent | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<NarrativeBriefEvent>;
+  const lifecycle = NARRATIVE_EVENT_LIFECYCLES.includes(obj.lifecycle as NarrativeEventLifecycle)
+    ? obj.lifecycle as NarrativeEventLifecycle
+    : undefined;
+  const event: NarrativeBriefEvent = {
+    title: obj.title?.trim().slice(0, 80) || undefined,
+    lifecycle,
+    objective: obj.objective?.trim().slice(0, 200) || undefined,
+    hiddenIntent: obj.hiddenIntent?.trim().slice(0, 200) || undefined,
+    completionCriteria: normalizeStringList(obj.completionCriteria, 6, 100),
+    failureCriteria: normalizeStringList(obj.failureCriteria, 6, 100),
+    progress: obj.progress?.trim().slice(0, 160) || undefined,
+    stopAt: obj.stopAt?.trim().slice(0, 160) || undefined,
+  };
+  return Object.values(event).some((x) => Array.isArray(x) ? x.length : !!x) ? event : undefined;
+}
+
+function normalizeBriefScene(raw: unknown): NarrativeBriefScene | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<NarrativeBriefScene>;
+  const scene: NarrativeBriefScene = {
+    location: obj.location?.trim().slice(0, 80) || undefined,
+    time: obj.time?.trim().slice(0, 60) || undefined,
+    weather: obj.weather?.trim().slice(0, 60) || undefined,
+    atmosphere: obj.atmosphere?.trim().slice(0, 160) || undefined,
+    resources: normalizeStringList(obj.resources, 8, 100),
+    constraints: normalizeStringList(obj.constraints, 8, 100),
+  };
+  return Object.values(scene).some((x) => Array.isArray(x) ? x.length : !!x) ? scene : undefined;
+}
+
+function normalizeOutlineMapping(raw: unknown): OutlineMappingState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<OutlineMappingState>;
+  const alignment = OUTLINE_MAPPING_ALIGNMENTS.includes(obj.alignment as OutlineMappingAlignment)
+    ? obj.alignment as OutlineMappingAlignment
+    : 'uncertain';
+  const currentActIndex = Number.isFinite(obj.currentActIndex)
+    ? clamp(Math.floor(Number(obj.currentActIndex)), 0, 99)
+    : undefined;
+  const stageProgress = Number.isFinite(obj.stageProgress)
+    ? clamp(Math.round(Number(obj.stageProgress)), 0, 100)
+    : undefined;
+  return {
+    alignment,
+    currentAct: obj.currentAct?.trim().slice(0, 100) || undefined,
+    currentActIndex,
+    currentStageGoal: obj.currentStageGoal?.trim().slice(0, 220) || undefined,
+    stageProgress,
+    missingBridgeEvents: normalizeStringList(obj.missingBridgeEvents, 8, 120),
+    candidateEvents: normalizeStringList(obj.candidateEvents, 8, 120),
+    driftRisks: normalizeStringList(obj.driftRisks, 8, 120),
+    nextMilestone: obj.nextMilestone?.trim().slice(0, 180) || undefined,
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+  };
+}
+
+function normalizeEventUpdates(raw: unknown): NarrativeEventUpdate[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NarrativeEventUpdate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Partial<NarrativeEventUpdate>;
+    const arcId = obj.arcId?.trim().slice(0, 80);
+    const title = obj.title?.trim().slice(0, 80);
+    if (!arcId && !title) continue;
+    out.push({
+      arcId: arcId || undefined,
+      title: title || undefined,
+      lifecycle: NARRATIVE_EVENT_LIFECYCLES.includes(obj.lifecycle as NarrativeEventLifecycle)
+        ? obj.lifecycle as NarrativeEventLifecycle
+        : undefined,
+      progressPercent: Number.isFinite(obj.progressPercent)
+        ? clamp(Math.round(Number(obj.progressPercent)), 0, 100)
+        : undefined,
+      progressNote: obj.progressNote?.trim().slice(0, 240) || undefined,
+      currentStageIndex: Number.isFinite(obj.currentStageIndex)
+        ? Math.max(0, Math.floor(Number(obj.currentStageIndex)))
+        : undefined,
+      reason: obj.reason?.trim().slice(0, 180) || undefined,
+    });
+    if (out.length >= 10) break;
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeAuthorCharacterPlan(raw: unknown): AuthorCharacterPlanState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<AuthorCharacterPlanState>;
+  const characters = Array.isArray(obj.characters)
+    ? obj.characters.map(normalizeBriefCharacter).filter(Boolean).slice(0, 10) as NarrativeBriefCharacter[]
+    : [];
+  const summary = obj.summary?.trim().slice(0, 500) || (characters.length ? '人物规划已更新。' : '');
+  if (!summary && !characters.length) return undefined;
+  const absentCharacters = Array.isArray(obj.absentCharacters)
+    ? obj.absentCharacters.map((item) => {
+      const row = item as { name?: unknown; reason?: unknown };
+      const name = String(row?.name ?? '').trim().slice(0, 30);
+      const reason = String(row?.reason ?? '').trim().slice(0, 160);
+      return name && reason ? { name, reason } : undefined;
+    }).filter(Boolean).slice(0, 8) as AuthorCharacterPlanState['absentCharacters']
+    : undefined;
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    summary: summary || '人物规划已更新。',
+    characters,
+    relationshipSignals: normalizeStringList(obj.relationshipSignals, 8, 120),
+    absentCharacters,
+    risks: normalizeStringList(obj.risks, 8, 120),
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+  };
+}
+
+function normalizeAuthorScenePlan(raw: unknown): AuthorScenePlanState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<AuthorScenePlanState>;
+  const scene = normalizeBriefScene(obj.scene);
+  const resources = normalizeStringList(obj.sceneResources, 10, 120) ?? [];
+  if (!scene && !resources.length) return undefined;
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    scene: scene ?? {},
+    sceneResources: resources,
+    sceneLogic: obj.sceneLogic?.trim().slice(0, 300) || undefined,
+    constraints: normalizeStringList(obj.constraints, 8, 120),
+    opportunities: normalizeStringList(obj.opportunities, 8, 120),
+    risks: normalizeStringList(obj.risks, 8, 120),
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+  };
+}
+
+function normalizeAuthorEventPlan(raw: unknown): AuthorEventPlanState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<AuthorEventPlanState>;
+  const currentEvent = normalizeBriefEvent(obj.currentEvent);
+  const eventUpdates = normalizeEventUpdates(obj.eventUpdates);
+  const candidateEvents = normalizeStringList(obj.candidateEvents, 8, 120);
+  const summary = obj.summary?.trim().slice(0, 500)
+    || currentEvent?.objective
+    || (eventUpdates?.length ? '事件规划已更新。' : '');
+  if (!summary && !currentEvent && !eventUpdates?.length && !candidateEvents?.length) return undefined;
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    summary: summary || '事件规划已更新。',
+    currentEvent,
+    eventUpdates,
+    candidateEvents,
+    writingBoundary: obj.writingBoundary?.trim().slice(0, 220) || undefined,
+    successCriteria: normalizeStringList(obj.successCriteria, 8, 120),
+    avoid: normalizeStringList(obj.avoid, 8, 120),
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+  };
+}
+
+function normalizeEventBeatVerdict(raw: unknown): EventBeatVerdict | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<EventBeatVerdict>;
+  const arcId = String(obj.arcId ?? '').trim().slice(0, 80);
+  if (!arcId) return undefined;
+  const lifecycle = NARRATIVE_EVENT_LIFECYCLES.includes(obj.lifecycle as NarrativeEventLifecycle)
+    ? obj.lifecycle as NarrativeEventLifecycle
+    : undefined;
+  if (!lifecycle) return undefined;
+  const progressPercent = Number.isFinite(obj.progressPercent)
+    ? clamp(Math.round(Number(obj.progressPercent)), 0, 100)
+    : undefined;
+  const appliedRelationshipDeltas = Array.isArray(obj.appliedRelationshipDeltas)
+    ? obj.appliedRelationshipDeltas.slice(0, 8).map((item) => {
+      const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const npcId = String(row.npcId ?? '').trim().slice(0, 40);
+      const npcName = String(row.npcName ?? '').trim().slice(0, 30);
+      if (!npcId && !npcName) return undefined;
+      const affinityDelta = Number(row.affinityDelta);
+      return {
+        npcId: npcId || undefined,
+        npcName: npcName || undefined,
+        affinityDelta: Number.isFinite(affinityDelta) ? clamp(Math.round(affinityDelta), -30, 30) : undefined,
+        note: String(row.note ?? '').trim().slice(0, 120) || undefined,
+      };
+    }).filter(Boolean) as EventBeatVerdict['appliedRelationshipDeltas']
+    : undefined;
+  const appliedItemDeltas = Array.isArray(obj.appliedItemDeltas)
+    ? obj.appliedItemDeltas.slice(0, 8).map((item) => {
+      const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const name = String(row.name ?? '').trim().slice(0, 60);
+      const actionRaw = String(row.action ?? '').trim();
+      const action = actionRaw === 'grant' || actionRaw === 'note' ? actionRaw : undefined;
+      if (!name || !action) return undefined;
+      return {
+        name,
+        action,
+        description: String(row.description ?? '').trim().slice(0, 220) || undefined,
+      };
+    }).filter(Boolean) as EventBeatVerdict['appliedItemDeltas']
+    : undefined;
+  return {
+    arcId,
+    title: obj.title?.trim().slice(0, 80) || undefined,
+    lifecycle,
+    progressPercent,
+    progressNote: obj.progressNote?.trim().slice(0, 180) || undefined,
+    triggeredCompletion: obj.triggeredCompletion === true,
+    triggeredFailure: obj.triggeredFailure === true,
+    outcomeNote: obj.outcomeNote?.trim().slice(0, 220) || undefined,
+    appliedRelationshipDeltas,
+    appliedItemDeltas,
+  };
+}
+
+function normalizeEventBeatState(raw: unknown): EventBeatState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<EventBeatState>;
+  const verdicts = Array.isArray(obj.verdicts)
+    ? obj.verdicts.map(normalizeEventBeatVerdict).filter(Boolean).slice(0, 20) as EventBeatVerdict[]
+    : [];
+  if (!verdicts.length && !obj.planConcern?.trim() && !obj.rawOutput?.trim()) return undefined;
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    verdicts,
+    planConcern: obj.planConcern?.trim().slice(0, 120) || undefined,
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+  };
 }
 
 function normalizeAuthorLogicReview(raw: unknown): AuthorLogicReviewState | undefined {
@@ -728,12 +1210,172 @@ function normalizeStageJudge(raw: unknown): StageJudgeState | undefined {
   };
 }
 
+const ORCHESTRATOR_TURN_TYPES: OrchestratorTurnType[] = [
+  'continue_current_event',
+  'event_turning_point',
+  'event_completion_check',
+  'new_event_candidate',
+  'stage_transition_candidate',
+  'free_exploration',
+];
+
+const ORCHESTRATOR_PLANNING_MODES: OrchestratorPlanningMode[] = ['light', 'focused', 'full'];
+const ORCHESTRATOR_DIRECTOR_MODES: OrchestratorDirectorMode[] = ['skip', 'light', 'full'];
+
+const ORCHESTRATOR_FOCUS_AREAS: OrchestratorFocusArea[] = [
+  'outline',
+  'stage',
+  'character',
+  'scene',
+  'event',
+  'foreshadowing',
+  'setting',
+  'memory',
+  'logic',
+  'summary',
+];
+
+const ORCHESTRATOR_CALL_KEYS: OrchestratorCallKey[] = [
+  'outlineMapper',
+  'stageJudge',
+  'settingGuard',
+  'eventBeat',
+  'director',
+  'logicCheck',
+  'memory',
+  'summary',
+];
+
+function defaultOrchestratorCalls(reason = '未运行。'): OrchestratorState['calls'] {
+  return Object.fromEntries(
+    ORCHESTRATOR_CALL_KEYS.map((key) => [key, { run: false, reason }]),
+  ) as OrchestratorState['calls'];
+}
+
+function normalizeOrchestratorFocusAreas(raw: unknown): OrchestratorFocusArea[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: OrchestratorFocusArea[] = [];
+  for (const item of raw) {
+    const area = String(item ?? '').trim() as OrchestratorFocusArea;
+    if (!ORCHESTRATOR_FOCUS_AREAS.includes(area) || out.includes(area)) continue;
+    out.push(area);
+    if (out.length >= 10) break;
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeOrchestratorPlanSignals(raw: unknown): OrchestratorPlanSignal[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: OrchestratorPlanSignal[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Partial<OrchestratorPlanSignal>;
+    const area = String(row.area ?? '').trim() as OrchestratorFocusArea;
+    if (!ORCHESTRATOR_FOCUS_AREAS.includes(area)) continue;
+    const priority = row.priority === 'high' || row.priority === 'medium' || row.priority === 'low'
+      ? row.priority
+      : 'medium';
+    const reason = String(row.reason ?? '').trim().slice(0, 180);
+    if (!reason) continue;
+    out.push({
+      area,
+      priority,
+      reason,
+      suggestedModel: String(row.suggestedModel ?? '').trim().slice(0, 40) || undefined,
+    });
+    if (out.length >= 12) break;
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeOrchestratorCallOrder(raw: unknown, calls: OrchestratorState['calls']): OrchestratorCallKey[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const keys = Object.keys(calls) as OrchestratorCallKey[];
+  const out: OrchestratorCallKey[] = [];
+  for (const item of raw) {
+    const key = String(item ?? '').trim() as OrchestratorCallKey;
+    if (!keys.includes(key) || out.includes(key) || calls[key]?.run !== true) continue;
+    out.push(key);
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeOrchestratorPhase1(raw: unknown): OrchestratorPhase1Result | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<OrchestratorPhase1Result>;
+  const notes = obj.notes?.trim().slice(0, 1200) || '';
+  const signalRaw = obj.signalSnapshot && typeof obj.signalSnapshot === 'object'
+    ? obj.signalSnapshot
+    : undefined;
+  const signalSnapshot = signalRaw
+    ? {
+      outline: signalRaw.outline?.trim().slice(0, 220) || undefined,
+      stage: signalRaw.stage?.trim().slice(0, 220) || undefined,
+      activeEvents: signalRaw.activeEvents?.trim().slice(0, 220) || undefined,
+    }
+    : undefined;
+  if (!notes && !obj.rawOutput?.trim() && !obj.thinking?.trim()) return undefined;
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    notes: notes || '司辰 Phase 1 信息整理未提供摘要。',
+    outstandingQuestions: normalizeStringList(obj.outstandingQuestions, 8, 120),
+    signalSnapshot,
+    earlyExit: obj.earlyExit === true,
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+  };
+}
+
+function normalizeOrchestratorState(raw: unknown): OrchestratorState | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<OrchestratorState>;
+  const keys: Array<keyof OrchestratorState['calls']> = ORCHESTRATOR_CALL_KEYS;
+  const calls = Object.fromEntries(keys.map((key) => {
+    const row = obj.calls?.[key];
+    return [key, {
+      run: row?.run === true,
+      reason: String(row?.reason ?? '').trim().slice(0, 160) || '未提供理由。',
+      hint: String(row?.hint ?? '').trim().slice(0, 80) || undefined,
+    }];
+  })) as OrchestratorState['calls'];
+  return {
+    updatedAtRound: Math.max(0, Math.floor(Number(obj.updatedAtRound) || 0)),
+    overall: obj.overall?.trim().slice(0, 220) || undefined,
+    turnType: ORCHESTRATOR_TURN_TYPES.includes(obj.turnType as OrchestratorTurnType)
+      ? obj.turnType as OrchestratorTurnType
+      : undefined,
+    planningMode: ORCHESTRATOR_PLANNING_MODES.includes(obj.planningMode as OrchestratorPlanningMode)
+      ? obj.planningMode as OrchestratorPlanningMode
+      : undefined,
+    directorMode: ORCHESTRATOR_DIRECTOR_MODES.includes(obj.directorMode as OrchestratorDirectorMode)
+      ? obj.directorMode as OrchestratorDirectorMode
+      : undefined,
+    focusAreas: normalizeOrchestratorFocusAreas(obj.focusAreas),
+    planSignals: normalizeOrchestratorPlanSignals(obj.planSignals),
+    callOrder: normalizeOrchestratorCallOrder(obj.callOrder, calls),
+    calls,
+    phase1: normalizeOrchestratorPhase1(obj.phase1),
+    thinking: obj.thinking?.trim().slice(0, 12000) || undefined,
+    rawOutput: obj.rawOutput?.trim().slice(0, 16000) || undefined,
+    usage: normalizeLlmUsage(obj.usage),
+    lastError: obj.lastError?.trim().slice(0, 240) || undefined,
+  };
+}
+
 function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
   const obj = (raw ?? {}) as Partial<AuthorNarrativeState>;
   return {
+    orchestrator: normalizeOrchestratorState(obj.orchestrator),
+    outlineMapping: normalizeOutlineMapping(obj.outlineMapping),
+    characterPlan: normalizeAuthorCharacterPlan(obj.characterPlan),
+    scenePlan: normalizeAuthorScenePlan(obj.scenePlan),
+    eventPlan: normalizeAuthorEventPlan(obj.eventPlan),
     plan: obj.plan,
     logicReview: normalizeAuthorLogicReview(obj.logicReview),
     settingGuard: normalizeSettingGuard(obj.settingGuard),
+    eventBeat: normalizeEventBeatState(obj.eventBeat),
+    directorReply: normalizeDirectorReply(obj.directorReply),
     masterArc: normalizeMasterArc(obj.masterArc),
     stageJudge: normalizeStageJudge(obj.stageJudge),
     activeArcs: normalizeStoryArcList(obj.activeArcs),
@@ -742,6 +1384,30 @@ function normalizeAuthorNarrativeState(raw: unknown): AuthorNarrativeState {
     lastLogicCheckRound: obj.lastLogicCheckRound,
     lastSettingGuardRound: obj.lastSettingGuardRound,
     lastStageJudgeRound: obj.lastStageJudgeRound,
+    lastOrchestratorRound: obj.lastOrchestratorRound,
+    lastOutlineMapperRound: obj.lastOutlineMapperRound,
+    lastCharacterPlannerRound: obj.lastCharacterPlannerRound,
+    lastScenePlannerRound: obj.lastScenePlannerRound,
+    lastEventPlannerRound: obj.lastEventPlannerRound,
+    lastEventBeatRound: obj.lastEventBeatRound,
+  };
+}
+
+function normalizeDirectorReply(raw: unknown): AuthorNarrativeState['directorReply'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as AuthorNarrativeState['directorReply'];
+  const callId = String(obj?.callId ?? '').trim().slice(0, 80);
+  const question = String(obj?.question ?? '').trim().slice(0, 1000);
+  const answer = String(obj?.answer ?? '').trim().slice(0, 12000);
+  if (!callId || !question || !answer) return undefined;
+  const missingInfo = String(obj?.missingInfo ?? '').trim().slice(0, 1000);
+  return {
+    callId,
+    question,
+    missingInfo: missingInfo || undefined,
+    answer,
+    round: Math.max(0, Math.floor(Number(obj?.round) || 0)),
+    createdAt: Number(obj?.createdAt) || nowMs(),
   };
 }
 
@@ -772,6 +1438,12 @@ function invalidateAuthorNarrativeAfterHistoryChange(state: GameState, affectedR
   return {
     authorNarrative: {
       ...narrative,
+      outlineMapping: shouldDrop(narrative.outlineMapping?.updatedAtRound) ? undefined : narrative.outlineMapping,
+      characterPlan: shouldDrop(narrative.characterPlan?.updatedAtRound) ? undefined : narrative.characterPlan,
+      scenePlan: shouldDrop(narrative.scenePlan?.updatedAtRound) ? undefined : narrative.scenePlan,
+      eventPlan: shouldDrop(narrative.eventPlan?.updatedAtRound) ? undefined : narrative.eventPlan,
+      eventBeat: shouldDrop(narrative.eventBeat?.updatedAtRound) ? undefined : narrative.eventBeat,
+      directorReply: narrative.directorReply && narrative.directorReply.round >= threshold ? undefined : narrative.directorReply,
       plan: shouldDrop(narrative.plan?.updatedAtRound) ? undefined : narrative.plan,
       logicReview: shouldDrop(narrative.logicReview?.updatedAtRound) ? undefined : narrative.logicReview,
       settingGuard,
@@ -780,6 +1452,12 @@ function invalidateAuthorNarrativeAfterHistoryChange(state: GameState, affectedR
       lastLogicCheckRound: keepLastRound(narrative.lastLogicCheckRound),
       lastSettingGuardRound: keepLastRound(narrative.lastSettingGuardRound),
       lastStageJudgeRound: keepLastRound(narrative.lastStageJudgeRound),
+      lastOrchestratorRound: keepLastRound(narrative.lastOrchestratorRound),
+      lastOutlineMapperRound: keepLastRound(narrative.lastOutlineMapperRound),
+      lastCharacterPlannerRound: keepLastRound(narrative.lastCharacterPlannerRound),
+      lastScenePlannerRound: keepLastRound(narrative.lastScenePlannerRound),
+      lastEventPlannerRound: keepLastRound(narrative.lastEventPlannerRound),
+      lastEventBeatRound: keepLastRound(narrative.lastEventBeatRound),
     },
   };
 }
@@ -804,6 +1482,27 @@ export const useGameStore = create<GameStoreState>()(
     (set, get) => ({
       saves: {},
       activeSaveId: undefined,
+      ledgerHydrated: false,
+
+      hydrateFromLedger: async () => {
+        try {
+          const saves = await loadAllSaves();
+          set((s) => {
+            const byId = Object.fromEntries(saves.map((save) => [save.id, save]));
+            const activeSaveId = s.activeSaveId && byId[s.activeSaveId]
+              ? s.activeSaveId
+              : saves[0]?.id;
+            return {
+              saves: byId,
+              activeSaveId,
+              ledgerHydrated: true,
+            };
+          });
+        } catch (err) {
+          reportLedgerError('hydrateFromLedger', err);
+          set({ ledgerHydrated: true });
+        }
+      },
 
       createSave: ({ name, config, content, initialScene, initialItems }) => {
         const id = genId('save');
@@ -846,6 +1545,7 @@ export const useGameStore = create<GameStoreState>()(
           saves: { ...s.saves, [id]: save },
           activeSaveId: id,
         }));
+        persistRuntimeSoon(save);
         return id;
       },
 
@@ -866,6 +1566,7 @@ export const useGameStore = create<GameStoreState>()(
           saves: { ...s.saves, [id]: save },
           activeSaveId: id,
         }));
+        persistRuntimeSoon(save);
         return id;
       },
 
@@ -874,6 +1575,7 @@ export const useGameStore = create<GameStoreState>()(
       deleteSave: (id) =>
         set((s) => {
           const { [id]: _removed, ...rest } = s.saves;
+          void deleteSaveData(id).catch((err) => reportLedgerError('deleteSaveData', err));
           return {
             saves: rest,
             activeSaveId: s.activeSaveId === id ? undefined : s.activeSaveId,
@@ -884,15 +1586,19 @@ export const useGameStore = create<GameStoreState>()(
         set((s) => {
           const save = s.saves[id];
           if (!save) return s;
-          return { saves: { ...s.saves, [id]: touch(save, { name }) } };
+          const next = touch(save, { name });
+          persistMetaSoon(next);
+          return { saves: { ...s.saves, [id]: next } };
         }),
 
       updateContentOf: (id, patch) =>
         set((s) => {
           const save = s.saves[id];
           if (!save) return s;
+          const next = touch(save, { content: { ...save.content, ...patch } });
+          persistMetaSoon(next);
           return {
-            saves: { ...s.saves, [id]: touch(save, { content: { ...save.content, ...patch } }) },
+            saves: { ...s.saves, [id]: next },
           };
         }),
 
@@ -900,8 +1606,10 @@ export const useGameStore = create<GameStoreState>()(
         set((s) => {
           const save = s.saves[id];
           if (!save) return s;
+          const next = touch(save, { state: { ...save.state, ...patch } });
+          persistMetaSoon(next);
           return {
-            saves: { ...s.saves, [id]: touch(save, { state: { ...save.state, ...patch } }) },
+            saves: { ...s.saves, [id]: next },
           };
         }),
 
@@ -909,10 +1617,18 @@ export const useGameStore = create<GameStoreState>()(
         set((s) => {
           const save = s.saves[id];
           if (!save) return s;
+          const next = touch(save, { state: updater(save.state) });
+          persistMetaSoon(next);
           return {
-            saves: { ...s.saves, [id]: touch(save, { state: updater(save.state) }) },
+            saves: { ...s.saves, [id]: next },
           };
         }),
+
+      captureSnapshot: (id, label, round) => {
+        const save = get().saves[id];
+        if (!save) return;
+        void persistSnapshot(save, label, round).catch((err) => reportLedgerError('captureSnapshot', err));
+      },
 
       setLongTermMemory: (id, memory, round) =>
         get().updateStateOf(id, {
@@ -925,7 +1641,38 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           const state = { ...save.state, history: [...save.state.history, msg] };
-          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+          const next = touch(save, { state });
+          persistRuntimeSoon(next);
+          return { saves: { ...s.saves, [id]: next } };
+        }),
+
+      updateAssistantRuntimeStats: (id, round, patch) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          let target = -1;
+          for (let i = save.state.history.length - 1; i >= 0; i -= 1) {
+            const msg = save.state.history[i];
+            if (msg.role === 'assistant' && msg.round === round) {
+              target = i;
+              break;
+            }
+          }
+          if (target < 0) return s;
+          const history = save.state.history.map((msg, index) => {
+            if (index !== target) return msg;
+            return {
+              ...msg,
+              toolEvents: patch.toolEvents ?? msg.toolEvents,
+              runtimeStats: {
+                ...(msg.runtimeStats ?? {}),
+                ...(patch.runtimeStats ?? {}),
+              },
+            };
+          });
+          const next = touch(save, { state: { ...save.state, history } });
+          persistRuntimeSoon(next);
+          return { saves: { ...s.saves, [id]: next } };
         }),
 
       addAgentThought: (id, thought) =>
@@ -933,9 +1680,10 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           const content = thought.content?.trim().slice(0, 12000);
           const output = thought.output?.trim().slice(0, 16000);
+          const prompt = normalizePromptTrace(thought.prompt);
           const usage = normalizeLlmUsage(thought.usage);
           const cacheHit = hasCacheHit(usage, thought.cacheHit);
-          if (!save || (!content && !output && !usage && !cacheHit)) return s;
+          if (!save || (!content && !output && !prompt && !usage && !cacheHit)) return s;
           const next: AgentThought = {
             id: thought.id || genId('thought'),
             kind: thought.kind.trim().slice(0, 40) || 'model',
@@ -943,6 +1691,7 @@ export const useGameStore = create<GameStoreState>()(
             round: Math.max(0, Math.floor(Number(thought.round) || save.state.currentRound)),
             content: content || undefined,
             output: output || undefined,
+            prompt,
             usage,
             cacheHit,
             createdAt: thought.createdAt || nowMs(),
@@ -951,7 +1700,10 @@ export const useGameStore = create<GameStoreState>()(
             ...save.state,
             agentThoughts: [...(save.state.agentThoughts ?? []), next].slice(-80),
           };
-          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+          const nextSave = touch(save, { state });
+          persistMetaSoon(nextSave);
+          void addAgentCall(id, next).catch((err) => reportLedgerError('addAgentCall', err));
+          return { saves: { ...s.saves, [id]: nextSave } };
         }),
 
       updateMessage: (id, historyIndex, content) =>
@@ -994,7 +1746,9 @@ export const useGameStore = create<GameStoreState>()(
             ...(isLatestAssistant && save.state.phase === 'ended' ? { ending: nextContent, review: undefined } : {}),
             ...(msg.role === 'user' && save.state.lastPlayerInput === msg.content ? { lastPlayerInput: nextContent } : {}),
           };
-          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+          const next = touch(save, { state });
+          persistRuntimeSoon(next);
+          return { saves: { ...s.saves, [id]: next } };
         }),
 
       deleteMessage: (id, historyIndex) =>
@@ -1037,7 +1791,9 @@ export const useGameStore = create<GameStoreState>()(
               ? { lastPlayerInput: lastUser?.content }
               : {}),
           };
-          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+          const next = touch(save, { state });
+          persistRuntimeSoon(next);
+          return { saves: { ...s.saves, [id]: next } };
         }),
 
       updateAssistantMessage: (id, historyIndex, content) =>
@@ -1079,8 +1835,148 @@ export const useGameStore = create<GameStoreState>()(
             ...(summaryInvalid ? { summary: '', summarizedUntilIndex: 0 } : {}),
             ...(memoryInvalid ? { longTermMemory: '', lastMemoryRound: 0 } : {}),
           };
-          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+          const next = touch(save, { state });
+          persistRuntimeSoon(next);
+          void syncRoundsFromSave(next).catch((err) => reportLedgerError('syncRoundsFromSave', err));
+          return { saves: { ...s.saves, [id]: next } };
         }),
+
+      rollbackEditMessage: (id, historyIndex, content) => {
+        const nextContent = content.trim();
+        if (!nextContent) return;
+        void (async () => {
+          const save = get().saves[id];
+          const msg = save?.state.history[historyIndex];
+          if (!save || !msg) return;
+          if (!canRollbackRound(save, msg.round)) return;
+          const preferred: SnapshotLabel[] = msg.role === 'user'
+            ? ['before_player_input']
+            : ['before_story'];
+          const snapshot = await findRollbackSnapshot(id, msg.round, preferred);
+          if (!snapshot) {
+            reportLedgerError('rollbackEditMessage', new Error(`未找到第 ${msg.round} 回合的回滚快照`));
+            return;
+          }
+          const restored = await restoreSnapshotState(save, snapshot);
+          await pruneAfter(id, msg.round, true);
+          const edited: Message = { ...msg, content: nextContent };
+          let state: GameState;
+          if (msg.role === 'user') {
+            state = {
+              ...restored.state,
+              history: [...restored.state.history, edited],
+              agentThoughts: (restored.state.agentThoughts ?? []).filter((t) => t.round < msg.round),
+              currentRound: msg.round,
+              lastPlayerInput: nextContent,
+              phase: 'story',
+              lastChoices: undefined,
+              ending: undefined,
+              review: undefined,
+              error: undefined,
+              regenerationHint: undefined,
+            };
+          } else if (msg.role === 'assistant') {
+            const nextPhase = save.state.phase === 'ended' ? 'ended' : phaseAfterAssistant(save.config, msg.round);
+            state = {
+              ...restored.state,
+              history: [...restored.state.history, edited],
+              agentThoughts: (restored.state.agentThoughts ?? []).filter((t) => t.round < msg.round),
+              currentRound: msg.round + 1,
+              lastPlayerInput: undefined,
+              phase: nextPhase,
+              lastChoices: undefined,
+              ending: nextPhase === 'ended' ? nextContent : undefined,
+              review: undefined,
+              error: undefined,
+              regenerationHint: undefined,
+              anchors: (restored.state.anchors ?? []).map((a) =>
+                a.round === msg.round
+                  ? { ...a, excerpt: nextContent.slice(0, 160), content: nextContent }
+                  : a,
+              ),
+            };
+          } else {
+            state = { ...restored.state, history: [...restored.state.history, edited] };
+          }
+          const next = touch(restored, { state });
+          set((s) => ({ saves: { ...s.saves, [id]: next } }));
+          persistRuntimeSoon(next);
+        })().catch((err) => {
+          reportLedgerError('rollbackEditMessage', err);
+        });
+      },
+
+      rollbackDeleteMessage: (id, historyIndex) => {
+        void (async () => {
+          const save = get().saves[id];
+          const msg = save?.state.history[historyIndex];
+          if (!save || !msg) return;
+          if (!canRollbackRound(save, msg.round)) return;
+          const preferred: SnapshotLabel[] = msg.role === 'user'
+            ? ['before_player_input']
+            : ['before_story'];
+          const snapshot = await findRollbackSnapshot(id, msg.round, preferred);
+          if (!snapshot) {
+            reportLedgerError('rollbackDeleteMessage', new Error(`未找到第 ${msg.round} 回合的回滚快照`));
+            return;
+          }
+          const restored = await restoreSnapshotState(save, snapshot);
+          await pruneAfter(id, msg.round, true);
+          const state: GameState = {
+            ...restored.state,
+            agentThoughts: (restored.state.agentThoughts ?? []).filter((t) => t.round < msg.round),
+            phase: msg.role === 'assistant' ? 'manual' : restored.state.phase,
+            lastChoices: undefined,
+            ending: undefined,
+            review: undefined,
+            error: undefined,
+            regenerationHint: undefined,
+            lastPlayerInput: msg.role === 'user' ? latestUserContent(restored.state.history) : restored.state.lastPlayerInput,
+            anchors: msg.role === 'assistant'
+              ? (restored.state.anchors ?? []).filter((a) => a.round !== msg.round)
+              : restored.state.anchors,
+          };
+          const next = touch(restored, { state });
+          set((s) => ({ saves: { ...s.saves, [id]: next } }));
+          persistRuntimeSoon(next);
+        })().catch((err) => {
+          reportLedgerError('rollbackDeleteMessage', err);
+        });
+      },
+
+      rollbackRegenerateAssistant: (id, historyIndex, hint) => {
+        void (async () => {
+          const save = get().saves[id];
+          const msg = save?.state.history[historyIndex];
+          if (!save || !msg || msg.role !== 'assistant') return;
+          if (!canRollbackRound(save, msg.round)) return;
+          const snapshot = await findRollbackSnapshot(id, msg.round, ['before_story']);
+          if (!snapshot) {
+            reportLedgerError('rollbackRegenerateAssistant', new Error(`未找到第 ${msg.round} 回合的回滚快照`));
+            return;
+          }
+          const restored = await restoreSnapshotState(save, snapshot);
+          await pruneAfter(id, msg.round, true);
+          const regenerationHint = hint?.trim().slice(0, 1200) || undefined;
+          const state: GameState = {
+            ...restored.state,
+            agentThoughts: (restored.state.agentThoughts ?? []).filter((t) => t.round < msg.round),
+            currentRound: msg.round,
+            lastPlayerInput: latestUserContent(restored.state.history),
+            regenerationHint,
+            phase: 'story',
+            lastChoices: undefined,
+            ending: undefined,
+            review: undefined,
+            error: undefined,
+          };
+          const next = touch(restored, { state });
+          set((s) => ({ saves: { ...s.saves, [id]: next } }));
+          persistRuntimeSoon(next);
+        })().catch((err) => {
+          reportLedgerError('rollbackRegenerateAssistant', err);
+        });
+      },
 
       setPhase: (id, phase) => get().updateStateOf(id, { phase }),
       setChoices: (id, choices) => get().updateStateOf(id, { lastChoices: choices }),
@@ -1145,7 +2041,7 @@ export const useGameStore = create<GameStoreState>()(
             .filter((it) => !it.pendingGrantKey)
             .map((it) => (it.pendingDestroy ? { ...it, pendingDestroy: undefined, destroyReason: undefined } : it));
 
-          // 2. 应用模型对既有道具的补丁（update 直接生效；delete 与 destroys 一样先做 pending）
+          // 2. 应用模型对既有能力的补丁（update 直接生效；delete 与 destroys 一样先做 pending）
           items = applyItemPatches(items, itemPatches ?? [], appliedDestroys);
 
           // 3. 加入新的 grants（去重 by name）
@@ -1168,13 +2064,13 @@ export const useGameStore = create<GameStoreState>()(
             markItemPendingDestroy(items, { id: targetId, name: targetName, reason: d.reason }, appliedDestroys);
           }
 
-          // 5. 清理已不存在 / 待销毁道具的选中态
+          // 5. 清理已不存在 / 待失效能力的选中态
           const validForSelect = new Set(
             items.filter((it) => !it.pendingDestroy).map((it) => it.id),
           );
           const selectedItemIds = (save.state.selectedItemIds ?? []).filter((x) => validForSelect.has(x));
 
-          // 6. 容量检查：待销毁道具不计入占用
+          // 6. 容量检查：待失效能力不计入占用
           const capacity = save.config.itemCapacity ?? 8;
           const effectiveCount = items.filter((it) => !it.pendingDestroy).length;
           const needsDiscard = Math.max(0, effectiveCount - capacity);
@@ -1191,7 +2087,7 @@ export const useGameStore = create<GameStoreState>()(
           const save = s.saves[id];
           if (!save) return s;
           const backpack = (save.state.backpack ?? [])
-            .filter((it) => !it.pendingDestroy)              // 实际销毁
+            .filter((it) => !it.pendingDestroy)              // 实际移除失效能力
             .map((it) => (it.pendingGrantKey                  // 固化 grants
               ? { ...it, pendingGrantKey: undefined }
               : it));
@@ -1389,6 +2285,8 @@ export const useGameStore = create<GameStoreState>()(
           const pending = normalizeStoryArc({
             ...arc,
             status: 'pending',
+            lifecycle: arc.lifecycle ?? 'candidate',
+            progressPercent: arc.progressPercent ?? 0,
             startRound: pendingForRound,
             updatedAtRound: pendingForRound,
           });
@@ -1417,6 +2315,10 @@ export const useGameStore = create<GameStoreState>()(
           activated = {
             ...prev.pendingEvent,
             status: 'active',
+            lifecycle: prev.pendingEvent.lifecycle === 'candidate' || !prev.pendingEvent.lifecycle
+              ? 'active'
+              : prev.pendingEvent.lifecycle,
+            progressPercent: prev.pendingEvent.progressPercent ?? 0,
             startRound: prev.pendingEvent.startRound || round,
             updatedAtRound: round,
           };
@@ -1445,6 +2347,11 @@ export const useGameStore = create<GameStoreState>()(
           const activeArc: StoryArc = {
             ...normalized,
             status: normalized.status === 'completed' ? 'completed' : 'active',
+            lifecycle: normalized.status === 'completed'
+              ? 'completed'
+              : normalized.lifecycle === 'candidate' || !normalized.lifecycle
+                ? 'active'
+                : normalized.lifecycle,
           };
           const activeArcs: StoryArc[] = [
             ...prev.activeArcs.filter((item) => item.id !== normalized.id),
@@ -1470,6 +2377,8 @@ export const useGameStore = create<GameStoreState>()(
           const complete = (arc: StoryArc): StoryArc => ({
             ...arc,
             status: 'completed',
+            lifecycle: 'completed',
+            progressPercent: 100,
             updatedAtRound: completedAt,
             progressNote: arc.progressNote || `已在第 ${completedAt} 回合后结束。`,
           });
@@ -1505,15 +2414,31 @@ export const useGameStore = create<GameStoreState>()(
           const round = Math.max(0, Math.floor(Number(currentRound) || save.state.currentRound));
           const advance = (arc: StoryArc): StoryArc => {
             const idx = arc.stages.findIndex((stage) => round >= stage.startRound && round <= stage.endRound);
-            return idx >= 0 && idx !== arc.currentStageIndex
-              ? { ...arc, currentStageIndex: idx, updatedAtRound: round }
-              : arc;
+            if (idx < 0) return arc;
+            const nextProgress = computeArcProgressPercent(arc, round, idx);
+            const nextLifecycle = activeArcLifecycle(arc, idx !== arc.currentStageIndex ? 'progressing' : arc.lifecycle ?? 'active');
+            if (
+              idx !== arc.currentStageIndex
+              || nextProgress !== arc.progressPercent
+              || nextLifecycle !== arc.lifecycle
+            ) {
+              return {
+                ...arc,
+                currentStageIndex: idx,
+                lifecycle: nextLifecycle,
+                progressPercent: nextProgress,
+                updatedAtRound: round,
+              };
+            }
+            return arc;
           };
           const closeExpired = (arc: StoryArc) =>
             arc.targetEndRound !== undefined && round > arc.targetEndRound;
           const completed = (arc: StoryArc): StoryArc => ({
             ...arc,
             status: 'completed',
+            lifecycle: 'completed',
+            progressPercent: 100,
             updatedAtRound: round,
             progressNote: arc.progressNote || `已在第 ${round} 回合后自然结束。`,
           });
@@ -1542,6 +2467,68 @@ export const useGameStore = create<GameStoreState>()(
               ...events,
               activeEvents: activeEvents.filter((arc) => !closeExpired(arc)),
               completedEvents: [...events.completedEvents, ...expiredEvents],
+            },
+          };
+          return { saves: { ...s.saves, [id]: touch(save, { state }) } };
+        }),
+
+      applyAuthorEventUpdates: (id, updates, round) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save || !updates?.length) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const events = normalizeAuthorRandomEventState(save.state.authorRandomEventState);
+          const updatedAt = Math.max(0, Math.floor(Number(round) || save.state.currentRound));
+          let changed = false;
+
+          const applyList = (arcs: StoryArc[]) => arcs.map((arc) => {
+            const update = updates.find((item) => matchArcUpdate(arc, item));
+            if (!update) return arc;
+            changed = true;
+            return applyArcUpdate(arc, update, updatedAt);
+          });
+
+          const narrativeUpdated = applyList(narrative.activeArcs);
+          const eventUpdated = applyList(events.activeEvents);
+          const pendingEvent = events.pendingEvent
+            ? updates.some((item) => matchArcUpdate(events.pendingEvent!, item))
+              ? applyArcUpdate(
+                events.pendingEvent,
+                updates.find((item) => matchArcUpdate(events.pendingEvent!, item))!,
+                updatedAt,
+              )
+              : events.pendingEvent
+            : undefined;
+          if (pendingEvent !== events.pendingEvent) changed = true;
+          if (!changed) return s;
+
+          const split = (arcs: StoryArc[]) => ({
+            active: arcs.filter((arc) => !isTerminalArcLifecycle(arc.lifecycle)),
+            completed: arcs.filter((arc) => isTerminalArcLifecycle(arc.lifecycle)),
+          });
+          const narrativeSplit = split(narrativeUpdated);
+          const eventSplit = split(eventUpdated);
+          const pendingIsTerminal = pendingEvent && isTerminalArcLifecycle(pendingEvent.lifecycle);
+          const state: GameState = {
+            ...save.state,
+            authorNarrative: {
+              ...narrative,
+              activeArcs: narrativeSplit.active,
+              completedArcs: [
+                ...narrative.completedArcs.filter((arc) => !narrativeSplit.completed.some((item) => item.id === arc.id)),
+                ...narrativeSplit.completed,
+              ],
+            },
+            authorRandomEventState: {
+              ...events,
+              pendingEvent: pendingIsTerminal ? undefined : pendingEvent,
+              pendingForRound: pendingIsTerminal ? undefined : events.pendingForRound,
+              activeEvents: eventSplit.active,
+              completedEvents: [
+                ...events.completedEvents.filter((arc) => !eventSplit.completed.some((item) => item.id === arc.id)),
+                ...eventSplit.completed,
+                ...(pendingIsTerminal ? [pendingEvent] : []),
+              ],
             },
           };
           return { saves: { ...s.saves, [id]: touch(save, { state }) } };
@@ -1756,6 +2743,200 @@ export const useGameStore = create<GameStoreState>()(
             },
           };
         }),
+
+      setOrchestratorState: (id, state) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          const orchestrator = normalizeOrchestratorState(state);
+          if (!orchestrator) return s;
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    orchestrator: { ...orchestrator, lastError: undefined },
+                    lastOrchestratorRound: orchestrator.updatedAtRound,
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      setOrchestratorError: (id, error) =>
+        set((s) => {
+          const save = s.saves[id];
+          if (!save) return s;
+          const narrative = normalizeAuthorNarrativeState(save.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(save, {
+                state: {
+                  ...save.state,
+                  authorNarrative: {
+                    ...narrative,
+                    orchestrator: {
+                      ...(narrative.orchestrator ?? {
+                        updatedAtRound: save.state.currentRound,
+                        calls: defaultOrchestratorCalls(),
+                      }),
+                      lastError: error?.trim().slice(0, 240) || undefined,
+                    },
+                  },
+                },
+              }),
+            },
+          };
+        }),
+
+      setAuthorOutlineMapping: (id, state, round) => {
+        const save = get().saves[id];
+        const atRound = Math.max(0, Math.floor(Number(round ?? state?.updatedAtRound ?? save?.state.currentRound ?? 0) || 0));
+        const nextMapping = state
+          ? normalizeOutlineMapping({ ...state, updatedAtRound: atRound })
+          : undefined;
+        set((s) => {
+          const current = s.saves[id];
+          if (!current) return s;
+          const narrative = normalizeAuthorNarrativeState(current.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(current, {
+                state: {
+                  ...current.state,
+                  authorNarrative: {
+                    ...narrative,
+                    outlineMapping: nextMapping,
+                    lastOutlineMapperRound: nextMapping ? atRound : undefined,
+                  },
+                },
+              }),
+            },
+          };
+        });
+      },
+
+      setAuthorCharacterPlan: (id, state, round) => {
+        const save = get().saves[id];
+        const atRound = Math.max(0, Math.floor(Number(round ?? state?.updatedAtRound ?? save?.state.currentRound ?? 0) || 0));
+        const nextPlan = state
+          ? normalizeAuthorCharacterPlan({ ...state, updatedAtRound: atRound })
+          : undefined;
+        set((s) => {
+          const current = s.saves[id];
+          if (!current) return s;
+          const narrative = normalizeAuthorNarrativeState(current.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(current, {
+                state: {
+                  ...current.state,
+                  authorNarrative: {
+                    ...narrative,
+                    characterPlan: nextPlan,
+                    lastCharacterPlannerRound: nextPlan ? atRound : undefined,
+                  },
+                },
+              }),
+            },
+          };
+        });
+      },
+
+      setAuthorScenePlan: (id, state, round) => {
+        const save = get().saves[id];
+        const atRound = Math.max(0, Math.floor(Number(round ?? state?.updatedAtRound ?? save?.state.currentRound ?? 0) || 0));
+        const nextPlan = state
+          ? normalizeAuthorScenePlan({ ...state, updatedAtRound: atRound })
+          : undefined;
+        set((s) => {
+          const current = s.saves[id];
+          if (!current) return s;
+          const narrative = normalizeAuthorNarrativeState(current.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(current, {
+                state: {
+                  ...current.state,
+                  authorNarrative: {
+                    ...narrative,
+                    scenePlan: nextPlan,
+                    lastScenePlannerRound: nextPlan ? atRound : undefined,
+                  },
+                },
+              }),
+            },
+          };
+        });
+      },
+
+      setAuthorEventPlan: (id, state, round) => {
+        const save = get().saves[id];
+        const atRound = Math.max(0, Math.floor(Number(round ?? state?.updatedAtRound ?? save?.state.currentRound ?? 0) || 0));
+        const nextPlan = state
+          ? normalizeAuthorEventPlan({ ...state, updatedAtRound: atRound })
+          : undefined;
+        set((s) => {
+          const current = s.saves[id];
+          if (!current) return s;
+          const narrative = normalizeAuthorNarrativeState(current.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(current, {
+                state: {
+                  ...current.state,
+                  authorNarrative: {
+                    ...narrative,
+                    eventPlan: nextPlan,
+                    lastEventPlannerRound: nextPlan ? atRound : undefined,
+                  },
+                },
+              }),
+            },
+          };
+        });
+        if (nextPlan?.eventUpdates?.length) {
+          get().applyAuthorEventUpdates(id, nextPlan.eventUpdates, atRound);
+        }
+      },
+
+      setAuthorEventBeat: (id, state, round) => {
+        const save = get().saves[id];
+        const atRound = Math.max(0, Math.floor(Number(round ?? state?.updatedAtRound ?? save?.state.currentRound ?? 0) || 0));
+        const nextBeat = state
+          ? normalizeEventBeatState({ ...state, updatedAtRound: atRound })
+          : undefined;
+        set((s) => {
+          const current = s.saves[id];
+          if (!current) return s;
+          const narrative = normalizeAuthorNarrativeState(current.state.authorNarrative);
+          return {
+            saves: {
+              ...s.saves,
+              [id]: touch(current, {
+                state: {
+                  ...current.state,
+                  authorNarrative: {
+                    ...narrative,
+                    eventBeat: nextBeat,
+                    lastEventBeatRound: nextBeat ? atRound : undefined,
+                  },
+                },
+              }),
+            },
+          };
+        });
+      },
 
       applySettingGuardResult: (id, result, completedRound) =>
         set((s) => {
@@ -2129,59 +3310,14 @@ export const useGameStore = create<GameStoreState>()(
         }),
     }),
     {
-      name: 'lrpg.games',
+      name: 'lrpg.games.v2',
+      partialize: (s) => ({
+        activeSaveId: s.activeSaveId,
+      }),
       merge: (persistedState, currentState) => {
         const p = (persistedState as any) ?? {};
-        const saves = { ...(p.saves ?? {}) } as Record<string, GameSave>;
-        // 对老存档补齐新增字段（refreshesLeft / refreshChoiceEvery）
-        for (const id of Object.keys(saves)) {
-          const sv = saves[id];
-          saves[id] = markLegacyEnded({
-            ...sv,
-            content: {
-              ...sv.content,
-              authorMasterArc: (sv.content as any)?.mode === 'author'
-                ? normalizeAuthorMasterArcConfig((sv.content as any)?.authorMasterArc)
-                : (sv.content as any)?.authorMasterArc,
-              authorStageJudge: (sv.content as any)?.mode === 'author'
-                ? normalizeAuthorStageJudgeConfig((sv.content as any)?.authorStageJudge)
-                : (sv.content as any)?.authorStageJudge,
-              authorSettingGuard: (sv.content as any)?.mode === 'author'
-                ? normalizeAuthorSettingGuardConfig((sv.content as any)?.authorSettingGuard)
-                : (sv.content as any)?.authorSettingGuard,
-            },
-            config: {
-              totalRounds: sv.config?.totalRounds ?? 30,
-              manualInputEvery: sv.config?.manualInputEvery ?? 5,
-              refreshChoiceEvery: (sv.config as any)?.refreshChoiceEvery ?? 3,
-              itemCapacity: (sv.config as any)?.itemCapacity ?? 8,
-            },
-            state: {
-              ...sv.state,
-              summarizedUntilIndex: (sv.state as any)?.summarizedUntilIndex ?? 0,
-              longTermMemory: typeof (sv.state as any)?.longTermMemory === 'string' ? (sv.state as any).longTermMemory : '',
-              lastMemoryRound: (sv.state as any)?.lastMemoryRound ?? 0,
-              refreshesLeft: (sv.state as any)?.refreshesLeft ?? 0,
-              backpack: Array.isArray((sv.state as any)?.backpack) ? (sv.state as any).backpack : [],
-              selectedItemIds: Array.isArray((sv.state as any)?.selectedItemIds) ? (sv.state as any).selectedItemIds : [],
-              needsDiscard: (sv.state as any)?.needsDiscard ?? 0,
-              regenerationHint: typeof (sv.state as any)?.regenerationHint === 'string' ? (sv.state as any).regenerationHint : undefined,
-              npcs: Array.isArray((sv.state as any)?.npcs)
-                ? (sv.state as any).npcs.map((n: any) => ({ ...n, details: normalizeNpcDetails(n.details) }))
-                : [],
-              anchors: normalizeAnchors((sv.state as any)?.anchors, (sv.state as any)?.history),
-              sceneHistory: Array.isArray((sv.state as any)?.sceneHistory) ? (sv.state as any).sceneHistory : [],
-              availableScenes: Array.isArray((sv.state as any)?.availableScenes) ? (sv.state as any).availableScenes : [],
-              currentScene: (sv.state as any)?.currentScene,
-              authorNarrative: normalizeAuthorNarrativeState((sv.state as any)?.authorNarrative),
-              authorRandomEventState: normalizeAuthorRandomEventState((sv.state as any)?.authorRandomEventState),
-              agentThoughts: normalizeAgentThoughts((sv.state as any)?.agentThoughts),
-            },
-          });
-        }
         return {
           ...currentState,
-          saves,
           activeSaveId: p.activeSaveId,
         };
       },
@@ -2192,3 +3328,20 @@ export const useGameStore = create<GameStoreState>()(
 export function useActiveSave(): GameSave | undefined {
   return useGameStore((s) => (s.activeSaveId ? s.saves[s.activeSaveId] : undefined));
 }
+
+const ledgerPersistTimers = new Map<string, number>();
+
+useGameStore.subscribe((state, prev) => {
+  if (typeof window === 'undefined') return;
+  if (!state.ledgerHydrated && Object.keys(state.saves).length === 0) return;
+  for (const [id, save] of Object.entries(state.saves)) {
+    if (prev.saves[id] === save) continue;
+    const oldTimer = ledgerPersistTimers.get(id);
+    if (oldTimer !== undefined) window.clearTimeout(oldTimer);
+    const timer = window.setTimeout(() => {
+      ledgerPersistTimers.delete(id);
+      persistRuntimeSoon(save);
+    }, 80);
+    ledgerPersistTimers.set(id, timer);
+  }
+});

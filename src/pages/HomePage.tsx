@@ -64,47 +64,79 @@ export default function HomePage() {
 
   return (
     <div className="relative min-h-full flex items-center justify-center px-6 py-12 overflow-hidden">
-      <TextStarfield autoImpulse={8} />
+      <TextStarfield autoImpulse={8} className="animate-fade-in [animation-duration:1100ms] [animation-delay:300ms]" />
       <div className="relative z-10 w-full max-w-3xl text-center">
-        <CornerFiligree className="absolute -top-6 -left-6 w-20 h-20" />
-        <CornerFiligree className="absolute -top-6 -right-6 w-20 h-20 rotate-90" />
-        <CornerFiligree className="absolute -bottom-6 -left-6 w-20 h-20 -rotate-90" />
-        <CornerFiligree className="absolute -bottom-6 -right-6 w-20 h-20 rotate-180" />
+        <CornerFiligree className="absolute -top-6 -left-6 w-20 h-20 animate-fade-in" style={{ animationDelay: '1000ms' }} />
+        <CornerFiligree className="absolute -top-6 -right-6 w-20 h-20 rotate-90 animate-fade-in" style={{ animationDelay: '1080ms' }} />
+        <CornerFiligree className="absolute -bottom-6 -left-6 w-20 h-20 -rotate-90 animate-fade-in" style={{ animationDelay: '1080ms' }} />
+        <CornerFiligree className="absolute -bottom-6 -right-6 w-20 h-20 rotate-180 animate-fade-in" style={{ animationDelay: '1160ms' }} />
 
-        <div className="mb-2 tracking-[0.8em] text-sm text-gold/70">LANGUAGE · RPG</div>
-        <h1 className="title-engraved font-serif text-6xl md:text-7xl leading-none mb-3 tracking-widest">
+        <div
+          className="mb-2 tracking-[0.8em] text-sm text-gold/70 animate-fade-in"
+          style={{ animationDelay: '1600ms' }}
+        >
+          LANGUAGE · RPG
+        </div>
+        <h1
+          className="title-engraved font-serif text-6xl md:text-7xl leading-none mb-3 tracking-widest animate-ink-bloom"
+          style={{ animationDelay: '1720ms' }}
+        >
           言 · 灵
         </h1>
-        <div className="text-parchment-200/70 mb-8 font-serif text-base">
+        <div
+          className="text-parchment-200/70 mb-8 font-serif text-base animate-fade-in"
+          style={{ animationDelay: '1980ms' }}
+        >
           由语言编织的世界，因你的抉择而流转
         </div>
 
-        <OrnateDivider />
+        <OrnateDivider enter style={{ ['--enter-delay' as any]: '1000ms' }} />
 
-        <div className="text-parchment-200/80 font-serif text-sm leading-loose max-w-xl mx-auto mb-10">
+        <div
+          className="text-parchment-200/80 font-serif text-sm leading-loose max-w-xl mx-auto mb-10 animate-fade-in"
+          style={{ animationDelay: '2100ms' }}
+        >
           选定一段故事、一种出身，由故事之笔与决策之镜相伴，
           <br />
           在有限的回合内抵达属于你的结局。
         </div>
 
         <div className="flex flex-col gap-3 items-center">
-          <Button size="lg" onClick={() => nav('/setup')} className="w-64">
+          <Button
+            size="lg"
+            onClick={() => nav('/setup')}
+            className="w-64 animate-slide-up-in"
+            style={{ animationDelay: '2280ms' }}
+          >
             <ScrollText size={18} /> 启程 · 开始新旅程
           </Button>
           <Button
             size="lg"
             variant="outline"
             onClick={() => nav('/presets')}
-            className="w-64"
+            className="w-64 animate-slide-up-in"
+            style={{ animationDelay: '2380ms' }}
           >
             <Sparkles size={18} /> 执笔模式 · 一键启程
           </Button>
           {hasSaves && (
-            <Button size="lg" variant="outline" onClick={() => setShowSaves(true)} className="w-64">
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={() => setShowSaves(true)}
+              className="w-64 animate-slide-up-in"
+              style={{ animationDelay: '2480ms' }}
+            >
               <PlayCircle size={18} /> 继续旅程（{saveList.length}）
             </Button>
           )}
-          <Button size="lg" variant="outline" onClick={() => fileInputRef.current?.click()} className="w-64">
+          <Button
+            size="lg"
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            className="w-64 animate-slide-up-in"
+            style={{ animationDelay: hasSaves ? '2580ms' : '2480ms' }}
+          >
             <Upload size={18} /> 导入旅程包
           </Button>
           <input
@@ -119,7 +151,10 @@ export default function HomePage() {
               导入失败：{importError}
             </div>
           )}
-          <div className="flex gap-2 mt-4">
+          <div
+            className="flex gap-2 mt-4 animate-fade-in"
+            style={{ animationDelay: hasSaves ? '2720ms' : '2620ms' }}
+          >
             <Button variant="ghost" onClick={() => nav('/library')}>
               <Library size={16} /> 书库
             </Button>

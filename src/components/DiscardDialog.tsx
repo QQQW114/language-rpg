@@ -14,8 +14,8 @@ interface DiscardDialogProps {
 }
 
 /**
- * 背包超载时的强制丢弃对话框。
- * 无法关闭，直到选够需要丢弃的数量。
+ * 能力超载时的强制舍弃对话框。
+ * 无法关闭，直到选够需要舍弃的数量。
  */
 export function DiscardDialog({ open, backpack, capacity, onConfirm }: DiscardDialogProps) {
   const [picked, setPicked] = useState<string[]>([]);
@@ -35,14 +35,14 @@ export function DiscardDialog({ open, backpack, capacity, onConfirm }: DiscardDi
       onClose={() => { /* 强制流程：不可通过 ESC / 背景关闭 */ }}
       title={
         <span className="flex items-center gap-2">
-          <AlertTriangle size={18} className="text-blood" /> 背包超载
+          <AlertTriangle size={18} className="text-blood" /> 能力超载
         </span>
       }
       widthClass="max-w-2xl"
     >
       <div className="text-sm text-parchment-200/80 mb-4 leading-relaxed font-serif">
-        当前背包 <span className="text-gold-light">{backpack.length}</span> 件，容量上限 <span className="text-gold-light">{capacity}</span>。
-        请至少丢弃 <span className="text-blood font-semibold">{overflow}</span> 件后继续旅程。
+        当前能力 <span className="text-gold-light">{backpack.length}</span> 项，容量上限 <span className="text-gold-light">{capacity}</span>。
+        请至少舍弃 <span className="text-blood font-semibold">{overflow}</span> 项后继续旅程。
       </div>
 
       <div className="space-y-2 max-h-[50vh] overflow-auto pr-1">
@@ -80,8 +80,8 @@ export function DiscardDialog({ open, backpack, capacity, onConfirm }: DiscardDi
 
       <div className="mt-4 flex items-center justify-between">
         <div className="text-sm font-serif">
-          已选 <span className="text-blood">{picked.length}</span> 件
-          {remaining > 0 && <> · 还需再丢弃 <span className="text-blood">{remaining}</span> 件</>}
+          已选 <span className="text-blood">{picked.length}</span> 项
+          {remaining > 0 && <> · 还需再舍弃 <span className="text-blood">{remaining}</span> 项</>}
         </div>
         <Button
           variant="danger"
@@ -91,7 +91,7 @@ export function DiscardDialog({ open, backpack, capacity, onConfirm }: DiscardDi
             setPicked([]);
           }}
         >
-          <Trash2 size={14} /> 确认丢弃
+          <Trash2 size={14} /> 确认舍弃
         </Button>
       </div>
     </Dialog>

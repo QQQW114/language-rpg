@@ -49,7 +49,7 @@ export function CharacterPanel({
               )}
               {background.startItems.length > 0 && (
                 <div className="mt-3">
-                  <div className="text-[10px] text-parchment-200/50 uppercase tracking-wider mb-1">携带</div>
+                  <div className="text-[10px] text-parchment-200/50 uppercase tracking-wider mb-1">初始能力</div>
                   <ul className="text-xs text-parchment-200/90 list-disc pl-4 space-y-0.5">
                     {background.startItems.map((t) => <li key={t}>{t}</li>)}
                   </ul>
@@ -112,7 +112,7 @@ export function CharacterPanel({
           {itemCount !== undefined && (
             <div className="bg-parchment-800/60 border border-parchment-600/40 rounded p-2">
               <div className="text-parchment-200/60 flex items-center gap-1">
-                <Package size={10} /> 背包
+                <Package size={10} /> 能力
               </div>
               <div className="text-gold-light text-lg">{itemCount}</div>
             </div>

@@ -6,6 +6,7 @@ import type {
   AuthorLogicReviewState,
   AuthorNarrativeState,
   AuthorRandomEventState,
+  GameSave,
   Item,
   MemoryAnchor,
   Message,
@@ -15,8 +16,12 @@ import type {
 import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_LOGIC_CHECK_SYSTEM, buildAuthorLogicCheckUser } from '@/prompts/authorLogicCheckSystem';
 import { extractJSON, genId } from '@/lib/utils';
+import { withPromptTrace } from '@/lib/agentTrace';
+import { appendWorkspaceManifest, appendWorkspaceSystem, buildWorkspaceToolRuntime } from '@/services/workspaceTools';
+import { resolveAuthorCallModel } from '@/lib/agentModels';
 
 export interface AuthorLogicCheckRequest {
+  save?: GameSave;
   settings: AppSettings;
   outline?: StoryOutline;
   background?: Background;
@@ -36,6 +41,8 @@ export interface AuthorLogicCheckRequest {
   randomEventState?: AuthorRandomEventState;
   worldBookEntries?: WorldBookEntry[];
   anchors?: MemoryAnchor[];
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -104,8 +111,10 @@ function sanitizeReview(raw: unknown, currentRound: number): AuthorLogicReviewSt
 }
 
 export async function requestAuthorLogicCheck(p: AuthorLogicCheckRequest): Promise<AuthorLogicReviewState | undefined> {
-  const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildAuthorLogicCheckUser(p);
+  const model = resolveAuthorCallModel(p.settings, 'logicCheck');
+  const workspace = p.settings.apiFormat === 'chat' ? await buildWorkspaceToolRuntime(p.save, { agentKind: 'logicCheck' }) : {};
+  const user = appendWorkspaceManifest(buildAuthorLogicCheckUser(p), workspace.userManifest);
+  const system = appendWorkspaceSystem(AUTHOR_LOGIC_CHECK_SYSTEM, workspace.systemRules);
 
   const runOnce = async (temperature: number): Promise<AuthorLogicReviewState | undefined> => {
     const result = await chatJSONDetailed(
@@ -114,14 +123,19 @@ export async function requestAuthorLogicCheck(p: AuthorLogicCheckRequest): Promi
         model,
         temperature,
         messages: [
-          { role: 'system', content: AUTHOR_LOGIC_CHECK_SYSTEM },
+          { role: 'system', content: system },
           { role: 'user', content: user },
         ],
+        tools: workspace.tools,
+        onToolCall: workspace.onToolCall,
+        maxToolRounds: 3,
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     const review = sanitizeReview(extractJSON(result.text), p.currentRound);
-    return review ? { ...review, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
+    return review ? withPromptTrace({ ...review, thinking: result.thinking, rawOutput: result.text, usage: result.usage }, result.trace) : undefined;
   };
 
   const first = await runOnce(0.25).catch((err) => {

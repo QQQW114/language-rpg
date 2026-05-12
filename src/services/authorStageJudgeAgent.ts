@@ -1,7 +1,9 @@
 import type { AppSettings } from '@/types/settings';
 import type { StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
+  AuthorNarrativeState,
   AuthorStageJudgeConfig,
+  GameSave,
   MasterArcState,
   MemoryAnchor,
   Message,
@@ -15,8 +17,12 @@ import type {
 import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_STAGE_JUDGE_SYSTEM, buildStageJudgeUser } from '@/prompts/authorStageJudgeSystem';
 import { clamp, extractJSON } from '@/lib/utils';
+import { withPromptTrace } from '@/lib/agentTrace';
+import { appendWorkspaceManifest, appendWorkspaceSystem, buildWorkspaceToolRuntime } from '@/services/workspaceTools';
+import { resolveAuthorCallModel } from '@/lib/agentModels';
 
 export interface StageJudgeRequest {
+  save?: GameSave;
   settings: AppSettings;
   outline?: StoryOutline;
   characterName?: string;
@@ -35,6 +41,9 @@ export interface StageJudgeRequest {
   worldBookEntries?: WorldBookEntry[];
   anchors?: MemoryAnchor[];
   activeArcs?: StoryArc[];
+  narrative?: AuthorNarrativeState;
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -115,8 +124,9 @@ function sanitizeStageJudge(raw: unknown, p: StageJudgeRequest): StageJudgeResul
 }
 
 export async function requestStageJudge(p: StageJudgeRequest): Promise<StageJudgeResult | undefined> {
-  const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildStageJudgeUser({
+  const model = resolveAuthorCallModel(p.settings, 'stageJudge');
+  const workspace = p.settings.apiFormat === 'chat' ? await buildWorkspaceToolRuntime(p.save, { agentKind: 'stageJudge' }) : {};
+  const user = appendWorkspaceManifest(buildStageJudgeUser({
     outline: p.outline,
     characterName: p.characterName,
     currentRound: p.currentRound,
@@ -134,7 +144,9 @@ export async function requestStageJudge(p: StageJudgeRequest): Promise<StageJudg
     worldBookEntries: p.worldBookEntries,
     anchors: p.anchors,
     activeArcs: p.activeArcs,
-  });
+    narrative: p.narrative,
+  }), workspace.userManifest);
+  const system = appendWorkspaceSystem(AUTHOR_STAGE_JUDGE_SYSTEM, workspace.systemRules);
 
   const runOnce = async (temperature: number): Promise<StageJudgeResult | undefined> => {
     const result = await chatJSONDetailed(
@@ -143,14 +155,19 @@ export async function requestStageJudge(p: StageJudgeRequest): Promise<StageJudg
         model,
         temperature,
         messages: [
-          { role: 'system', content: AUTHOR_STAGE_JUDGE_SYSTEM },
+          { role: 'system', content: system },
           { role: 'user', content: user },
         ],
+        tools: workspace.tools,
+        onToolCall: workspace.onToolCall,
+        maxToolRounds: 2,
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     const parsed = sanitizeStageJudge(extractJSON(result.text), p);
-    return parsed ? { ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
+    return parsed ? withPromptTrace({ ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage }, result.trace) : undefined;
   };
 
   const first = await runOnce(0.35).catch((err) => {

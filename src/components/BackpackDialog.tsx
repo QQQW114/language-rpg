@@ -21,10 +21,10 @@ export function BackpackDialog({ open, onClose, backpack, capacity }: BackpackDi
       onClose={onClose}
       title={
         <span className="flex items-center gap-2">
-          <Package size={18} /> 背包 ·{' '}
+          <Package size={18} /> 能力 ·{' '}
           <span className="font-normal">
             {backpack.length}
-            {capacity !== undefined && <span className="text-parchment-200/60"> / {capacity}</span>} 件
+            {capacity !== undefined && <span className="text-parchment-200/60"> / {capacity}</span>} 项
           </span>
         </span>
       }
@@ -32,7 +32,7 @@ export function BackpackDialog({ open, onClose, backpack, capacity }: BackpackDi
     >
       {backpack.length === 0 ? (
         <div className="text-center text-parchment-200/60 py-10 font-serif">
-          尚未获得任何道具。
+          尚未获得任何能力。
         </div>
       ) : (
         <div className="space-y-5">
@@ -77,7 +77,7 @@ function Section({ title, items }: { title: string; items: Item[] }) {
                   {it.name}
                   <span className="text-xs text-parchment-200/60">（{itemTypeLabel(it.type)}）</span>
                   {doomed && (
-                    <span className="text-[10px] text-blood tracking-wider uppercase">· 本回合将失去 ·</span>
+                    <span className="text-[10px] text-blood tracking-wider uppercase">· 本回合将失效 ·</span>
                   )}
                   {!doomed && it.pendingGrantKey && (
                     <span className="text-[10px] text-gold-light tracking-wider uppercase">· 本回合获得 ·</span>

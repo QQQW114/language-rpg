@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
+import type { StrictCustomConfig } from '@/types/custom';
+import type { AuthorEventBeatConfig } from '@/types/game';
 import { DEFAULT_STRICT_CUSTOM_CONFIG, normalizeStrictCustomConfig } from '@/lib/strictCustom';
-import { genId } from '@/lib/utils';
+import { DEFAULT_AUTHOR_EVENT_BEAT_CONFIG, normalizeAuthorEventBeatConfig } from '@/lib/authorMode';
 
 export const DEFAULT_AUTHOR_MODE_CONFIG: StrictCustomConfig = {
   ...DEFAULT_STRICT_CUSTOM_CONFIG,
@@ -11,11 +12,10 @@ export const DEFAULT_AUTHOR_MODE_CONFIG: StrictCustomConfig = {
 
 interface AuthorModeState {
   config: StrictCustomConfig;
+  eventBeatConfig: AuthorEventBeatConfig;
   update: (patch: Partial<StrictCustomConfig>) => void;
+  updateEventBeat: (patch: Partial<AuthorEventBeatConfig>) => void;
   reset: () => void;
-  addDirective: () => void;
-  updateDirective: (id: string, patch: Partial<StrictRoundDirective>) => void;
-  removeDirective: (id: string) => void;
 }
 
 function normalizeAuthorConfig(input?: Partial<StrictCustomConfig>): StrictCustomConfig {
@@ -28,44 +28,16 @@ function normalizeAuthorConfig(input?: Partial<StrictCustomConfig>): StrictCusto
 export const useAuthorModeStore = create<AuthorModeState>()(
   persist(
     (set) => ({
-      config: { ...DEFAULT_AUTHOR_MODE_CONFIG, detailedOutline: [] },
+      config: { ...DEFAULT_AUTHOR_MODE_CONFIG },
+      eventBeatConfig: { ...DEFAULT_AUTHOR_EVENT_BEAT_CONFIG },
       update: (patch) =>
         set((s) => ({ config: normalizeAuthorConfig({ ...s.config, ...patch, enabled: true }) })),
-      reset: () => set({ config: { ...DEFAULT_AUTHOR_MODE_CONFIG, detailedOutline: [] } }),
-      addDirective: () =>
-        set((s) => ({
-          config: {
-            ...s.config,
-            enabled: true,
-            detailedOutline: [
-              ...s.config.detailedOutline,
-              {
-                id: genId('author'),
-                startRound: 1,
-                endRound: 10,
-                prompt: '主角：；事件：；风格：；限制：本段只铺垫，不提前揭示关键能力。',
-              },
-            ],
-          },
-        })),
-      updateDirective: (id, patch) =>
-        set((s) => ({
-          config: {
-            ...s.config,
-            enabled: true,
-            detailedOutline: s.config.detailedOutline.map((item) =>
-              item.id === id ? { ...item, ...patch } : item,
-            ),
-          },
-        })),
-      removeDirective: (id) =>
-        set((s) => ({
-          config: {
-            ...s.config,
-            enabled: true,
-            detailedOutline: s.config.detailedOutline.filter((item) => item.id !== id),
-          },
-        })),
+      updateEventBeat: (patch) =>
+        set((s) => ({ eventBeatConfig: normalizeAuthorEventBeatConfig({ ...s.eventBeatConfig, ...patch }) })),
+      reset: () => set({
+        config: { ...DEFAULT_AUTHOR_MODE_CONFIG },
+        eventBeatConfig: { ...DEFAULT_AUTHOR_EVENT_BEAT_CONFIG },
+      }),
     }),
     {
       name: 'lrpg.authorModeDraft',
@@ -74,6 +46,7 @@ export const useAuthorModeStore = create<AuthorModeState>()(
         return {
           ...currentState,
           config: normalizeAuthorConfig(p.config),
+          eventBeatConfig: normalizeAuthorEventBeatConfig(p.eventBeatConfig),
         };
       },
     },

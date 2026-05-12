@@ -22,9 +22,25 @@ export const useSettingsStore = create<SettingsState>()(
       merge: (persistedState, currentState) => {
         const p = (persistedState as any) ?? {};
         const persistedSettings = (p.settings as Partial<AppSettings>) ?? {};
+        const persistedRouting = persistedSettings.authorModelRouting ?? {};
         return {
           ...currentState,
-          settings: { ...DEFAULT_SETTINGS, ...persistedSettings },
+          settings: {
+            ...DEFAULT_SETTINGS,
+            ...persistedSettings,
+            authorModelRouting: {
+              ...DEFAULT_SETTINGS.authorModelRouting,
+              ...persistedRouting,
+              core: {
+                ...DEFAULT_SETTINGS.authorModelRouting.core,
+                ...(persistedRouting as any).core,
+              },
+              calls: {
+                ...DEFAULT_SETTINGS.authorModelRouting.calls,
+                ...(persistedRouting as any).calls,
+              },
+            },
+          },
         };
       },
     },

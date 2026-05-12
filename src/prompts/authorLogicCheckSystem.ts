@@ -1,3 +1,12 @@
+/**
+ * 提示词输入说明（维护用注释，不会进入模型）：
+ * - system：逻辑审校员身份、连续性风险检查范围、修复建议 JSON 协议。
+ * - user：buildAuthorLogicCheckUser 拼装当前回合故事完成后的审校任务。
+ * - 输入包含：故事大纲、主角出身、世界书、历史摘要、长期记忆、玩家标记、最近上下文、最新故事片段。
+ * - 输入包含：NPC 状态、能力状态、当前/可达场景、当前叙事导演计划、正在进行的叙事弧 / 长线事件、玩家给审校模型的额外要求。
+ * - chat + 司书库启用时，服务层还会追加司书库 systemRules / manifest，并开放对应工具。
+ * - 输出：逻辑审校 JSON，列出风险、严重度、修复建议与写手应遵守的补救方向。
+ */
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorLogicCheckConfig,
@@ -13,17 +22,22 @@ import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatItemsForPrompt } from '@/lib/items';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 
-export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是这段互动小说的"逻辑审校员"。你会严格参照用户消息中的故事大纲、世界书、长期记忆、玩家标记、最近上下文、最新故事片段、NPC/背包/场景状态、叙事计划和事件弧，找出人物、场景、道具、时间线、节奏和设定一致性风险，并给后续故事写手自然修复的指令。
+export const AUTHOR_LOGIC_CHECK_SYSTEM = `你是这段互动小说的"逻辑审校员"。你会严格参照用户消息中的故事大纲、世界书、长期记忆、玩家标记、最近上下文、最新故事片段、NPC/能力/场景状态、叙事计划和事件弧，找出人物、场景、能力、时间线、节奏和设定一致性风险，并给后续故事写手自然修复的指令。
 
 逻辑审校规则：不写正文，不生成玩家选项，只检查当前故事的连续性风险，并输出未来修复指令。
 
 检查重点：
 - 人物：姓名、关系、好感、外观服装、承诺、主角已知/未知信息是否冲突。
 - 场景：当前位置、可达地点、时间、天气、行动阻力是否跳变。
-- 道具：背包中物品获得/消耗/损毁是否与正文矛盾。
+- 能力：能力列表中能力获得、使用、失效或遗忘是否与正文矛盾。
 - 大纲/节奏：是否偏离当前主弧阶段，是否违反阶段判断的 playerPace/storyFocus，是否提前剧透、跳过关键 beat、无故新增支线。
 - 记忆/伏笔：长期记忆、玩家标记、叙事弧是否被遗忘或反复改写。
 - ★ 世界书违反：故事是否擅自重写或绕过 alwaysActive 世界书条目（如能力规则被改写、世界基调被打破）——这是最高优先级检查项。
+
+【可用工具】
+本次请求可能提供读取类工具（如读司书库、读大纲、读最近回合、读人物档案 等）；真实能力以 tools 字段为准。
+- 对判断有影响的事实拿不准时再用，按需少量，不要拉全量。
+- 工具结果只用于判断，不要复述进 JSON 或写成正文。
 
 输出协议：
 1. 只能输出合法 JSON，禁止 Markdown 围栏、注释和解释。
@@ -55,7 +69,7 @@ severity 判定标准（必须严格执行，不要为了"不打扰"统一标 in
 - warning：明显的细节矛盾，会让读者明显出戏：
   · NPC 外观/服装/称呼跨回合无故跳变
   · 时间/天气在没有过场的情况下突变（例：刚刚深夜，下一句突然下午）
-  · 道具状态与正文不符（例：明明已损毁的道具又出现）
+  · 能力状态与正文不符（例：明明已失效的能力又出现）
   · 阶段跳过当前导演计划要求的关键 beat
   · 违反 playerPace：在玩家沉浸/探索节奏下，一回合推进多个空间转移、重大决定或阶段事件
   · stageJudge.shouldAdvance=false 时强行触发下一阶段标志性事件
@@ -170,6 +184,26 @@ function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
   return lines.length > 1 ? lines.join('\n') : '';
 }
 
+function formatOrchestrator(narrative?: AuthorNarrativeState): string {
+  const o = narrative?.orchestrator;
+  if (!o) return '';
+  const lines: string[] = ['【回合调度判断】（参考用，不要在你的输出里做调度决策）'];
+  if (o.turnType) lines.push(`回合类型：${o.turnType}`);
+  if (o.planningMode) lines.push(`规划强度：${o.planningMode}`);
+  if (o.focusAreas?.length) lines.push(`关注方向：${o.focusAreas.join('、')}`);
+  const relevantSignals = (o.planSignals ?? []).filter((s) => s.area === 'logic' || s.suggestedModel === 'logicCheck');
+  if (relevantSignals.length) {
+    lines.push('相关信号：');
+    relevantSignals.slice(0, 4).forEach((s) => {
+      lines.push(`· ${s.area}/${s.priority}：${s.reason}`);
+    });
+  }
+  const callsRaw = o.calls as unknown as Record<string, { hint?: string } | undefined> | undefined;
+  const hint = callsRaw?.logicCheck?.hint?.trim();
+  if (hint) lines.push(`本回合提示：${hint}`);
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
 export function buildAuthorLogicCheckUser(p: {
   outline?: StoryOutline;
   background?: Background;
@@ -193,6 +227,7 @@ export function buildAuthorLogicCheckUser(p: {
   const worldBookBlock = formatWorldBook(p.worldBookEntries);
   const anchorsBlock = formatAnchors(p.anchors);
   const stageNarrativeBlock = formatStageNarrativeForPrompt(p.narrative);
+  const orchestratorBlock = formatOrchestrator(p.narrative);
   return [
     '【世界观 / 故事大纲】',
     p.outline
@@ -217,7 +252,7 @@ export function buildAuthorLogicCheckUser(p: {
     '【NPC 状态】',
     formatNpcs(p.npcs),
     '',
-    '【背包状态】',
+    '【能力状态】',
     formatItemsForPrompt(p.backpack),
     '',
     '【场景状态】',
@@ -225,6 +260,8 @@ export function buildAuthorLogicCheckUser(p: {
     '',
     stageNarrativeBlock,
     stageNarrativeBlock ? '' : '',
+    orchestratorBlock,
+    orchestratorBlock ? '' : '',
     '【当前叙事导演计划】',
     formatNarrativePlan(p.narrative),
     '',

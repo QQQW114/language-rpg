@@ -1,4 +1,4 @@
-// 道具（背包）相关工具：字符串启示物转 Item、类型启发式、展示文本等
+// 能力相关工具：字符串能力转 Item、类型启发式、展示文本等
 
 import type { Item, ItemType } from '@/types/game';
 import { genId } from './utils';
@@ -41,7 +41,7 @@ export function createItem(raw: RawGrant, round: number, pendingGrantKey?: strin
   return {
     id: genId('itm'),
     name,
-    description: (raw.description || '').trim().slice(0, 160) || '一件物品。',
+    description: (raw.description || '').trim().slice(0, 160) || '一项能力。',
     type: raw.type === 'consumable' || raw.type === 'reusable' ? raw.type : heuristicItemType(name),
     acquiredAtRound: round,
     pendingGrantKey,
@@ -51,7 +51,7 @@ export function createItem(raw: RawGrant, round: number, pendingGrantKey?: strin
 export function itemsFromStartStrings(strs: string[] | undefined, round = 0): Item[] {
   if (!strs?.length) return [];
   return strs.map((s) =>
-    createItem({ name: s, description: '角色出身自带之物。' }, round),
+    createItem({ name: s, description: '角色出身自带能力。' }, round),
   );
 }
 

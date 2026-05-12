@@ -1,3 +1,13 @@
+/**
+ * 提示词输入说明（维护用注释，不会进入模型）：
+ * - 本文件包含开局/书库随机生成类提示词：故事大纲、出身、开篇场景、随机事件池、世界书。
+ * - 随机大纲 user 输入：主题偏好 theme、避开标题 avoidTitles。
+ * - 随机出身 user 输入：故事大纲、可选世界设定摘要、玩家出身偏好。
+ * - 随机开篇 user 输入：故事大纲、玩家出身、初始能力、开局偏好。
+ * - 随机事件池 user 输入：故事大纲、可选玩家出身、开局场景、事件偏好、生成数量。
+ * - 随机世界书 user 输入：可选故事大纲、世界书偏好、生成条目数量。
+ * - 输出：各自协议要求的 JSON 或开篇正文；本文件当前不追加司书库 manifest。
+ */
 // 随机生成 · 提示词
 
 import type { StoryOutline, Background, WorldBookEntry } from '@/types/content';
@@ -44,7 +54,7 @@ export function buildRandomOutlineUser(hints: RandomOutlineHints = {}): string {
 
 // ---------- 随机出身 ----------
 
-export const RANDOM_BACKGROUND_SYSTEM = `你是这段互动小说的"角色创作师"。你会严格参照用户消息中的故事大纲、世界设定和玩家偏好，设计贴合主线但不剧透的出身、特质、初始物品和开局场景。
+export const RANDOM_BACKGROUND_SYSTEM = `你是这段互动小说的"角色创作师"。你会严格参照用户消息中的故事大纲、世界设定和玩家偏好，设计贴合主线但不剧透的出身、特质、初始能力和开局场景。
 
 随机出身生成规则：为给定的故事大纲生成一个契合的玩家"出身"。
 
@@ -53,14 +63,15 @@ export const RANDOM_BACKGROUND_SYSTEM = `你是这段互动小说的"角色创�
   "name": "4~6 字的出身名",
   "description": "60~140 字的出身与处境描述",
   "traits": ["技能/特点 1","技能/特点 2","技能/特点 3"],
-  "startItems": ["物品 1","物品 2","物品 3"],
+  "startItems": ["能力 1","能力 2","能力 3"],
   "startScene": "180~300 字的开局场景",
   "coverEmoji": "一个 emoji"
 }
 
 要求：
+- 字段名 startItems 为兼容旧程序保留；当前语义是"初始能力"。
 - 出身应贴合故事大纲的世界观与冲突，但不要直接剧透主线。
-- traits 3~4 条；startItems 2~4 件（若包含药水、卷轴、符咒、食物、饮料等一次性物品，请直接用这些词，便于系统识别为"一次性"）。
+- traits 3~4 条；startItems 2~4 项，表示主角开局掌握或拥有的能力。若某项能力只适合使用一次，请在名称或描述里体现"一次性 / 临时 / 符咒 / 药剂"等可识别特征，便于系统识别为"一次性"。
 - startScene 使用第二人称"你"，具象感官细节开场，结尾留一个微小悬念但不要直接问玩家要做什么。
 - 中文输出。`;
 
@@ -97,7 +108,7 @@ export function buildRandomSceneUser(outline: StoryOutline, background: Backgrou
   parts.push(outline.synopsis);
   parts.push('', '【玩家出身】');
   parts.push(`${background.name} —— ${background.description}`);
-  parts.push(`携带：${background.startItems.join('、') || '无'}`);
+  parts.push(`初始能力：${background.startItems.join('、') || '无'}`);
   if (hint?.trim()) parts.push('', `【玩家希望的开局偏好】${hint.trim()}`);
   parts.push('', '请撰写一段开篇场景。');
   return parts.join('\n');

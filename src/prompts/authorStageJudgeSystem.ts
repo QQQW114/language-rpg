@@ -1,8 +1,19 @@
+/**
+ * 提示词输入说明（维护用注释，不会进入模型）：
+ * - system：阶段判断员身份、玩家意图/节奏/阶段完成度/本回合聚焦 JSON 协议。
+ * - user：buildStageJudgeUser 拼装第 nextRound 回合的阶段与意图判断任务。
+ * - 输入包含：故事大纲、世界书硬设定、主弧当前/下一阶段、历史摘要、长期记忆、玩家标记、进行中的事件弧。
+ * - 输入包含：最近上下文、玩家本回合最新输入、已知 NPC、当前场景、当前导演计划、上一轮阶段判断。
+ * - 输入包含：阶段判断配置与玩家额外要求、已完成回合、下一回合。
+ * - chat + 司书库启用时，服务层还会追加司书库 systemRules / manifest，并开放对应工具。
+ * - 输出：阶段判断 JSON，供叙事导演、故事写手与主弧推进逻辑使用。
+ */
 // 阶段判断 / 玩家意图分析模型：每回合最先跑，输出 playerIntent / playerPace / stageStatus / storyFocus
 // 详见 docs/stage-narrative.md 第 5 节。
 
 import type { StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
+  AuthorNarrativeState,
   AuthorStageJudgeConfig,
   MasterArcState,
   MemoryAnchor,
@@ -24,6 +35,11 @@ export const AUTHOR_STAGE_JUDGE_SYSTEM = `你是这段互动小说的"阶段判�
 2. 玩家最近的节奏是 immersive / exploratory / progressing / hurrying 哪一种？（playerPace）
 3. 当前阶段完成度如何？是否应该推进到下一阶段？（stageStatus）
 4. 故事模型本回合应该聚焦哪一件微节拍？（storyFocus.thisRound）
+
+【可用工具】
+本次请求可能提供读取类工具（如读司书库、读大纲、读最近回合、读人物档案 等）；真实能力以 tools 字段为准。
+- 对判断有影响的事实拿不准时再用，按需少量，不要拉全量。
+- 工具结果只用于判断，不要复述进 JSON 或写成正文。
 
 输出协议：
 1. 只能输出合法 JSON，禁止 Markdown 围栏、注释、解释。
@@ -73,6 +89,7 @@ storyFocus.thisRound 写作要求：
 - ★ **大纲细节保留**：如果大纲（outline.acts）或上方"当前阶段 · 期望节拍"对当前节拍写了具体细节（例：「脑中随即浮现出有关性别转换异能的完整记忆」、「灌入完整能力知识」、「在心中默念某种咒语」），thisRound 必须保留这些具体性，不要抽象化为"觉醒能力 / 触发能力"。具体性是叙事质感的来源，被抽象化会让故事失味。
 - ★ **世界书一致性**：如果上方【世界书 · 硬设定】对当前节拍涉及的机制有定义（例：能力是主动可控还是被动反向、是否有冷却、是否对他人有效），thisRound 描述时必须与之一致；不要把"主动施用"误判为"情绪驱动"。
 - ★ **玩家承诺与未解事件**：如果上方【长期一致性记忆】或【玩家标记】里有未兑现的承诺、未回收的伏笔、待办事件，且本回合玩家输入与之相关，thisRound 应当呼应；如果完全不相关，仅在 secondary 里轻提即可。
+- ★ **回溯补写关键事件**：如果玩家输入是在问“刚刚 / 当时 / 开局 / 一开始发生了什么”或要求从过去某一点开始回忆，并且该事件涉及能力获得、身份秘密、世界机制或大纲第一幕关键因果，playerIntent.primary 应明确写成“回忆/补写过去的某个关键事件”，storyFocus.thisRound 应限定为“按原始大纲补写该过去片段的第一段/一个微节拍”，而不是继续当前时间线普通推进。可用工具时应先读取 get_story_briefing 或 get_story_outline / get_initial_scene。
 
 storyFocus.avoid 写作要求：
 - 必须列出**本回合应该被刻意延后**的多步压缩动作，给故事模型明确的负面边界。
@@ -80,9 +97,10 @@ storyFocus.avoid 写作要求：
 - 例：避免"不要写得太快"——应写"不要让主角一回合内完成换装 + 出门 + 与陌生人对话三件事"。
 
 边界纪律：
-- 不要替故事模型写正文片段。
-- 不要替导演规划未来多个回合。
-- 不要替守护者补充世界设定。
+- 不写故事正文片段。
+- 不规划未来多个回合。
+- 不补充世界设定。
+- 不在你的输出里判定事件节奏 / lifecycle / 完成失败——你站在玩家视角；事件节奏判定属于全知视角，不在你的职责范围。若 active 事件相关，你只需说明"玩家本回合是否仍在该事件内 / 玩家是否想推进或离开"，不要对事件状态下结论。
 - 不要在 advanceReasoning 中泄露未发生的剧情。
 - 玩家自定义提示词的额外要求需纳入考量，但不能违反上述协议。
 - 没有信号时给最保守判断：playerPace='progressing'，shouldAdvance=false。`;
@@ -196,6 +214,26 @@ function formatActiveArcs(arcs: StoryArc[] | undefined, currentRound: number): s
   return lines.join('\n');
 }
 
+function formatOrchestrator(narrative?: AuthorNarrativeState): string {
+  const o = narrative?.orchestrator;
+  if (!o) return '';
+  const lines: string[] = ['【回合调度判断】（参考用，不要在你的输出里做调度决策）'];
+  if (o.turnType) lines.push(`回合类型：${o.turnType}`);
+  if (o.planningMode) lines.push(`规划强度：${o.planningMode}`);
+  if (o.focusAreas?.length) lines.push(`关注方向：${o.focusAreas.join('、')}`);
+  const relevantSignals = (o.planSignals ?? []).filter((s) => s.area === 'stage' || s.suggestedModel === 'stageJudge');
+  if (relevantSignals.length) {
+    lines.push('相关信号：');
+    relevantSignals.slice(0, 4).forEach((s) => {
+      lines.push(`· ${s.area}/${s.priority}：${s.reason}`);
+    });
+  }
+  const callsRaw = o.calls as unknown as Record<string, { hint?: string } | undefined> | undefined;
+  const hint = callsRaw?.stageJudge?.hint?.trim();
+  if (hint) lines.push(`本回合提示：${hint}`);
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
 export interface BuildStageJudgeUserParams {
   outline?: StoryOutline;
   characterName?: string;
@@ -214,6 +252,7 @@ export interface BuildStageJudgeUserParams {
   worldBookEntries?: WorldBookEntry[];
   anchors?: MemoryAnchor[];
   activeArcs?: StoryArc[];
+  narrative?: AuthorNarrativeState;
 }
 
 export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
@@ -222,6 +261,7 @@ export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
   const worldBookBlock = formatAlwaysActiveWorldBook(p.worldBookEntries);
   const anchorsBlock = formatAnchors(p.anchors);
   const arcsBlock = formatActiveArcs(p.activeArcs, p.currentRound);
+  const orchestratorBlock = formatOrchestrator(p.narrative);
 
   const lines: string[] = [];
 
@@ -230,6 +270,7 @@ export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
       '【世界观 / 故事大纲】',
       `标题：${p.outline.title}`,
       `梗概：${p.outline.synopsis}`,
+      p.outline.acts?.length ? `阶段 / 章节：\n${p.outline.acts.map((act, index) => `· 第 ${index + 1} 幕：${act}`).join('\n')}` : '',
       p.outline.tone ? `文风：${p.outline.tone}` : '',
       '',
     );
@@ -291,7 +332,9 @@ export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
     '【当前场景】',
     formatScene(p.currentScene),
     '',
-    '【当前导演计划】（参考用，不要替导演决策）',
+    orchestratorBlock,
+    orchestratorBlock ? '' : '',
+    '【当前导演计划】（参考用，不要在你的输出里规划本回合）',
     formatNarrativePlan(p.narrativePlan),
     '',
     '【上一轮阶段判断】（只作连续性参考；本轮应重新判断，不要机械沿用）',
@@ -305,12 +348,6 @@ export function buildStageJudgeUser(p: BuildStageJudgeUserParams): string {
     `已完成回合：${p.currentRound}`,
     '',
     '请按系统协议输出 JSON。',
-    '关键提醒：',
-    '- newlyAchievedBeats 必须严格匹配上方【当前阶段】列出的 beat id；不存在的 id 不要编造。',
-    '- storyFocus.thisRound 必须是单一微节拍；如果玩家输入提到多个动作，挑最自然的第一步。',
-    '- 大纲细节（如"脑中浮现完整记忆"）若与本回合相关，thisRound 必须保留具体性，不要抽象化。',
-    '- 与【世界书 · 硬设定】冲突的描述属于错误：例如世界书写"主动可控"则不能写"被动反向触发"。',
-    '- playerPace 信号矛盾时按"动作"判定，不要默认 immersive。',
   );
 
   return lines.filter((line) => line !== '').join('\n').replace(/\n{3,}/g, '\n\n').trim();

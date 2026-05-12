@@ -1,11 +1,15 @@
 import type { AppSettings } from '@/types/settings';
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
-import type { Choice, Item, MemoryAnchor, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
+import type { Choice, GameSave, Item, MemoryAnchor, Message, Npc, NpcUpdateRaw, SceneRef } from '@/types/game';
 import type { RawDestroy, RawGrant, RawItemPatch } from '@/lib/items';
 import { formatItemsForPrompt } from '@/lib/items';
 import { chatJSONDetailed } from './llmClient';
 import { MEMORY_SYSTEM, buildMemoryUser } from '@/prompts/memorySystem';
 import type { LlmUsage } from '@/types/llm';
+import type { AgentPromptTrace } from '@/types/ledger';
+import { withPromptTrace } from '@/lib/agentTrace';
+import { appendWorkspaceManifest, appendWorkspaceSystem, buildWorkspaceToolRuntime } from '@/services/workspaceTools';
+import { resolveAuthorCallModel, resolveLegacyMemoryModel } from '@/lib/agentModels';
 
 export interface MemoryDecisionSnapshot {
   choices?: Choice[];
@@ -18,6 +22,7 @@ export interface MemoryDecisionSnapshot {
 }
 
 export interface MemoryUpdateRequest {
+  save?: GameSave;
   settings: AppSettings;
   previousMemory?: string;
   recent: Message[];
@@ -30,6 +35,8 @@ export interface MemoryUpdateRequest {
   background?: Background;
   worldBookEntries?: WorldBookEntry[];
   maxChars: number;
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -38,6 +45,7 @@ export interface MemoryUpdateResult {
   thinking?: string;
   rawOutput?: string;
   usage?: LlmUsage;
+  trace?: AgentPromptTrace;
 }
 
 const MAX_RECENT_CHARS = 6000;
@@ -132,7 +140,10 @@ function formatAlwaysActiveWorldBook(entries: WorldBookEntry[] | undefined): str
 
 export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<MemoryUpdateResult | null> {
   const maxChars = clampMaxChars(p.maxChars);
-  const model = p.settings.memoryModel?.trim() || p.settings.summaryModel?.trim() || p.settings.storyModel;
+  const model = p.save?.content.mode === 'author'
+    ? resolveAuthorCallModel(p.settings, 'memory')
+    : resolveLegacyMemoryModel(p.settings);
+  const workspace = p.settings.apiFormat === 'chat' ? await buildWorkspaceToolRuntime(p.save, { agentKind: 'memory' }) : {};
   try {
     const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
@@ -140,10 +151,10 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<Memor
         model,
         temperature: 0.25,
         messages: [
-          { role: 'system', content: MEMORY_SYSTEM },
+          { role: 'system', content: appendWorkspaceSystem(MEMORY_SYSTEM, workspace.systemRules) },
           {
             role: 'user',
-            content: buildMemoryUser({
+            content: appendWorkspaceManifest(buildMemoryUser({
               previousMemory: clip(p.previousMemory ?? '', maxChars),
               recentText: formatRecent(p.recent),
               decisionText: formatDecision(p.decision),
@@ -154,20 +165,25 @@ export async function requestMemoryUpdate(p: MemoryUpdateRequest): Promise<Memor
               outlineText: formatOutlineForMemory(p.outline),
               worldBookText: formatAlwaysActiveWorldBook(p.worldBookEntries),
               maxChars,
-            }),
+            }), workspace.userManifest),
           },
         ],
+        tools: workspace.tools,
+        onToolCall: workspace.onToolCall,
+        maxToolRounds: 3,
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     const out = result.text.trim();
     if (!out) return null;
-    return {
+    return withPromptTrace({
       memory: clip(out, maxChars),
       thinking: result.thinking,
       rawOutput: result.text,
       usage: result.usage,
-    };
+    }, result.trace);
   } catch (err) {
     console.warn('[memoryAgent] update failed', err);
     return null;

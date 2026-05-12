@@ -36,6 +36,7 @@ import {
   DEFAULT_AUTHOR_SETTING_GUARD_CONFIG,
   DEFAULT_AUTHOR_STAGE_JUDGE_CONFIG,
   normalizeAuthorDirectorConfig,
+  normalizeAuthorEventBeatConfig,
   normalizeAuthorLogicCheckConfig,
   normalizeAuthorMasterArcConfig,
   normalizeAuthorRandomEventConfig,
@@ -45,7 +46,7 @@ import {
 import type { RandomEvent } from '@/types/content';
 import type { AuthorDirectorConfig, AuthorLogicCheckConfig, AuthorMasterArcConfig, AuthorRandomEventConfig, AuthorSettingGuardConfig, AuthorStageJudgeConfig, JourneyMode } from '@/types/game';
 import { PRESET_EVENTS } from '@/presets/events';
-import { fallbackMasterArcFromOutline, requestMasterArc } from '@/services/authorMasterArcAgent';
+import { fallbackMasterArcFromOutline } from '@/services/authorMasterArcAgent';
 import { applyWorkspaceTemplatesToSave, templateMatchesJourney } from '@/lib/workspaceTemplates';
 
 type Step = 'outline' | 'background' | 'config' | 'strict';
@@ -132,8 +133,6 @@ export default function SetupPage() {
     () => events.filter((e) => !hiddenEventIds.includes(e.id)),
     [events, hiddenEventIds],
   );
-  const strictDetailCount = strictCustomDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
-  const authorDetailCount = authorDraft.detailedOutline.filter((item) => item.prompt.trim()).length;
   const recommendedWorkspaceTemplateIds = useMemo(
     () => workspaceTemplates
       .filter((template) => templateMatchesJourney(template, { outlineId, backgroundId, worldBookIds }))
@@ -481,27 +480,16 @@ export default function SetupPage() {
     const normalizedAuthorMasterArc = normalizeAuthorMasterArcConfig(authorMasterArc);
     const normalizedAuthorStageJudge = normalizeAuthorStageJudgeConfig(authorStageJudge);
     const normalizedAuthorSettingGuard = normalizeAuthorSettingGuardConfig(authorSettingGuard);
+    const normalizedAuthorEventBeat = normalizeAuthorEventBeatConfig(authorMode.eventBeatConfig);
     const initialScene = customStartScene?.trim() || selectedBackground.startScene;
     const authorEventResourceIds = Array.from(new Set([
       ...normalizedAuthorRandomEvent.poolEventIds,
       ...normalizedAuthorRandomEvent.dynamic.referenceEventIds,
     ]));
     try {
-      let masterArc = undefined;
-      if (isAuthorMode && normalizedAuthorMasterArc.enabled) {
-        masterArc = await requestMasterArc({
-          settings,
-          outline: selectedOutline,
-          background: selectedBackground,
-          initialScene,
-          characterName: characterName.trim() || undefined,
-          config: normalizedAuthorMasterArc,
-          worldBookEntries: flattenWorldBookEntries(worldBooks, worldBookIds),
-        });
-      }
-      if (isAuthorMode && !masterArc) {
-        masterArc = fallbackMasterArcFromOutline(selectedOutline, normalizedAuthorMasterArc);
-      }
+      const masterArc = isAuthorMode
+        ? fallbackMasterArcFromOutline(selectedOutline, normalizedAuthorMasterArc)
+        : undefined;
       const saveId = createSave({
         name: saveName,
         config: {
@@ -525,6 +513,7 @@ export default function SetupPage() {
           authorMasterArc: isAuthorMode ? normalizedAuthorMasterArc : undefined,
           authorStageJudge: isAuthorMode ? normalizedAuthorStageJudge : undefined,
           authorSettingGuard: isAuthorMode ? normalizedAuthorSettingGuard : undefined,
+          authorEventBeat: isAuthorMode ? normalizedAuthorEventBeat : undefined,
           storyStyle: {
             storyLength: settings.storyLength,
             storyStyleAddendum: settings.storyStyleAddendum,
@@ -543,14 +532,6 @@ export default function SetupPage() {
             masterArc,
           },
         });
-        if (masterArc?.thinking?.trim()) {
-          useGameStore.getState().addAgentThought(saveId, {
-            kind: 'masterArc',
-            label: '主弧铺设 · 勾勒全篇',
-            round: 0,
-            content: masterArc.thinking,
-          });
-        }
       }
       if (selectedWorkspaceTemplates.length) {
         try {
@@ -657,7 +638,7 @@ export default function SetupPage() {
           <div className="flex items-end justify-between mb-2 gap-4">
             <div>
               <h2 className="font-serif text-2xl text-gold-light">选择你的出身</h2>
-              <div className="text-sm text-parchment-200/70">出身决定开局的场景、初始技能与物品。</div>
+              <div className="text-sm text-parchment-200/70">出身决定开局的场景、初始技能与能力。</div>
             </div>
             <Button
               variant="outline"
@@ -720,13 +701,10 @@ export default function SetupPage() {
       {step === 'strict' && journeyMode === 'author' && (
         <StrictCustomEditor
           title="严格自定义模式"
-          description="面向强自定义旅程的独立规则与详细大纲。执笔模式默认每回合都由玩家自由输入；提示词链路覆盖已改为独立开关，默认沿用项目最新模型链路。"
+          description="面向强自定义旅程的独立规则。执笔模式默认每回合都由玩家自由输入；提示词链路覆盖已改为独立开关，默认沿用项目最新模型链路。"
           config={authorDraft}
           update={authorMode.update}
           reset={authorMode.reset}
-          addDirective={authorMode.addDirective}
-          updateDirective={authorMode.updateDirective}
-          removeDirective={authorMode.removeDirective}
           showEnableToggle={false}
         />
       )}
@@ -787,13 +765,13 @@ export default function SetupPage() {
                 hint="每 N 回合 +1 次"
               />
               <Input
-                label="背包容量"
+                label="能力容量"
                 type="number"
                 min={3}
                 max={30}
                 value={itemCapacity}
                 onChange={(e) => setItemCapacity(Number(e.target.value) || 8)}
-                hint="超载需丢弃"
+                hint="超载需舍弃"
               />
             </div>
 
@@ -808,11 +786,10 @@ export default function SetupPage() {
                     )}
                   </CardTitle>
                   <CardMeta>
-                    用高优先级规则控制隐藏设定揭示、回合推进粒度和指定回合详细大纲；提示词链路覆盖需在编辑页单独打开。
+                    用高优先级规则控制隐藏设定揭示、回合推进粒度和选项偏好；提示词链路覆盖需在编辑页单独打开。
                   </CardMeta>
                   <div className="text-xs text-parchment-200/70">
-                    详细大纲 {strictDetailCount} 项
-                    {strictCustomDraft.promptOverrideEnabled ? ' · 已覆盖提示词链路' : ' · 使用默认提示词链路'}
+                    {strictCustomDraft.promptOverrideEnabled ? '已覆盖提示词链路' : '使用默认提示词链路'}
                     {strictCustomDraft.enabled ? ' · 将随新旅程固化' : ' · 当前未启用'}
                   </div>
                 </div>
@@ -830,11 +807,10 @@ export default function SetupPage() {
                       <span className="text-[10px] text-gold/80 tracking-[0.25em] uppercase">每回合自由行动</span>
                     </CardTitle>
                     <CardMeta>
-                      使用独立规则、详细大纲草稿与可选提示词链路覆盖；默认沿用项目最新提示词链路。
+                      使用独立规则与可选提示词链路覆盖；默认沿用项目最新提示词链路。
                     </CardMeta>
                     <div className="text-xs text-parchment-200/70">
-                      详细大纲 {authorDetailCount} 项
-                      {authorDraft.promptOverrideEnabled ? ' · 已覆盖提示词链路' : ' · 使用默认提示词链路'}
+                      {authorDraft.promptOverrideEnabled ? '已覆盖提示词链路' : '使用默认提示词链路'}
                       {' · 将随新旅程固化'}
                     </div>
                   </div>
@@ -1489,7 +1465,7 @@ function AuthorLogicCheckSection({
         <div>
           <CardTitle className="text-base">逻辑审校 / 连续性修复</CardTitle>
           <CardMeta>
-            定期检查人物、场景、时间、道具、伏笔和大纲贴合问题，并把修复建议注入后续故事。
+            定期检查人物、场景、时间、能力、伏笔和大纲贴合问题，并把修复建议注入后续故事。
           </CardMeta>
         </div>
         <label className="flex items-center gap-2 text-sm text-parchment-200/80 cursor-pointer">

@@ -1,4 +1,15 @@
-import type { StrictCustomConfig, StrictRoundDirective } from '@/types/custom';
+/**
+ * 提示词模板输入说明（维护用注释，不会进入模型）：
+ * - 本文件不是模型服务入口，但保存严格自定义模式可覆盖的 story/decision 模板与默认变量槽。
+ * - 故事模板变量包含：roundInfo、outlineBlock、masterArcBlock、stageJudgeBlock、storyArcBlock、backgroundBlock、worldBookAlwaysBlock、worldBookTriggeredBlock、summaryBlock、memoryBlock。
+ * - 故事模板变量包含：outlineMappingBlock、narrativePlanBlock、narrativeBriefBlock、settingGuardBlock、logicReviewBlock、npcsBlock、anchorsBlock、backpackBlock、currentSceneBlock。
+ * - 故事模板变量包含：strictCustomBlock、usedItemsBlock、writingRulesBlock、styleAddendumBlock、specialBlock、defaultUserMessage 等。
+ * - 决策模板变量包含：summaryBlock、longTermMemoryBlock、recentTextBlock、latestStory、backpackSummary、backpackJsonBlock、npcBlock、npcJsonBlock、anchorsBlock。
+ * - 决策模板变量包含：currentSceneBlock、stageNarrativeBlock、narrativePlanBlock、activeArcsBlock、strictCustomDecisionBlock、defaultDecisionUserPrompt。
+ * - buildStrictCustomStoryBlock 额外读取：全局叙事约束、推进粒度、隐藏设定揭示规则。
+ * - buildStrictCustomDecisionBlock 额外读取：严格自定义选项规则。
+ */
+import type { StrictCustomConfig } from '@/types/custom';
 import { DECISION_SYSTEM } from '@/prompts/decisionSystem';
 
 export const DEFAULT_STORY_SYSTEM_TEMPLATE = `{{roundInfo}}
@@ -11,7 +22,9 @@ export const DEFAULT_STORY_SYSTEM_TEMPLATE = `{{roundInfo}}
 {{worldBookTriggeredBlock}}
 {{summaryBlock}}
 {{memoryBlock}}
+{{outlineMappingBlock}}
 {{narrativePlanBlock}}
+{{narrativeBriefBlock}}
 {{settingGuardBlock}}
 {{logicReviewBlock}}
 {{npcsBlock}}
@@ -39,7 +52,9 @@ export const DEEPSEEK_COMPAT_STORY_SYSTEM_TEMPLATE = `叙述人称必须完全�
 {{worldBookTriggeredBlock}}
 {{summaryBlock}}
 {{memoryBlock}}
+{{outlineMappingBlock}}
 {{narrativePlanBlock}}
+{{narrativeBriefBlock}}
 {{settingGuardBlock}}
 {{logicReviewBlock}}
 {{npcsBlock}}
@@ -61,6 +76,8 @@ export const COMPACT_STORY_SYSTEM_TEMPLATE = `基于以下上下文，只写本�
 {{storyArcBlock}}
 {{worldBookAlwaysBlock}}
 {{memoryBlock}}
+{{outlineMappingBlock}}
+{{narrativeBriefBlock}}
 {{settingGuardBlock}}
 {{npcsBlock}}
 {{anchorsBlock}}
@@ -83,7 +100,7 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 【玩家最新看到的故事片段】
 {{latestStory}}
 
-【玩家当前背包】
+【玩家当前能力】
 {{backpackSummary}}
 {{backpackJsonBlock}}
 {{npcBlock}}
@@ -97,9 +114,9 @@ export const DEFAULT_DECISION_USER_TEMPLATE = `{{summaryBlock}}
 请按协议输出 JSON。注意：
 - choices 应服务于上方【当前导演计划】的下一回合焦点和【进行中事件弧】的当前阶段（若有）；与计划无关的随性 choices 应避免；
 - 若存在【阶段化叙事 / 玩家节奏】，choices 必须贴合其中的本回合聚焦；玩家处于沉浸/探索节奏时，选项应更微观，不要催促跳阶段；
-- grants 不要与背包重名；
-- 修改/删除已有道具时优先使用【当前背包 JSON】里的 id；新物品才放 grants；
-- destroys / itemPatches 的 name 必须与背包中某件道具 name 完全一致，能给 id 就必须给 id；
+- grants 不要与能力重名；
+- 修改/删除已有能力时优先使用【当前能力 JSON】里的 id；新能力才放 grants；
+- destroys / itemPatches 的 name 必须与能力列表中某项的 name 完全一致，能给 id 就必须给 id；
 - 修改/删除已有 NPC 时优先使用【当前已知 NPC JSON】里的 id；同一人物称呼变化时 update 原 id，不要新建；
 - 新 NPC 可用 affinity 直接设定初始好感；已有 NPC 可用 affinity 设定当前好感或 affinityDelta 表示变化；
 - npcs.details 可记录主角已知外观/服装/习惯/关系猜测，如"粉色美甲""上次见面穿 JK 服""我怀疑她可能暗恋某人"；
@@ -115,7 +132,7 @@ export const DEFAULT_STRICT_CUSTOM_CONFIG: StrictCustomConfig = {
   pacingPrompt:
     '每回合只推进一个清晰的剧情 beat。若玩家选择等待、观察、拖延、试探，应优先描写环境或 NPC 的即时反应，并停在新的压力点。',
   revealPrompt:
-    '隐藏能力、身份秘密、幕后真相、世界机制只作为幕后设定保持一致；除非玩家明确尝试、调查、触发，或详细大纲指定揭示，否则不要写进正文。',
+    '隐藏能力、身份秘密、幕后真相、世界机制只作为幕后设定保持一致；除非玩家明确尝试、调查或触发，否则不要写进正文。',
   choicePrompt:
     '选项应围绕当前压力点给出 3~4 个差异明确的行动，不要提前替玩家解决危机，也不要把隐藏设定作为选项前提。',
   promptOverrideEnabled: false,
@@ -123,14 +140,7 @@ export const DEFAULT_STRICT_CUSTOM_CONFIG: StrictCustomConfig = {
   storyUserPrompt: DEFAULT_STORY_USER_TEMPLATE,
   decisionSystemPrompt: DECISION_SYSTEM,
   decisionUserPrompt: DEFAULT_DECISION_USER_TEMPLATE,
-  detailedOutline: [],
 };
-
-function clampRound(n: unknown, fallback: number): number {
-  const num = Math.floor(Number(n));
-  if (!Number.isFinite(num)) return fallback;
-  return Math.max(0, Math.min(999, num));
-}
 
 export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>): StrictCustomConfig {
   const base = DEFAULT_STRICT_CUSTOM_CONFIG;
@@ -138,21 +148,6 @@ export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>)
     const trimmed = (value ?? '').trim();
     return (trimmed || fallback).slice(0, limit);
   };
-  const detailedOutline = (input?.detailedOutline ?? [])
-    .map((item, index) => {
-      const start = clampRound(item.startRound, 1);
-      const end = clampRound(item.endRound, start);
-      const startRound = Math.min(start, end);
-      const endRound = Math.max(start, end);
-      return {
-        id: item.id || `strict_${index}_${Date.now().toString(36)}`,
-        startRound,
-        endRound,
-        prompt: (item.prompt ?? '').trim().slice(0, 2000),
-      };
-    })
-    .filter((item) => item.prompt)
-    .sort((a, b) => a.startRound - b.startRound || a.endRound - b.endRound);
 
   return {
     enabled: Boolean(input?.enabled),
@@ -165,7 +160,6 @@ export function normalizeStrictCustomConfig(input?: Partial<StrictCustomConfig>)
     storyUserPrompt: promptTemplate(input?.storyUserPrompt, base.storyUserPrompt),
     decisionSystemPrompt: promptTemplate(input?.decisionSystemPrompt, base.decisionSystemPrompt),
     decisionUserPrompt: promptTemplate(input?.decisionUserPrompt, base.decisionUserPrompt),
-    detailedOutline,
   };
 }
 
@@ -182,23 +176,12 @@ export function renderPromptTemplate(
     .trim();
 }
 
-export function getActiveRoundDirectives(
-  config: StrictCustomConfig | undefined,
-  round: number,
-): StrictRoundDirective[] {
-  if (!config?.enabled) return [];
-  return (config.detailedOutline ?? []).filter((item) =>
-    round >= item.startRound && round <= item.endRound && item.prompt.trim(),
-  );
-}
-
 export function buildStrictCustomStoryBlock(
   config: StrictCustomConfig | undefined,
   round: number,
 ): string {
   if (!config?.enabled) return '';
   const normalized = normalizeStrictCustomConfig(config);
-  const active = getActiveRoundDirectives(normalized, round);
   const lines: string[] = [
     '【严格自定义模式】',
     '以下规则优先级高于常规故事大纲、世界书和默认写作习惯；若发生冲突，以本节为准。',
@@ -207,14 +190,6 @@ export function buildStrictCustomStoryBlock(
   if (normalized.globalPrompt) lines.push('', '【全局叙事约束】', normalized.globalPrompt);
   if (normalized.pacingPrompt) lines.push('', '【推进粒度】', normalized.pacingPrompt);
   if (normalized.revealPrompt) lines.push('', '【隐藏设定揭示规则】', normalized.revealPrompt);
-
-  if (active.length) {
-    lines.push('', `【第 ${round} 回合适用的详细大纲】`);
-    for (const item of active) {
-      lines.push(`· [${item.startRound}]-[${item.endRound}] 回合：${item.prompt}`);
-    }
-    lines.push('请优先贴合以上详细大纲，但仍只写本回合直接发生的内容。');
-  }
 
   return lines.join('\n');
 }

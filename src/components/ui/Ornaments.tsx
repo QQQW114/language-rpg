@@ -5,9 +5,11 @@ interface OrnateDividerProps {
   children?: React.ReactNode;
   className?: string;
   decoration?: 'diamond' | 'seal' | 'leaf' | 'cloud';
+  enter?: boolean;
+  style?: React.CSSProperties;
 }
 
-export function OrnateDivider({ children, className, decoration = 'diamond' }: OrnateDividerProps) {
+export function OrnateDivider({ children, className, decoration = 'diamond', enter, style }: OrnateDividerProps) {
   const Glyph = (() => {
     if (children) return null;
     if (decoration === 'seal') {
@@ -37,7 +39,14 @@ export function OrnateDivider({ children, className, decoration = 'diamond' }: O
   })();
 
   return (
-    <div className={clsx('divider-ornate my-6 font-serif text-sm', className)}>
+    <div
+      style={style}
+      className={clsx(
+        'divider-ornate my-6 font-serif text-sm',
+        enter && 'divider-ornate--enter',
+        className,
+      )}
+    >
       {children ?? Glyph}
     </div>
   );

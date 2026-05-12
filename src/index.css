@@ -100,6 +100,23 @@ body::before {
   background: linear-gradient(90deg, transparent, currentColor, transparent);
 }
 
+/* 入场动效：两段横线从外侧边界向中央生长，中央装饰随后淡入 */
+.divider-ornate--enter::before,
+.divider-ornate--enter::after {
+  animation: line-draw-in 0.75s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--enter-delay, 0s);
+}
+.divider-ornate--enter::before {
+  transform-origin: left center;
+}
+.divider-ornate--enter::after {
+  transform-origin: right center;
+}
+.divider-ornate--enter > * {
+  animation: fade-in 0.5s ease-out both;
+  animation-delay: calc(var(--enter-delay, 0s) + 0.35s);
+}
+
 /* 金线：默认不发光，只在需要强调时加 .gold-line--glow */
 .gold-line {
   height: 1px;
@@ -203,6 +220,7 @@ body::before {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }

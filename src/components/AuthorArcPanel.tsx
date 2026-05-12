@@ -1,9 +1,9 @@
 import { ChevronDown, ScrollText } from 'lucide-react';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
-import type { AuthorNarrativeState, AuthorRandomEventState, StoryArc } from '@/types/game';
+import type { AuthorNarrativeState, AuthorRandomEventState, EventBeatVerdict, StoryArc } from '@/types/game';
 import { ThinkToggle } from '@/components/ThinkToggle';
 
-function ArcItem({ arc, muted }: { arc: StoryArc; muted?: boolean }) {
+function ArcItem({ arc, muted, verdict }: { arc: StoryArc; muted?: boolean; verdict?: EventBeatVerdict }) {
   const stage = arc.stages[arc.currentStageIndex] ?? arc.stages[0];
   return (
     <details className="group rounded border border-parchment-600/35 bg-parchment-900/30 px-3 py-2" open={!muted}>
@@ -17,17 +17,35 @@ function ArcItem({ arc, muted }: { arc: StoryArc; muted?: boolean }) {
             {arc.targetEndRound ? `第 ${arc.startRound}-${arc.targetEndRound} 回合` : `第 ${arc.startRound} 回合起`}
             {' · '}
             {arc.status === 'pending' ? '待注入' : arc.status === 'active' ? '进行中' : '已结束'}
+            {arc.lifecycle ? ` · ${arc.lifecycle}` : ''}
+            {arc.progressPercent !== undefined ? ` · ${arc.progressPercent}%` : ''}
+            {arc.isMilestone ? ' · 主线节点' : ''}
           </div>
         </div>
       </summary>
       <div className="mt-2 space-y-1 pl-6 text-xs leading-relaxed text-parchment-200/70">
         <div>{arc.summary}</div>
+        {arc.isMilestone && (
+          <div className="inline-flex rounded border border-gold/35 bg-gold/10 px-2 py-0.5 text-[11px] text-gold-light">
+            Milestone{arc.milestoneOf ? ` · ${arc.milestoneOf}` : ''}
+          </div>
+        )}
         {stage && (
           <div className="text-parchment-100/80">
             当前阶段：{stage.title}（第 {stage.startRound}-{stage.endRound} 回合）
           </div>
         )}
         {arc.progressNote && <div className="italic text-parchment-200/55">{arc.progressNote}</div>}
+        {arc.alternateOutcomePath && (
+          <div className="text-parchment-200/55">失败转向：{arc.alternateOutcomePath}</div>
+        )}
+        {verdict && (
+          <div className="rounded border border-parchment-600/30 bg-ink/20 px-2 py-1 text-[11px] text-parchment-100/75">
+            司事最近判定：{verdict.lifecycle}
+            {verdict.progressPercent !== undefined ? ` · ${verdict.progressPercent}%` : ''}
+            {verdict.outcomeNote ? `｜${verdict.outcomeNote}` : verdict.progressNote ? `｜${verdict.progressNote}` : ''}
+          </div>
+        )}
       </div>
     </details>
   );
@@ -50,6 +68,7 @@ export function AuthorArcPanel({
     ...(randomEventState?.completedEvents ?? []),
     ...(narrative?.completedArcs ?? []),
   ].slice(-8).reverse();
+  const verdictByArc = new Map((narrative?.eventBeat?.verdicts ?? []).map((v) => [v.arcId, v]));
   const hasAny = plan || pending.length || active.length || completed.length || randomEventState?.lastError;
 
   return (
@@ -89,10 +108,30 @@ export function AuthorArcPanel({
           </div>
         </details>
       )}
+      {narrative?.eventBeat && (
+        <details className="mb-2 rounded border border-parchment-600/35 bg-parchment-900/30 px-3 py-2">
+          <summary className="cursor-pointer list-none text-xs text-gold-light">
+            司事判定 · 第 {narrative.eventBeat.updatedAtRound} 回合
+            {narrative.eventBeat.verdicts.length > 0 && (
+              <span className="ml-2 text-parchment-200/60">事件 {narrative.eventBeat.verdicts.length}</span>
+            )}
+          </summary>
+          <div className="mt-2 space-y-1 text-xs leading-relaxed text-parchment-200/70">
+            {narrative.eventBeat.planConcern && <div>反馈：{narrative.eventBeat.planConcern}</div>}
+            {narrative.eventBeat.verdicts.slice(0, 5).map((v) => (
+              <div key={v.arcId}>
+                · {v.title || v.arcId}：{v.lifecycle}
+                {v.progressPercent !== undefined ? ` / ${v.progressPercent}%` : ''}
+              </div>
+            ))}
+            <ThinkToggle content={narrative.eventBeat.thinking} compact />
+          </div>
+        </details>
+      )}
       <div className="space-y-2">
-        {pending.map((arc) => <ArcItem key={`p-${arc.id}`} arc={arc} />)}
-        {active.map((arc) => <ArcItem key={`a-${arc.id}`} arc={arc} />)}
-        {completed.map((arc) => <ArcItem key={`c-${arc.id}`} arc={arc} muted />)}
+        {pending.map((arc) => <ArcItem key={`p-${arc.id}`} arc={arc} verdict={verdictByArc.get(arc.id)} />)}
+        {active.map((arc) => <ArcItem key={`a-${arc.id}`} arc={arc} verdict={verdictByArc.get(arc.id)} />)}
+        {completed.map((arc) => <ArcItem key={`c-${arc.id}`} arc={arc} muted verdict={verdictByArc.get(arc.id)} />)}
       </div>
       {randomEventState?.lastError && (
         <div className="mt-2 text-[11px] text-blood/80 bg-blood/10 border border-blood/40 rounded px-2 py-1">

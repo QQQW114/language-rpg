@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, Flag, Home, MoreVertical, Package, Settings } from 'lucide-react';
+import { BookMarked, Download, Flag, Home, MoreVertical, Package, Settings } from 'lucide-react';
 import { clsx } from '@/lib/utils';
 import { Button } from './ui/Button';
 import { DropdownMenu, type DropdownMenuItem } from './ui/DropdownMenu';
@@ -16,6 +16,7 @@ interface TopBarProps {
   onHome: () => void;
   onSettings: () => void;
   onOpenBackpack: () => void;
+  onOpenWorkspace?: () => void;
   onExportChat: () => void;
   onExportJourney: () => void;
   onToggleFinalize: () => void;
@@ -36,6 +37,7 @@ export function TopBar({
   onHome,
   onSettings,
   onOpenBackpack,
+  onOpenWorkspace,
   onExportChat,
   onExportJourney,
   onToggleFinalize,
@@ -53,11 +55,17 @@ export function TopBar({
   menuItems.push(
     {
       id: 'backpack',
-      label: '查看背包',
+      label: '查看能力',
       icon: <Package size={14} />,
       badge: backpackCount,
       onClick: onOpenBackpack,
     },
+    ...(onOpenWorkspace ? [{
+      id: 'workspace',
+      label: '司书库',
+      icon: <BookMarked size={14} />,
+      onClick: onOpenWorkspace,
+    }] : []),
     {
       id: 'export-chat',
       label: '导出聊天记录',

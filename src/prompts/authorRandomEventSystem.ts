@@ -1,3 +1,13 @@
+/**
+ * 提示词输入说明（维护用注释，不会进入模型）：
+ * - system：动态长线事件导演身份、是否触发随机事件与事件弧 JSON 协议。
+ * - user：buildAuthorRandomEventUser 拼装当前随机事件调度/生成任务。
+ * - 输入包含：故事大纲、主角出身、历史摘要、长期记忆、最近上下文、最新故事片段、世界书、玩家标记、能力。
+ * - 输入包含：当前已知 NPC、当前场景、阶段化叙事 / 玩家节奏、当前叙事导演计划、已在进行中的叙事弧。
+ * - 输入包含：动态随机事件配置、mustTrigger、scheduleReason、玩家填写的随机事件生成提示词、事件偏好提示词、参考随机事件池。
+ * - chat + 司书库启用时，服务层还会追加司书库 systemRules / manifest，并开放对应工具。
+ * - 输出：trigger=false 的原因，或 trigger=true 的长线事件弧 JSON。
+ */
 import type { Background, RandomEvent, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorNarrativeState,
@@ -28,7 +38,18 @@ export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是这段互动小说的"动态长
        "title":"事件名，8~24字",
        "summary":"事件概述，说明明面发生什么",
        "directive":"给故事模型的本事件总指令：如何自然引入、如何推进、玩家可感知的冲突是什么",
+       "lifecycle":"candidate",
+       "surfaceGoal":"玩家与主角当前可感知的明面目标，≤180字",
        "hiddenIntent":"幕后真实意图/误会/关系试探/反转，仅供规划，不要直接写给玩家",
+       "completionCriteria":["事件怎样算阶段性完成"],
+       "failureCriteria":["事件怎样算轻度失败/需要补救"],
+       "abandonCriteria":["玩家怎样算放弃或绕开此事件"],
+       "worldProgressDelta":8,
+       "relationshipDeltas":[
+         {"npcName":"小晴","affinityDelta":6,"trustDelta":3,"note":"共同经历一次主动邀约"}
+       ],
+       "progressPercent":0,
+       "writingBoundary":"下一回合只写到事件被自然引入，不直接写完整过程",
        "involvedNpcNames":["人物名"],
        "tags":["恋爱","约会","主线推进"],
        "targetEndRound":12,
@@ -43,6 +64,9 @@ export const AUTHOR_RANDOM_EVENT_SYSTEM = `你是这段互动小说的"动态长
 生成原则：
 - 优先使用上文已经出现的人物、承诺、关系、地点、未解情绪和长期记忆；不要凭空扔入与题材无关的大危机。
 - 事件要像小说支线/章节弧：有明面目标、隐藏意图、阶段推进和收束方向；回合字段只作调度参考，不得迫使故事模型压缩剧情。
+- lifecycle 初始通常为 candidate；事件真正进入正文后由程序置为 active/progressing。progressPercent 初始通常为 0。
+- completionCriteria / failureCriteria / abandonCriteria 用于后续结算；事件失败不是故事失败，只会影响关系、世界/阶段进度或生成替代桥接事件。
+- writingBoundary 只约束下一回合的引入/推进边界，避免故事模型一口气写完整条事件。
 - 必须尊重【阶段化叙事 / 玩家节奏】：事件触发应服务当前主弧阶段；如果玩家正处于沉浸/探索节奏，不要生成会立刻把剧情推到下一阶段的大事件。
 - 每个阶段只规定方向与必达节拍，不要替玩家决定关键行动。
 - 若是恋爱/关系线，事件应由现有关系状态自然触发，例如主动邀约、误会澄清、共同完成一件事。
@@ -118,7 +142,7 @@ function formatAnchors(anchors: MemoryAnchor[] | undefined): string {
 
 function formatBackpack(backpack: Item[] | undefined): string {
   if (!backpack?.length) return '';
-  return ['【玩家背包】（新事件可以围绕已有道具展开）', formatItemsForPrompt(backpack)].join('\n');
+  return ['【玩家能力】（新事件可以围绕已有能力展开）', formatItemsForPrompt(backpack)].join('\n');
 }
 
 function formatNarrativePlan(narrative: AuthorNarrativeState | undefined): string {
@@ -134,6 +158,12 @@ function formatNarrativePlan(narrative: AuthorNarrativeState | undefined): strin
     plan.nextFewRoundsPlan.slice(0, 4).forEach((item) => {
       lines.push(`· ${item.goal}`);
     });
+  }
+  if (plan.outlineMapping) {
+    const m = plan.outlineMapping;
+    lines.push(`大纲映射：${m.alignment}${m.currentAct ? `；${m.currentAct}` : ''}${m.stageProgress !== undefined ? `；阶段进度${m.stageProgress}%` : ''}`);
+    if (m.missingBridgeEvents?.length) lines.push(`缺少桥接事件：${m.missingBridgeEvents.join('；')}`);
+    if (m.candidateEvents?.length) lines.push(`推荐事件方向：${m.candidateEvents.join('；')}`);
   }
   if (plan.pacingAdvice) lines.push(`节奏建议：${plan.pacingAdvice}`);
   return lines.length > 1 ? lines.join('\n') : '';

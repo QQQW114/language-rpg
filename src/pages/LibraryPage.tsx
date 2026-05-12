@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import {
   ArrowLeft,
+  BookMarked,
   BookOpen,
   Dices,
   Map,
@@ -19,6 +20,7 @@ import {
   selectAllBackgrounds,
   selectAllWorldBooks,
   selectAllEvents,
+  selectAllWorkspaceTemplates,
 } from '@/store/useContentStore';
 import type { Background, RandomEvent, StoryOutline, WorldBook } from '@/types/content';
 import { PRESET_OUTLINES } from '@/presets/outlines';
@@ -31,7 +33,7 @@ import { OrnateDivider } from '@/components/ui/Ornaments';
 import { ImportDialog } from '@/components/ImportDialog';
 import { genId } from '@/lib/utils';
 
-type Tab = 'outlines' | 'backgrounds' | 'worldbooks' | 'events';
+type Tab = 'outlines' | 'backgrounds' | 'worldbooks' | 'events' | 'workspaceTemplates';
 type EditState =
   | { kind: 'outlines'; item: StoryOutline }
   | { kind: 'backgrounds'; item: Background }
@@ -48,16 +50,19 @@ export default function LibraryPage() {
   const backgrounds = useContentStore(selectAllBackgrounds);
   const worldBooks = useContentStore(selectAllWorldBooks);
   const events = useContentStore(selectAllEvents);
+  const workspaceTemplates = useContentStore(selectAllWorkspaceTemplates);
 
   const customOutlines = useContentStore((s) => s.customOutlines);
   const customBackgrounds = useContentStore((s) => s.customBackgrounds);
   const customWorldBooks = useContentStore((s) => s.customWorldBooks);
   const customEvents = useContentStore((s) => s.customEvents);
+  const customWorkspaceTemplates = useContentStore((s) => s.customWorkspaceTemplates);
 
   const removeOutline = useContentStore((s) => s.removeOutline);
   const removeBackground = useContentStore((s) => s.removeBackground);
   const removeWorldBook = useContentStore((s) => s.removeWorldBook);
   const removeEvent = useContentStore((s) => s.removeEvent);
+  const removeWorkspaceTemplate = useContentStore((s) => s.removeWorkspaceTemplate);
   const updateOutline = useContentStore((s) => s.updateOutline);
   const updateBackground = useContentStore((s) => s.updateBackground);
   const updateWorldBook = useContentStore((s) => s.updateWorldBook);
@@ -69,6 +74,7 @@ export default function LibraryPage() {
       case 'backgrounds': return PRESET_BACKGROUNDS.some((x) => x.id === id);
       case 'worldbooks': return PRESET_WORLDBOOKS.some((x) => x.id === id);
       case 'events': return PRESET_EVENTS.some((x) => x.id === id);
+      case 'workspaceTemplates': return false;
     }
   };
 
@@ -78,6 +84,7 @@ export default function LibraryPage() {
       case 'backgrounds': return customBackgrounds.some((x) => x.id === id);
       case 'worldbooks': return customWorldBooks.some((x) => x.id === id);
       case 'events': return customEvents.some((x) => x.id === id);
+      case 'workspaceTemplates': return customWorkspaceTemplates.some((x) => x.id === id);
     }
   };
 
@@ -86,6 +93,7 @@ export default function LibraryPage() {
     { id: 'backgrounds', label: '出身', icon: UserRound, count: backgrounds.length },
     { id: 'worldbooks', label: '世界书', icon: Map, count: worldBooks.length },
     { id: 'events', label: '随机事件', icon: Dices, count: events.length },
+    { id: 'workspaceTemplates', label: '司书库模板', icon: BookMarked, count: workspaceTemplates.length },
   ];
 
   const deletable = (id: string): boolean => !isPreset(id, tab) || hasCustom(id, tab);
@@ -101,6 +109,7 @@ export default function LibraryPage() {
     else if (tab === 'backgrounds') removeBackground(id);
     else if (tab === 'worldbooks') removeWorldBook(id);
     else if (tab === 'events') removeEvent(id);
+    else if (tab === 'workspaceTemplates') removeWorkspaceTemplate(id);
     if (editing?.kind === tab && editing.item.id === id) setEditing(null);
   };
 
@@ -301,6 +310,63 @@ export default function LibraryPage() {
             </Row>
           );
         })}
+
+        {tab === 'workspaceTemplates' && workspaceTemplates.map((t) => (
+          <Row
+            key={t.id}
+            preset={false}
+            onDelete={() => onDelete(t.id)}
+          >
+            <div>
+              <div className="flex items-center justify-between">
+                <div className="text-parchment-50 font-serif">{t.name}</div>
+                <div className="text-xs text-parchment-200/60">{t.docs.length} 份文件</div>
+              </div>
+              {t.description && (
+                <div className="text-xs text-parchment-200/70 mt-1 leading-relaxed">{t.description}</div>
+              )}
+              <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
+                {!!t.outlineIds?.length && (
+                  <span className="px-2 py-0.5 rounded border border-gold/30 text-gold/75">
+                    大纲 {t.outlineIds.length}
+                  </span>
+                )}
+                {!!t.backgroundIds?.length && (
+                  <span className="px-2 py-0.5 rounded border border-gold/30 text-gold/75">
+                    出身 {t.backgroundIds.length}
+                  </span>
+                )}
+                {!!t.worldBookIds?.length && (
+                  <span className="px-2 py-0.5 rounded border border-gold/30 text-gold/75">
+                    世界书 {t.worldBookIds.length}
+                  </span>
+                )}
+                {(t.tags ?? []).map((tag) => (
+                  <span key={tag} className="px-2 py-0.5 rounded border border-parchment-600/45 text-parchment-200/65">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+              <ul className="text-xs text-parchment-200/75 mt-2 space-y-1 max-h-36 overflow-auto">
+                {t.docs.slice(0, 8).map((doc) => (
+                  <li key={doc.path} className="pl-2 border-l border-gold-dark/40">
+                    <span className="text-gold/70">{doc.title || doc.path}</span>
+                    <span className="text-parchment-200/50 ml-2">{doc.path}</span>
+                  </li>
+                ))}
+                {t.docs.length > 8 && (
+                  <li className="text-parchment-200/40">… 及其余 {t.docs.length - 8} 份文件</li>
+                )}
+              </ul>
+            </div>
+          </Row>
+        ))}
+
+        {tab === 'workspaceTemplates' && workspaceTemplates.length === 0 && (
+          <div className="text-center text-sm text-parchment-200/60 border border-dashed border-parchment-600/40 rounded p-8">
+            暂无司书库模板。可点击右上角“导入”，粘贴带 workspaceTemplates 的 JSON，或从旅程卷宗 ZIP 提取。
+          </div>
+        )}
       </div>
 
       <OrnateDivider />
@@ -326,7 +392,7 @@ function Row({
   modified?: boolean;
   editing?: boolean;
   onDelete: () => void;
-  onEdit: () => void;
+  onEdit?: () => void;
 }) {
   return (
     <div className="bg-parchment-800/60 border border-parchment-600/40 rounded-lg p-4">
@@ -342,9 +408,11 @@ function Row({
           )}
           {!editing && (
             <>
-              <Button size="sm" variant="outline" onClick={onEdit} title="编辑">
-                <Pencil size={12} />
-              </Button>
+              {onEdit && (
+                <Button size="sm" variant="outline" onClick={onEdit} title="编辑">
+                  <Pencil size={12} />
+                </Button>
+              )}
               {(!preset || modified) && (
                 <Button size="sm" variant="danger" onClick={onDelete} title={preset ? '恢复预设' : '删除'}>
                   <Trash2 size={12} />
@@ -451,7 +519,7 @@ function BackgroundEditForm({
         rows={3}
       />
       <Textarea
-        label="初始物品（每行一个）"
+        label="初始能力（每行一个）"
         value={value.startItems.join('\n')}
         onChange={(e) => onChange({ ...value, startItems: splitLines(e.target.value) })}
         rows={3}

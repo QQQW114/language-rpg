@@ -4,6 +4,7 @@ import type {
   AuthorNarrativeState,
   AuthorRandomEventState,
   AuthorSettingGuardConfig,
+  GameSave,
   Item,
   MemoryAnchor,
   Message,
@@ -19,8 +20,12 @@ import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_SETTING_GUARD_SYSTEM, buildSettingGuardUser } from '@/prompts/authorSettingGuardSystem';
 import { extractJSON } from '@/lib/utils';
 import type { LlmUsage } from '@/types/llm';
+import { withPromptTrace } from '@/lib/agentTrace';
+import { appendWorkspaceManifest, appendWorkspaceSystem, buildWorkspaceToolRuntime } from '@/services/workspaceTools';
+import { resolveAuthorCallModel } from '@/lib/agentModels';
 
 export interface SettingGuardRequest {
+  save?: GameSave;
   settings: AppSettings;
   outline?: StoryOutline;
   background?: Background;
@@ -40,6 +45,8 @@ export interface SettingGuardRequest {
   anchors: MemoryAnchor[];
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -183,8 +190,10 @@ function sanitizeSettingGuardResult(raw: unknown, p: SettingGuardRequest): Setti
 }
 
 export async function requestSettingGuard(p: SettingGuardRequest): Promise<SettingGuardResult | undefined> {
-  const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildSettingGuardUser(p);
+  const model = resolveAuthorCallModel(p.settings, 'settingGuard');
+  const workspace = p.settings.apiFormat === 'chat' ? await buildWorkspaceToolRuntime(p.save, { agentKind: 'settingGuard' }) : {};
+  const user = appendWorkspaceManifest(buildSettingGuardUser(p), workspace.userManifest);
+  const system = appendWorkspaceSystem(AUTHOR_SETTING_GUARD_SYSTEM, workspace.systemRules);
 
   const runOnce = async (temperature: number): Promise<SettingGuardResult | undefined> => {
     const result = await chatJSONDetailed(
@@ -193,14 +202,19 @@ export async function requestSettingGuard(p: SettingGuardRequest): Promise<Setti
         model,
         temperature,
         messages: [
-          { role: 'system', content: AUTHOR_SETTING_GUARD_SYSTEM },
+          { role: 'system', content: system },
           { role: 'user', content: user },
         ],
+        tools: workspace.tools,
+        onToolCall: workspace.onToolCall,
+        maxToolRounds: 3,
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     const parsed = sanitizeSettingGuardResult(extractJSON(result.text), p);
-    return parsed ? { ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
+    return parsed ? withPromptTrace({ ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage }, result.trace) : undefined;
   };
 
   const first = await runOnce(0.35).catch((err) => {

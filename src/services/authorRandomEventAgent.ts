@@ -3,9 +3,11 @@ import type { Background, RandomEvent, StoryOutline, WorldBookEntry } from '@/ty
 import type {
   AuthorNarrativeState,
   AuthorRandomEventConfig,
+  GameSave,
   Item,
   MemoryAnchor,
   Message,
+  NarrativeEventLifecycle,
   Npc,
   SceneRef,
   StoryArc,
@@ -15,8 +17,11 @@ import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_RANDOM_EVENT_SYSTEM, buildAuthorRandomEventUser } from '@/prompts/authorRandomEventSystem';
 import { clamp, extractJSON, genId, nowMs } from '@/lib/utils';
 import type { LlmUsage } from '@/types/llm';
+import { withPromptTrace } from '@/lib/agentTrace';
+import { appendWorkspaceManifest, appendWorkspaceSystem, buildWorkspaceToolRuntime } from '@/services/workspaceTools';
 
 export interface AuthorRandomEventRequest {
+  save?: GameSave;
   settings: AppSettings;
   outline?: StoryOutline;
   background?: Background;
@@ -38,6 +43,8 @@ export interface AuthorRandomEventRequest {
   backpack?: Item[];
   anchors?: MemoryAnchor[];
   narrative?: AuthorNarrativeState;
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -70,6 +77,49 @@ function sanitizeStringList(raw: unknown, maxItems: number, maxChars: number): s
     if (out.length >= maxItems) break;
   }
   return out;
+}
+
+const EVENT_LIFECYCLES: NarrativeEventLifecycle[] = [
+  'candidate',
+  'active',
+  'progressing',
+  'turning',
+  'completed',
+  'soft_failed',
+  'missed',
+  'delayed',
+  'reframed',
+  'archived',
+];
+
+function sanitizeLifecycle(raw: unknown, fallback: NarrativeEventLifecycle): NarrativeEventLifecycle {
+  const value = cleanText(raw, 32) as NarrativeEventLifecycle;
+  return EVENT_LIFECYCLES.includes(value) ? value : fallback;
+}
+
+function sanitizeNumber(raw: unknown, min: number, max: number): number | undefined {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return undefined;
+  return clamp(Math.round(value), min, max);
+}
+
+function sanitizeRelationshipDeltas(raw: unknown): StoryArc['relationshipDeltas'] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NonNullable<StoryArc['relationshipDeltas']> = [];
+  for (const item of raw.slice(0, 10)) {
+    const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+    const npcId = cleanText(row.npcId, 40);
+    const npcName = cleanText(row.npcName, 30);
+    if (!npcId && !npcName) continue;
+    out.push({
+      npcId: npcId || undefined,
+      npcName: npcName || undefined,
+      affinityDelta: sanitizeNumber(row.affinityDelta, -100, 100),
+      trustDelta: sanitizeNumber(row.trustDelta, -100, 100),
+      note: cleanText(row.note, 120) || undefined,
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 function sanitizeStage(raw: unknown, nextRound: number, fallbackEnd: number, index: number): StoryArcStage | undefined {
@@ -125,7 +175,16 @@ function sanitizeArc(raw: unknown, p: AuthorRandomEventRequest): StoryArc | unde
     title,
     summary: cleanText(obj.summary, 500) || title,
     directive,
+    lifecycle: sanitizeLifecycle(obj.lifecycle ?? obj.status, 'candidate'),
+    surfaceGoal: cleanText(obj.surfaceGoal, 500) || undefined,
     hiddenIntent: cleanText(obj.hiddenIntent, 800) || undefined,
+    completionCriteria: sanitizeStringList(obj.completionCriteria, 8, 100),
+    failureCriteria: sanitizeStringList(obj.failureCriteria, 8, 100),
+    abandonCriteria: sanitizeStringList(obj.abandonCriteria, 8, 100),
+    worldProgressDelta: sanitizeNumber(obj.worldProgressDelta, -100, 100),
+    relationshipDeltas: sanitizeRelationshipDeltas(obj.relationshipDeltas),
+    progressPercent: sanitizeNumber(obj.progressPercent, 0, 100) ?? 0,
+    writingBoundary: cleanText(obj.writingBoundary, 220) || undefined,
     involvedNpcIds: [],
     involvedNpcNames: sanitizeStringList(obj.involvedNpcNames, 10, 30),
     tags: sanitizeStringList(obj.tags, 12, 20),
@@ -153,7 +212,9 @@ function parseResult(text: string, p: AuthorRandomEventRequest): AuthorRandomEve
 
 export async function requestAuthorRandomEvent(p: AuthorRandomEventRequest): Promise<AuthorRandomEventResult> {
   const model = p.settings.randomModel?.trim() || p.settings.decisionModel || p.settings.storyModel;
-  const user = buildAuthorRandomEventUser(p);
+  const workspace = p.settings.apiFormat === 'chat' ? await buildWorkspaceToolRuntime(p.save, { agentKind: 'randomEvent' }) : {};
+  const user = appendWorkspaceManifest(buildAuthorRandomEventUser(p), workspace.userManifest);
+  const system = appendWorkspaceSystem(AUTHOR_RANDOM_EVENT_SYSTEM, workspace.systemRules);
   const runOnce = async (temperature: number) => {
     const result = await chatJSONDetailed(
       { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat },
@@ -161,14 +222,19 @@ export async function requestAuthorRandomEvent(p: AuthorRandomEventRequest): Pro
         model,
         temperature,
         messages: [
-          { role: 'system', content: AUTHOR_RANDOM_EVENT_SYSTEM },
+          { role: 'system', content: system },
           { role: 'user', content: user },
         ],
+        tools: workspace.tools,
+        onToolCall: workspace.onToolCall,
+        maxToolRounds: 3,
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     const parsed = parseResult(result.text, p);
-    return parsed ? { ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
+    return parsed ? withPromptTrace({ ...parsed, thinking: result.thinking, rawOutput: result.text, usage: result.usage }, result.trace) : undefined;
   };
 
   const first = await runOnce(p.mustTrigger ? 0.45 : 0.65).catch((err) => {
@@ -195,8 +261,12 @@ export function storyArcToRandomEvent(arc: StoryArc): RandomEvent {
     name: arc.title,
     directive: [
       arc.directive,
+      arc.surfaceGoal ? `明面目标：${arc.surfaceGoal}` : '',
       arc.targetEndRound ? `请将此长线事件在第 ${arc.targetEndRound} 回合前后自然收束。` : '',
       arc.hiddenIntent ? `幕后真实意图：${arc.hiddenIntent}（仅供导演规划，未揭示前不得直白写出）` : '',
+      arc.completionCriteria?.length ? `完成标准：${arc.completionCriteria.join('；')}` : '',
+      arc.failureCriteria?.length ? `失败/延后标准：${arc.failureCriteria.join('；')}` : '',
+      arc.writingBoundary ? `写作边界：${arc.writingBoundary}` : '',
     ].filter(Boolean).join('\n'),
     probability: 1,
     minRound: arc.startRound,

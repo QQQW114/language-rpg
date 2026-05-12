@@ -5,6 +5,11 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>言灵 · Language RPG</title>
+    <style>
+      /* 关键样式：在 main bundle 的 CSS 注入前，避免浏览器以默认白底闪屏 */
+      html { background-color: #0a0704; }
+      body { margin: 0; background-color: #0a0704; color: #ede0c8; }
+    </style>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

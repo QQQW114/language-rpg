@@ -1,4 +1,4 @@
-// 决策 Agent：根据最新故事片段 + 最近上下文 + 背包 + NPC + 当前场景，请求选项 / grants / destroys / npcs / scenes
+// 决策 Agent：根据最新故事片段 + 最近上下文 + 能力 + NPC + 当前场景，请求选项 / grants / destroys / npcs / scenes
 
 import type { AppSettings } from '@/types/settings';
 import type { StrictCustomConfig } from '@/types/custom';
@@ -7,6 +7,7 @@ import type {
   AuthorNarrativeState,
   AuthorRandomEventState,
   Choice,
+  GameSave,
   Item,
   ItemType,
   MemoryAnchor,
@@ -22,15 +23,19 @@ import { formatItemsForPrompt } from '@/lib/items';
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatStageNarrativeForPrompt } from '@/lib/stageNarrative';
 import type { LlmUsage } from '@/types/llm';
+import type { AgentPromptTrace } from '@/types/ledger';
 import {
   buildStrictCustomDecisionBlock,
   getDecisionSystemTemplate,
   getDecisionUserTemplate,
   renderPromptTemplate,
 } from '@/lib/strictCustom';
+import { withPromptTrace } from '@/lib/agentTrace';
 import type { RawGrant, RawDestroy, RawItemPatch } from '@/lib/items';
+import { appendWorkspaceManifest, appendWorkspaceSystem, buildWorkspaceToolRuntime } from '@/services/workspaceTools';
 
 export interface DecisionRequest {
+  save?: GameSave;
   settings: AppSettings;
   outline?: StoryOutline;
   background?: Background;
@@ -50,6 +55,8 @@ export interface DecisionRequest {
   narrative?: AuthorNarrativeState;
   randomEventState?: AuthorRandomEventState;
   currentRound?: number;
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -64,6 +71,7 @@ export interface DecisionResult {
   thinking?: string;
   rawOutput?: string;
   usage?: LlmUsage;
+  trace?: AgentPromptTrace;
 }
 
 const FALLBACK_CHOICES: Choice[] = [
@@ -329,7 +337,7 @@ function appendMachineStateIfMissing(
   },
 ): string {
   const additions: string[] = [];
-  if (blocks.backpackJsonBlock && !text.includes('【当前背包 JSON】')) additions.push(blocks.backpackJsonBlock);
+  if (blocks.backpackJsonBlock && !text.includes('【当前能力 JSON】')) additions.push(blocks.backpackJsonBlock);
   if (blocks.npcJsonBlock && !text.includes('【当前已知 NPC JSON】')) additions.push(blocks.npcJsonBlock);
   if (blocks.longTermMemoryBlock && !text.includes('【长期一致性记忆】')) additions.push(blocks.longTermMemoryBlock);
   if (blocks.anchorsBlock && !text.includes('【玩家标记的关键记忆】')) additions.push(blocks.anchorsBlock);
@@ -363,13 +371,62 @@ function formatLongTermMemoryBlock(memory: string | undefined): string {
 
 function formatNarrativePlanBlock(narrative: AuthorNarrativeState | undefined): string {
   const plan = narrative?.plan;
-  if (!plan) return '';
+  const hasPlanningState = !!(narrative?.outlineMapping || narrative?.characterPlan || narrative?.scenePlan || narrative?.eventPlan);
+  if (!plan && !hasPlanningState) return '';
   const lines = ['【当前叙事导演计划】'];
-  if (plan.currentAct) lines.push(`当前幕：${plan.currentAct}`);
-  if (plan.currentStage) lines.push(`当前阶段：${plan.currentStage}`);
-  if (plan.stageGoal) lines.push(`阶段目标：${plan.stageGoal}`);
-  if (plan.nextRoundFocus) lines.push(`下一回合焦点：${plan.nextRoundFocus}`);
-  if (plan.nextFewRoundsPlan?.length) {
+  if (plan?.currentAct) lines.push(`当前幕：${plan.currentAct}`);
+  if (plan?.currentStage) lines.push(`当前阶段：${plan.currentStage}`);
+  if (plan?.stageGoal) lines.push(`阶段目标：${plan.stageGoal}`);
+  if (plan?.nextRoundFocus) lines.push(`下一回合焦点：${plan.nextRoundFocus}`);
+  const mapping = narrative?.outlineMapping ?? plan?.outlineMapping;
+  if (mapping) {
+    const m = mapping;
+    lines.push(`大纲映射：${m.alignment}${m.currentAct ? `；${m.currentAct}` : ''}${m.stageProgress !== undefined ? `；阶段进度 ${m.stageProgress}%` : ''}`);
+    if (m.nextMilestone) lines.push(`下一里程碑：${m.nextMilestone}`);
+    if (m.missingBridgeEvents?.length) lines.push(`缺少桥接：${m.missingBridgeEvents.join('、')}`);
+    if (m.candidateEvents?.length) lines.push(`候选事件方向：${m.candidateEvents.join('、')}`);
+  }
+  if (narrative?.characterPlan) {
+    const cp = narrative.characterPlan;
+    lines.push(`人物规划：${cp.summary}`);
+    if (cp.characters?.length) {
+      lines.push(`牵动人物：${cp.characters.slice(0, 8).map((c) =>
+        `${c.name}${c.surfaceGoal ? `/${c.surfaceGoal}` : ''}${c.hiddenIntent ? `/隐:${c.hiddenIntent}` : ''}`,
+      ).join('；')}`);
+    }
+    if (cp.relationshipSignals?.length) lines.push(`关系信号：${cp.relationshipSignals.join('；')}`);
+  }
+  if (narrative?.scenePlan) {
+    const sp = narrative.scenePlan;
+    const s = sp.scene;
+    lines.push(`场景规划：${[s.location, s.time, s.weather, s.atmosphere, sp.sceneLogic].filter(Boolean).join('；')}`);
+    if (sp.sceneResources?.length) lines.push(`场景资源：${sp.sceneResources.join('、')}`);
+  }
+  if (narrative?.eventPlan) {
+    const ep = narrative.eventPlan;
+    lines.push(`事件规划：${ep.summary}`);
+    if (ep.currentEvent?.title || ep.currentEvent?.objective) {
+      lines.push(`当前事件：${ep.currentEvent.title ?? '未命名'}${ep.currentEvent.lifecycle ? `（${ep.currentEvent.lifecycle}）` : ''}${ep.currentEvent.objective ? `；目标：${ep.currentEvent.objective}` : ''}`);
+    }
+    if (ep.writingBoundary) lines.push(`事件写作边界：${ep.writingBoundary}`);
+  }
+  if (plan?.writingBrief) {
+    const brief = plan.writingBrief;
+    lines.push(`本回合叙事包目标：${brief.objective}`);
+    if (brief.currentEvent?.title) lines.push(`当前小事件：${brief.currentEvent.title}${brief.currentEvent.lifecycle ? `（${brief.currentEvent.lifecycle}）` : ''}`);
+    if (brief.characters?.length) {
+      lines.push(`牵动角色：${brief.characters.map((c) => `${c.name}${c.surfaceGoal ? `/${c.surfaceGoal}` : ''}`).join('；')}`);
+    }
+    if (brief.scene) {
+      lines.push(`场景规划：${[brief.scene.location, brief.scene.time, brief.scene.weather, brief.scene.atmosphere].filter(Boolean).join('；')}`);
+    }
+  }
+  if (plan?.eventUpdates?.length) {
+    lines.push(`事件状态更新：${plan.eventUpdates.slice(0, 6).map((u) =>
+      `${u.title || u.arcId || '事件'}${u.lifecycle ? `→${u.lifecycle}` : ''}${u.progressPercent !== undefined ? `(${u.progressPercent}%)` : ''}`,
+    ).join('；')}`);
+  }
+  if (plan?.nextFewRoundsPlan?.length) {
     const next = plan.nextFewRoundsPlan[0];
     if (next?.requiredBeats?.length) {
       lines.push(`本阶段必达节拍：${next.requiredBeats.join('、')}`);
@@ -403,7 +460,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
   const includeChoices = p.includeChoices ?? true;
   const backpackSummary = formatItemsForPrompt(backpack);
   const npcSummary = formatNpcs(npcs);
-  const backpackJsonBlock = ['【当前背包 JSON】', formatBackpackJson(backpack)].join('\n');
+  const backpackJsonBlock = ['【当前能力 JSON】', formatBackpackJson(backpack)].join('\n');
   const npcJsonBlock = ['【当前已知 NPC JSON】', formatNpcJson(npcs)].join('\n');
   const longTermMemoryBlock = formatLongTermMemoryBlock(p.longTermMemory);
   const anchorsBlock = formatAnchorsBlock(p.anchors);
@@ -514,6 +571,9 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       activeArcsBlock,
     },
   );
+  const workspace = settings.apiFormat === 'chat' ? await buildWorkspaceToolRuntime(p.save, { agentKind: 'decision' }) : {};
+  const decisionUserWithWorkspace = appendWorkspaceManifest(decisionUserPrompt, workspace.userManifest);
+  const decisionSystemWithWorkspace = appendWorkspaceSystem(decisionSystemPrompt, workspace.systemRules);
 
   const runOnce = async (temperature: number): Promise<DecisionResult | null> => {
     const result = await chatJSONDetailed(
@@ -522,9 +582,14 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
         model: settings.decisionModel,
         temperature,
         messages: [
-          { role: 'system', content: decisionSystemPrompt },
-          { role: 'user', content: decisionUserPrompt },
+          { role: 'system', content: decisionSystemWithWorkspace },
+          { role: 'user', content: decisionUserWithWorkspace },
         ],
+        tools: workspace.tools,
+        onToolCall: workspace.onToolCall,
+        maxToolRounds: 2,
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal,
       },
     );
@@ -533,7 +598,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
     const choices = includeChoices ? sanitizeChoices(obj) : [];
     if (includeChoices && !choices) return null;
     const scenes = sanitizeScenes(obj);
-    return {
+    return withPromptTrace({
       choices: choices ?? [],
       grants: sanitizeGrants(obj),
       destroys: sanitizeDestroys(obj),
@@ -544,7 +609,7 @@ export async function requestChoices(p: DecisionRequest): Promise<DecisionResult
       thinking: result.thinking,
       rawOutput: result.text,
       usage: result.usage,
-    };
+    }, result.trace);
   };
 
   try {

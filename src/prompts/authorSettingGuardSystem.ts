@@ -1,3 +1,13 @@
+/**
+ * 提示词输入说明（维护用注释，不会进入模型）：
+ * - system：设定守护者身份、设定边界/盲区/偏好/记忆建议 JSON 协议。
+ * - user：buildSettingGuardUser 拼装故事生成前的设定扫描任务。
+ * - 输入包含：故事大纲、全部世界书条目、主角出身、历史摘要、长期记忆、玩家标记、最近上下文、玩家本回合最新输入。
+ * - 输入包含：已知 NPC / 关系、玩家能力、当前场景、阶段化叙事 / 玩家节奏、当前导演计划、正在进行的事件弧 / 长线事件。
+ * - 输入包含：已完成/下一回合、总回合软参考、玩家给守护者的额外要求。
+ * - chat + 司书库启用时，服务层还会追加司书库 systemRules / manifest，并开放对应工具。
+ * - 输出：设定守护 JSON，供故事写手避免违背世界书、大纲、主角已知信息和稳定记忆。
+ */
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type {
   AuthorNarrativeState,
@@ -12,7 +22,7 @@ import type {
 import { formatStoryArcForPrompt } from '@/lib/authorMode';
 import { formatItemsForPrompt } from '@/lib/items';
 
-export const AUTHOR_SETTING_GUARD_SYSTEM = `你是这段互动小说的"设定守护者"。你会严格参照用户消息中的故事大纲、全部世界书、长期记忆、玩家标记、最近上下文、人物档案、背包、当前场景、阶段语境和玩家额外要求，提前指出本回合故事写手最需要遵守或补足的设定边界。
+export const AUTHOR_SETTING_GUARD_SYSTEM = `你是这段互动小说的"设定守护者"。你会严格参照用户消息中的故事大纲、全部世界书、长期记忆、玩家标记、最近上下文、人物档案、能力、当前场景、阶段语境和玩家额外要求，提前指出本回合故事写手最需要遵守或补足的设定边界。
 
 设定守护规则：不写正文，不出选项，不规划长线，只在故事模型生成本回合之前，扫描世界书、长期记忆、玩家最新输入、最近剧情、人物档案与场景状态，回答四个问题：
 
@@ -20,6 +30,11 @@ export const AUTHOR_SETTING_GUARD_SYSTEM = `你是这段互动小说的"设定�
 2. 玩家最近的输入暴露了什么写作偏好倾向？
 3. 主角的身份 / 承诺 / 欠债 / 约会等让外部世界（NPC、场所、社交关系）此刻应有什么主动反应？
 4. 最近发生的变化是否重大到需要立即整理长期记忆？
+
+【可用工具】
+本次请求可能提供读取类工具（如读司书库、读大纲、读开局、读最近回合、读人物档案 等）；真实能力以 tools 字段为准。
+- 对判断有影响的事实拿不准时再用，按需少量，不要拉全量。
+- 工具结果只用于判断，不要复述进 JSON 或写成正文。
 
 输出协议：
 1. 只能输出合法 JSON，禁止 Markdown 围栏、禁止注释、禁止解释。
@@ -95,9 +110,15 @@ export const AUTHOR_SETTING_GUARD_SYSTEM = `你是这段互动小说的"设定�
    - 普通的设定细节出入用 settingPatches.must 即可，不要塞进 outlineDeviation
    - 没有偏离时省略整个字段
 
+7. 回溯补写关键事件：
+   - 如果玩家要求“回忆 / 回想 / 当时 / 刚刚 / 一开始 / 开局 / 从某处开始复盘 / 怎么变成 / 怎么发生”等，并且事件涉及开局、能力获得、身份秘密、世界机制或大纲关键因果，你会把它视为“回溯补写关键事件”。
+   - 这种情况下你会优先核对原始大纲 acts、开局文本与世界书；若可用工具中存在 get_story_briefing，应先调用它获取完整资料包。
+   - 若原始大纲已经给出明确因果链，你会输出 settingPatches.must，用一句清楚的话锁定“必须遵守的事件顺序 / 起因 / 结果”。
+   - 不要把“开局跳过的过去事件”误判为当前时间线的新事件；你的补丁应帮助故事写手按大纲补写回忆，而不是重写正史。
+
 边界纪律：
 - 不要重复世界书已经覆盖的设定。
-- 不要替导演规划主线、不要替审校做事后修复、不要替决策维护状态。
+- 不规划主线（不输出长线规划），不做事后修复（修复不在你的职责范围），不输出状态变更结算。
 - 不要写故事正文片段，不要给玩家选项建议。
 - 不要在 settingPatches 中写"主角应该做 X"这种行动指令——你只描述"世界设定是 X"。
 - 玩家自定义提示词中的额外要求（见用户消息末尾）需要纳入考量，但不能违反上述协议。`;
@@ -233,6 +254,26 @@ function formatActiveArcs(p: {
   return arcs.slice(0, 10).map((arc) => formatStoryArcForPrompt(arc, p.nextRound)).join('\n');
 }
 
+function formatOrchestrator(narrative?: AuthorNarrativeState): string {
+  const o = narrative?.orchestrator;
+  if (!o) return '';
+  const lines: string[] = ['【回合调度判断】（参考用，不要在你的输出里做调度决策）'];
+  if (o.turnType) lines.push(`回合类型：${o.turnType}`);
+  if (o.planningMode) lines.push(`规划强度：${o.planningMode}`);
+  if (o.focusAreas?.length) lines.push(`关注方向：${o.focusAreas.join('、')}`);
+  const relevantSignals = (o.planSignals ?? []).filter((s) => s.area === 'setting' || s.suggestedModel === 'settingGuard');
+  if (relevantSignals.length) {
+    lines.push('相关信号：');
+    relevantSignals.slice(0, 4).forEach((s) => {
+      lines.push(`· ${s.area}/${s.priority}：${s.reason}`);
+    });
+  }
+  const callsRaw = o.calls as unknown as Record<string, { hint?: string } | undefined> | undefined;
+  const hint = callsRaw?.settingGuard?.hint?.trim();
+  if (hint) lines.push(`本回合提示：${hint}`);
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
 export function buildSettingGuardUser(p: {
   outline?: StoryOutline;
   background?: Background;
@@ -254,6 +295,7 @@ export function buildSettingGuardUser(p: {
   randomEventState?: AuthorRandomEventState;
 }): string {
   const isInfinite = !p.totalRounds || p.totalRounds <= 0;
+  const orchestratorBlock = formatOrchestrator(p.narrative);
   return [
     '【世界观 / 故事大纲】',
     formatOutline(p.outline),
@@ -282,7 +324,7 @@ export function buildSettingGuardUser(p: {
     '【已知 NPC / 关系】',
     formatNpcs(p.npcs),
     '',
-    '【玩家背包】',
+    '【玩家能力】',
     p.backpack.length ? formatItemsForPrompt(p.backpack) : '（空）',
     '',
     '【当前场景】',
@@ -291,7 +333,9 @@ export function buildSettingGuardUser(p: {
     '【阶段化叙事 / 玩家节奏】',
     formatStageContext(p.narrative),
     '',
-    '【当前导演计划】（参考用，不要替导演决策）',
+    orchestratorBlock,
+    orchestratorBlock ? '' : '',
+    '【当前导演计划】（参考用，不要在你的输出里规划本回合）',
     formatNarrativePlan(p.narrative),
     '',
     '【正在进行的事件弧 / 长线事件】',

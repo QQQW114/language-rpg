@@ -1,10 +1,3 @@
-export interface StrictRoundDirective {
-  id: string;
-  startRound: number;
-  endRound: number;
-  prompt: string;
-}
-
 export interface StrictCustomConfig {
   enabled: boolean;
   globalPrompt: string;          // 全局严格叙事规则
@@ -16,5 +9,4 @@ export interface StrictCustomConfig {
   storyUserPrompt: string;       // 故事模型 user 提示词覆盖模板
   decisionSystemPrompt: string;  // 决策模型 system 提示词覆盖模板
   decisionUserPrompt: string;    // 决策模型 user 提示词覆盖模板
-  detailedOutline: StrictRoundDirective[];
 }

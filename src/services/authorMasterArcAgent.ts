@@ -9,6 +9,8 @@ import type {
 import { chatJSONDetailed } from '@/services/llmClient';
 import { AUTHOR_MASTER_ARC_SYSTEM, buildMasterArcUser } from '@/prompts/authorMasterArcSystem';
 import { clamp, extractJSON, genId } from '@/lib/utils';
+import { withPromptTrace } from '@/lib/agentTrace';
+import { resolveAuthorCoreModel } from '@/lib/agentModels';
 
 export interface AuthorMasterArcRequest {
   settings: AppSettings;
@@ -18,6 +20,8 @@ export interface AuthorMasterArcRequest {
   characterName?: string;
   config: AuthorMasterArcConfig;
   worldBookEntries?: WorldBookEntry[];
+  onDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -140,7 +144,7 @@ export function fallbackMasterArcFromOutline(
 }
 
 export async function requestMasterArc(p: AuthorMasterArcRequest): Promise<MasterArcState | undefined> {
-  const model = p.settings.randomModel?.trim() || p.settings.storyModel;
+  const model = resolveAuthorCoreModel(p.settings, 'masterArc');
   const user = buildMasterArcUser({
     outline: p.outline,
     background: p.background,
@@ -160,11 +164,13 @@ export async function requestMasterArc(p: AuthorMasterArcRequest): Promise<Maste
           { role: 'system', content: AUTHOR_MASTER_ARC_SYSTEM },
           { role: 'user', content: user },
         ],
+        onDelta: p.onDelta,
+        onThinkingDelta: p.onThinkingDelta,
         signal: p.signal,
       },
     );
     const arc = sanitizeMasterArc(extractJSON(result.text), p);
-    return arc ? { ...arc, thinking: result.thinking, rawOutput: result.text, usage: result.usage } : undefined;
+    return arc ? withPromptTrace({ ...arc, thinking: result.thinking, rawOutput: result.text, usage: result.usage }, result.trace) : undefined;
   };
 
   const first = await runOnce(0.45).catch((err) => {

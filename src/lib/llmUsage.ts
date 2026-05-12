@@ -1,6 +1,7 @@
 import type { LlmCacheUsage, LlmUsage } from '@/types/llm';
 
 function asFiniteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;
 }
@@ -12,18 +13,49 @@ function hasNumber(value: number | undefined): value is number {
 export function normalizeLlmUsage(raw: unknown): LlmUsage | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const obj = raw as any;
-  const promptTokens = asFiniteNumber(obj.prompt_tokens ?? obj.input_tokens);
-  const completionTokens = asFiniteNumber(obj.completion_tokens ?? obj.output_tokens);
-  const totalTokens = asFiniteNumber(obj.total_tokens);
+  const cacheObj = obj.cache && typeof obj.cache === 'object' ? obj.cache as any : {};
+
+  // 同时兼容 API 原始 usage（snake_case）和项目内部已经规范化过的
+  // LlmUsage（camelCase）。记录页会二次 normalize；若这里只认
+  // snake_case，prompt_cache_hit/miss 会在入库前被清空。
+  const promptTokens = asFiniteNumber(
+    obj.prompt_tokens
+      ?? obj.input_tokens
+      ?? obj.promptTokens
+      ?? obj.inputTokens,
+  );
+  const completionTokens = asFiniteNumber(
+    obj.completion_tokens
+      ?? obj.output_tokens
+      ?? obj.completionTokens
+      ?? obj.outputTokens,
+  );
+  const totalTokens = asFiniteNumber(obj.total_tokens ?? obj.totalTokens);
 
   const cache: LlmCacheUsage = {
-    hitTokens: asFiniteNumber(obj.prompt_cache_hit_tokens),
-    missTokens: asFiniteNumber(obj.prompt_cache_miss_tokens),
+    hitTokens: asFiniteNumber(
+      obj.prompt_cache_hit_tokens
+        ?? obj.promptCacheHitTokens
+        ?? cacheObj.hitTokens
+        ?? cacheObj.prompt_cache_hit_tokens
+        ?? cacheObj.promptCacheHitTokens,
+    ),
+    missTokens: asFiniteNumber(
+      obj.prompt_cache_miss_tokens
+        ?? obj.promptCacheMissTokens
+        ?? cacheObj.missTokens
+        ?? cacheObj.prompt_cache_miss_tokens
+        ?? cacheObj.promptCacheMissTokens,
+    ),
     cachedTokens: asFiniteNumber(
       obj.prompt_tokens_details?.cached_tokens
         ?? obj.input_tokens_details?.cached_tokens
         ?? obj.cache_read_input_tokens
-        ?? obj.cached_tokens,
+        ?? obj.cached_tokens
+        ?? obj.cachedTokens
+        ?? cacheObj.cachedTokens
+        ?? cacheObj.cached_tokens
+        ?? cacheObj.cache_read_input_tokens,
     ),
   };
 

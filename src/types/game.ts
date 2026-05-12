@@ -2,6 +2,9 @@ import type { StrictCustomConfig } from './custom';
 import type { RandomEvent } from './content';
 import type { StoryStyleSettings } from './settings';
 import type { LlmUsage } from './llm';
+import type { AgentPromptTrace } from './ledger';
+
+export type { Background } from './content';
 
 export type JourneyMode = 'adventure' | 'author';
 export type AuthorRandomEventMode = 'off' | 'pool' | 'dynamic';
@@ -51,6 +54,17 @@ export interface AuthorSettingGuardConfig {
   ambientBeatsEnabled: boolean;
 }
 
+export interface AuthorOrchestratorConfig {
+  enabled: boolean;
+  prompt: string;                  // 玩家给回合司辰的额外调度偏好
+  minIntervalRounds: number;       // 每隔多少回合至少检查一次；1 表示每回合检查
+}
+
+export interface AuthorEventBeatConfig {
+  enabled: boolean;
+  prompt: string;                  // 玩家给司事 / 事件节奏模型的额外要求
+}
+
 export interface StoryArcStage {
   id: string;
   startRound: number;
@@ -67,7 +81,25 @@ export interface StoryArc {
   title: string;
   summary: string;
   directive: string;
+  lifecycle?: NarrativeEventLifecycle;
+  surfaceGoal?: string;
   hiddenIntent?: string;
+  completionCriteria?: string[];
+  failureCriteria?: string[];
+  abandonCriteria?: string[];
+  worldProgressDelta?: number;
+  relationshipDeltas?: Array<{
+    npcId?: string;
+    npcName?: string;
+    affinityDelta?: number;
+    trustDelta?: number;
+    note?: string;
+  }>;
+  progressPercent?: number;
+  writingBoundary?: string;
+  isMilestone?: boolean;
+  milestoneOf?: string;
+  alternateOutcomePath?: string;
   involvedNpcIds: string[];
   involvedNpcNames?: string[];
   tags: string[];
@@ -93,6 +125,136 @@ export interface AuthorRandomEventState {
   lastThinking?: string;
 }
 
+export type NarrativeEventLifecycle =
+  | 'candidate'
+  | 'active'
+  | 'progressing'
+  | 'turning'
+  | 'completed'
+  | 'soft_failed'
+  | 'missed'
+  | 'delayed'
+  | 'reframed'
+  | 'archived';
+
+export interface NarrativeBriefCharacter {
+  name: string;
+  role?: string;
+  surfaceGoal?: string;
+  hiddenIntent?: string;
+  visibleBehavior?: string;
+  doNotReveal?: string[];
+}
+
+export interface NarrativeBriefEvent {
+  title?: string;
+  lifecycle?: NarrativeEventLifecycle;
+  objective?: string;
+  hiddenIntent?: string;
+  completionCriteria?: string[];
+  failureCriteria?: string[];
+  progress?: string;
+  stopAt?: string;
+}
+
+export interface NarrativeBriefScene {
+  location?: string;
+  time?: string;
+  weather?: string;
+  atmosphere?: string;
+  resources?: string[];
+  constraints?: string[];
+}
+
+export interface NarrativeBriefState {
+  objective: string;              // 本回合最小叙事任务
+  mustFollow: string[];           // 必须遵守的硬事实 / 大纲 / 设定
+  currentEvent?: NarrativeBriefEvent;
+  characters?: NarrativeBriefCharacter[];
+  scene?: NarrativeBriefScene;
+  sceneResources?: string[];
+  writingBoundary: string;        // 本回合写到哪里停
+  successCriteria: string[];
+  avoid: string[];
+  hiddenKnowledge?: string[];     // 可用于塑造行为，但不得直接泄露
+  updatedAtRound: number;
+}
+
+export type OutlineMappingAlignment =
+  | 'aligned'
+  | 'drifting'
+  | 'bridging'
+  | 'ready_to_advance'
+  | 'uncertain';
+
+export interface OutlineMappingState {
+  alignment: OutlineMappingAlignment; // 当前剧情与大纲/主弧的关系
+  currentAct?: string;                // 对应的原始大纲幕 / 章节
+  currentActIndex?: number;           // 0-based；未知则省略
+  currentStageGoal?: string;          // 当前阶段最重要目标
+  stageProgress?: number;             // 0-100 软进度
+  missingBridgeEvents?: string[];     // 缺少的桥接事件类型 / 小事件
+  candidateEvents?: string[];         // 可自然生成的小事件方向
+  driftRisks?: string[];              // 偏离风险
+  nextMilestone?: string;             // 下一可达里程碑
+  updatedAtRound: number;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
+export interface NarrativeEventUpdate {
+  arcId?: string;
+  title?: string;
+  lifecycle?: NarrativeEventLifecycle;
+  progressPercent?: number;
+  progressNote?: string;
+  currentStageIndex?: number;
+  reason?: string;
+}
+
+export interface AuthorCharacterPlanState {
+  updatedAtRound: number;
+  summary: string;
+  characters: NarrativeBriefCharacter[];
+  relationshipSignals?: string[];
+  absentCharacters?: Array<{
+    name: string;
+    reason: string;
+  }>;
+  risks?: string[];
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
+export interface AuthorScenePlanState {
+  updatedAtRound: number;
+  scene: NarrativeBriefScene;
+  sceneResources: string[];
+  sceneLogic?: string;
+  constraints?: string[];
+  opportunities?: string[];
+  risks?: string[];
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
+export interface AuthorEventPlanState {
+  updatedAtRound: number;
+  summary: string;
+  currentEvent?: NarrativeBriefEvent;
+  eventUpdates?: NarrativeEventUpdate[];
+  candidateEvents?: string[];
+  writingBoundary?: string;
+  successCriteria?: string[];
+  avoid?: string[];
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
 export interface NarrativePlanState {
   currentAct?: string;
   currentStage?: string;
@@ -110,8 +272,11 @@ export interface NarrativePlanState {
     revealPolicy?: string;
   }>;
   outlineAlignment?: string;
+  outlineMapping?: OutlineMappingState;
+  eventUpdates?: NarrativeEventUpdate[];
   pacingAdvice?: string;
   riskNotes?: string[];
+  writingBrief?: NarrativeBriefState;
   updatedAtRound: number;
   thinking?: string;
   rawOutput?: string;
@@ -246,16 +411,149 @@ export interface StageJudgeState {
   usage?: LlmUsage;
 }
 
+export type OrchestratorCallKey =
+  | 'outlineMapper'
+  | 'stageJudge'
+  | 'settingGuard'
+  | 'director'
+  | 'logicCheck'
+  | 'memory'
+  | 'summary'
+  | 'eventBeat';
+
+export interface OrchestratorCallDecision {
+  run: boolean;
+  reason: string;
+  hint?: string;
+}
+
+export type OrchestratorTurnType =
+  | 'continue_current_event'
+  | 'event_turning_point'
+  | 'event_completion_check'
+  | 'new_event_candidate'
+  | 'stage_transition_candidate'
+  | 'free_exploration';
+
+export type OrchestratorPlanningMode = 'light' | 'focused' | 'full';
+export type OrchestratorDirectorMode = 'skip' | 'light' | 'full';
+
+export type OrchestratorFocusArea =
+  | 'outline'
+  | 'stage'
+  | 'character'
+  | 'scene'
+  | 'event'
+  | 'foreshadowing'
+  | 'setting'
+  | 'memory'
+  | 'logic'
+  | 'summary';
+
+export interface OrchestratorPlanSignal {
+  area: OrchestratorFocusArea;
+  priority: 'low' | 'medium' | 'high';
+  reason: string;
+  suggestedModel?: string;
+}
+
+export interface OrchestratorPhase1Result {
+  updatedAtRound: number;
+  notes: string;
+  outstandingQuestions?: string[];
+  signalSnapshot?: {
+    outline?: string;
+    stage?: string;
+    activeEvents?: string;
+  };
+  earlyExit?: boolean;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
+export interface OrchestratorState {
+  updatedAtRound: number;
+  overall?: string;
+  turnType?: OrchestratorTurnType;
+  planningMode?: OrchestratorPlanningMode;
+  directorMode?: OrchestratorDirectorMode;
+  focusAreas?: OrchestratorFocusArea[];
+  planSignals?: OrchestratorPlanSignal[];
+  callOrder?: OrchestratorCallKey[]; // 建议调用顺序；程序会按可执行阶段过滤
+  calls: Record<OrchestratorCallKey, OrchestratorCallDecision>;
+  phase1?: OrchestratorPhase1Result;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+  lastError?: string;
+}
+
+export interface PlannerAnalysisRequest {
+  question: string;
+  reason: string;
+  focus?: string;
+  relatedNames?: string[];
+  expectedOutput?: string;
+}
+
 export interface AuthorStageJudgeConfig {
   enabled: boolean;
   prompt: string;                  // 玩家给阶段判断模型的偏好
   autoAdvance: boolean;            // 是否自动推进阶段（默认 true）
 }
 
+export interface EventBeatVerdict {
+  arcId: string;
+  title?: string;
+  lifecycle: NarrativeEventLifecycle;
+  progressPercent?: number;
+  progressNote?: string;
+  triggeredCompletion?: boolean;
+  triggeredFailure?: boolean;
+  outcomeNote?: string;
+  appliedRelationshipDeltas?: Array<{
+    npcId?: string;
+    npcName?: string;
+    affinityDelta?: number;
+    note?: string;
+  }>;
+  appliedItemDeltas?: Array<{
+    name: string;
+    action: 'grant' | 'note';
+    description?: string;
+  }>;
+}
+
+export interface EventBeatState {
+  updatedAtRound: number;
+  verdicts: EventBeatVerdict[];
+  planConcern?: string;
+  thinking?: string;
+  rawOutput?: string;
+  usage?: LlmUsage;
+}
+
+export interface DirectorReplyState {
+  callId: string;
+  question: string;
+  missingInfo?: string;
+  answer: string;
+  round: number;
+  createdAt: number;
+}
+
 export interface AuthorNarrativeState {
+  orchestrator?: OrchestratorState;
+  outlineMapping?: OutlineMappingState;
+  characterPlan?: AuthorCharacterPlanState;
+  scenePlan?: AuthorScenePlanState;
+  eventPlan?: AuthorEventPlanState;
   plan?: NarrativePlanState;
   logicReview?: AuthorLogicReviewState;
   settingGuard?: SettingGuardState;
+  eventBeat?: EventBeatState;
+  directorReply?: DirectorReplyState;
   masterArc?: MasterArcState;
   stageJudge?: StageJudgeState;
   activeArcs: StoryArc[];
@@ -264,6 +562,12 @@ export interface AuthorNarrativeState {
   lastLogicCheckRound?: number;
   lastSettingGuardRound?: number;
   lastStageJudgeRound?: number;
+  lastOrchestratorRound?: number;
+  lastOutlineMapperRound?: number;
+  lastCharacterPlannerRound?: number;
+  lastScenePlannerRound?: number;
+  lastEventPlannerRound?: number;
+  lastEventBeatRound?: number;
 }
 
 export interface AuthorLogicIssue {
@@ -293,6 +597,7 @@ export interface AgentThought {
   round: number;
   content?: string;
   output?: string;
+  prompt?: AgentPromptTrace;
   usage?: LlmUsage;
   cacheHit?: boolean;
   createdAt: number;
@@ -300,11 +605,30 @@ export interface AgentThought {
 
 export type MessageRole = 'system' | 'user' | 'assistant';
 
+export interface MessageRuntimeStats {
+  elapsedMs?: number;
+  usage?: LlmUsage;
+  estimatedOutputTokens?: number;
+}
+
+export interface ToolActivityRecord {
+  id: string;
+  name: string;
+  label: string;
+  detail?: string;
+  actor?: string;
+  agentKind?: string;
+  phase?: 'read' | 'write' | 'call' | 'result' | 'status';
+  createdAt: number;
+}
+
 export interface Message {
   role: MessageRole;
   content: string;
   round: number;
   thinking?: string;
+  toolEvents?: ToolActivityRecord[];
+  runtimeStats?: MessageRuntimeStats;
 }
 
 export interface Choice {
@@ -321,10 +645,10 @@ export interface Item {
   description: string;
   type: ItemType;
   acquiredAtRound: number;
-  // 若存在：表示该道具是在本次决策周期给予的"临时"条目，
+  // 若存在：表示该能力是在本次决策周期给予的"临时"条目，
   // 一旦玩家刷新选项就会被新一轮的 grants 覆盖；玩家一旦确认下一步动作就会固化。
   pendingGrantKey?: string;
-  // 若为 true：决策模型判定在本回合的故事中该道具已被损毁/遗失。
+  // 若为 true：决策模型判定在本回合的故事中该能力已失效/遗失。
   // 同样"待定"：刷新决策会清除此标记；玩家确认行动后执行实际移除。
   pendingDestroy?: boolean;
   destroyReason?: string;
@@ -340,7 +664,7 @@ export interface GameConfig {
   totalRounds: number;        // 0 表示无尽模式；>0 为有限回合
   manualInputEvery: number;   // 每 X 轮允许一次手动输入
   refreshChoiceEvery: number; // 每 X 轮获得一次"刷新决策"机会（累积）
-  itemCapacity: number;       // 背包容量上限
+  itemCapacity: number;       // 能力容量上限
 }
 
 export interface GameContent {
@@ -358,6 +682,8 @@ export interface GameContent {
   authorMasterArc?: AuthorMasterArcConfig;   // 执笔模式主弧生成配置（阶段化叙事）
   authorStageJudge?: AuthorStageJudgeConfig; // 执笔模式阶段判断模型配置
   authorSettingGuard?: AuthorSettingGuardConfig; // 执笔模式设定守护者配置
+  authorOrchestrator?: AuthorOrchestratorConfig; // 执笔模式回合司辰 / Agent 调度配置
+  authorEventBeat?: AuthorEventBeatConfig; // 执笔模式司事 / 事件节奏判定配置
   storyStyle?: StoryStyleSettings; // 创建/导入旅程时固化的故事风格设置
 }
 

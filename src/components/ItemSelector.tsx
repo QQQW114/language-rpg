@@ -17,7 +17,7 @@ export function ItemSelector({ items, selectedIds, onToggle, disabled }: ItemSel
   return (
     <div className="mb-3">
       <div className="mb-2 text-[10px] tracking-[0.3em] text-parchment-200/55 font-serif uppercase">
-        器物 · 勾选以在本回合使用
+        能力 · 勾选以在本回合使用
       </div>
       <div className="flex flex-wrap gap-2">
         {items.map((it) => {
@@ -33,7 +33,7 @@ export function ItemSelector({ items, selectedIds, onToggle, disabled }: ItemSel
               onClick={() => onToggle(it.id)}
               title={
                 isDoomed
-                  ? `${it.name}（本回合将失去${it.destroyReason ? '：' + it.destroyReason : ''}）`
+                  ? `${it.name}（本回合将失效${it.destroyReason ? '：' + it.destroyReason : ''}）`
                   : `${it.name}（${itemTypeLabel(it.type)}）: ${it.description}`
               }
               className={clsx(

@@ -1,3 +1,13 @@
+/**
+ * 提示词输入说明（维护用注释，不会进入模型）：
+ * - system：buildStorySystemPrompt 输出故事写手身份、写作规则和人称模式；chat + 司书库启用时 storyAgent 还会追加司书库规则和 systemRules。
+ * - user：storyAgent 会先带入未摘要的历史消息，再把 buildStorySystem 的旅程资料与玩家本回合输入合并成最后一条 user 消息。
+ * - buildStorySystem 输入包含：回合软参考、故事大纲、主弧、阶段判断、叙事弧 / 长线事件、严格自定义规则。
+ * - 输入包含：大纲映射、叙事导演计划、writingBrief、本回合叙事包、人物规划、场景规划、事件规划、设定守护、逻辑审校。
+ * - 输入包含：主角出身、世界书常驻/触发条目、历史摘要、长期记忆、已登场人物、玩家标记、能力、当前场景、使用能力、写作规范、风格偏好、特殊指令。
+ * - 当前玩家输入来自 storyAgent 的 renderedUserMessage；重新生成时还会加入 regenerationHint；最后可能附加 DeepSeek V4 人称/指令特化 marker。
+ * - 输出：只允许故事正文，不输出选项、JSON、规则说明或工具痕迹。
+ */
 // 故事主持人（Story GM）提示词构造
 // 导出一个函数而非静态字符串，方便根据世界书/随机事件/回合动态拼装。
 
@@ -15,10 +25,36 @@ import {
 
 export const STORY_SYSTEM_RULES = `故事写作规则：
 1. 你会根据用户消息中的世界观、故事资料、压缩上下文、最近对话和当前玩家输入，续写一个中文互动小说回合。
-2. 你会严格参照用户消息内的写作规范、世界书、长期记忆、玩家标记、当前阶段、设定守护、逻辑审校和特殊指令。
+2. 你会严格参照用户消息内存在的写作规范、世界书、长期记忆、玩家标记、当前阶段、设定守护、逻辑审校和特殊指令等，以实际消息为准。
 3. 你只输出故事正文；不输出规则说明、标题、候选选项、JSON、代码块或元评论。
 4. 你不会替玩家做出超出本回合输入的关键决定；会把剧情停在自然的下一压力点或选择点。
 5. 若资料冲突，以用户消息中更靠后的【当前上下文】、【本回合特殊指令】、【写作规范】和模型身份职责为准。`;
+
+export const STORY_ASK_DIRECTOR_RULES = `询问导演工具（ask_director）使用纪律：
+
+当你在故事情节写作中缺少某些重要信息/设定时，不要自行编造，可调用 ask_director 一次向导演提问（每轮故事创作仅可使用一次），如果当前信息相对足够，不要使用此工具。
+
+何时使用：
+- 你缺少某个出场角色的关键信息（关系、目的、为什么本回合在场）
+- 你不清楚主角的某个能力 / 状态 / 设定的边界
+- 资料里暗示某件事要本回合落地，但叙事包没明示是否要写
+
+何时不要使用：
+- "我应该怎么开头" 这类过宽的写法问题（自己判断）
+- "小晴眼睛什么颜色" 这类细节（合理虚构）
+- 已能基于现有资料写出故事但想"再保险一点"（直接写作）
+
+提问示例：
+- 正例：「我缺少小晴这个角色的信息（关系、目的、为什么本回合在场）」
+- 正例：「我不清楚主角的能力设定（能做什么、限制、本回合能不能用）」
+- 正例：「我不了解当前事件的状态（涉及什么，边界是什么，本回合不能写什么）」
+- 反例：「我应该怎么开头」（过宽）
+- 反例：「小晴眼睛什么颜色」（过细）
+
+调用流程：
+- 调用 ask_director({ question, missingInfo? })；question 必填，明确告诉导演你的疑问点/卡在哪里
+- 触发导演专门答复，导演解决问题后，会在新的消息向你发送答复
+- 询问过一次后，本工具本回合不可再用——基于答复创作即可`;
 
 export interface BuildStorySystemParams {
   outline?: StoryOutline;
@@ -106,6 +142,7 @@ export function buildStorySystemPrompt(
   return [
     buildStoryRoleBlock(mode, characterName),
     STORY_SYSTEM_RULES,
+    STORY_ASK_DIRECTOR_RULES,
   ].join('\n\n');
 }
 
@@ -133,6 +170,12 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
       `标题：${outline.title}`,
       `梗概：${outline.synopsis}`,
     );
+    if (outline.acts?.length) {
+      outlineLines.push(
+        '阶段 / 章节：',
+        ...outline.acts.map((act, index) => `· 第 ${index + 1} 幕：${act}`),
+      );
+    }
     if (outline.tone) {
       outlineLines.push(
         `文风/题材：${outline.tone}`,
@@ -220,6 +263,33 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   const storyArcBlock = arcLines.join('\n');
 
   const plan = authorNarrative?.plan;
+  const outlineMappingBlock = (() => {
+    const mapping = authorNarrative?.outlineMapping ?? plan?.outlineMapping;
+    if (!mapping) return '';
+    const lines: string[] = [
+      '【执笔模式 · 大纲映射】',
+      `贴合状态：${mapping.alignment}`,
+    ];
+    if (mapping.currentAct) {
+      lines.push(`对应大纲：${mapping.currentActIndex !== undefined ? `第 ${mapping.currentActIndex + 1} 幕 · ` : ''}${mapping.currentAct}`);
+    }
+    if (mapping.currentStageGoal) lines.push(`当前阶段目标：${mapping.currentStageGoal}`);
+    if (mapping.stageProgress !== undefined) lines.push(`阶段软进度：${mapping.stageProgress}%`);
+    if (mapping.missingBridgeEvents?.length) {
+      lines.push('缺少的桥接事件：');
+      mapping.missingBridgeEvents.slice(0, 6).forEach((x) => lines.push(`· ${x}`));
+    }
+    if (mapping.candidateEvents?.length) {
+      lines.push('可自然推进的小事件方向：');
+      mapping.candidateEvents.slice(0, 6).forEach((x) => lines.push(`· ${x}`));
+    }
+    if (mapping.driftRisks?.length) {
+      lines.push(`偏离风险：${mapping.driftRisks.slice(0, 6).join('；')}`);
+    }
+    if (mapping.nextMilestone) lines.push(`下一里程碑：${mapping.nextMilestone}`);
+    lines.push('执行规则：大纲映射只提供方向，不允许越过【本回合叙事包】的写作边界；如玩家拒绝当前事件，应把偏离转化为新的因果，而不是强行否定玩家。');
+    return lines.join('\n');
+  })();
   const narrativePlanBlock = plan
     ? [
       '【执笔模式 · 当前叙事导演计划】',
@@ -236,10 +306,149 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
         ].join('\n')
         : '',
       plan.outlineAlignment ? `大纲贴合：${plan.outlineAlignment}` : '',
+      plan.eventUpdates?.length
+        ? [
+          '事件状态更新：',
+          ...plan.eventUpdates.slice(0, 6).map((u) =>
+            `· ${u.title || u.arcId || '事件'}${u.lifecycle ? ` → ${u.lifecycle}` : ''}${u.progressPercent !== undefined ? `（${u.progressPercent}%）` : ''}${u.progressNote ? `：${u.progressNote}` : ''}`,
+          ),
+        ].join('\n')
+        : '',
       plan.pacingAdvice ? `节奏建议：${plan.pacingAdvice}` : '',
       plan.riskNotes?.length ? `风险提醒：${plan.riskNotes.join('；')}` : '',
     ].filter(Boolean).join('\n')
     : '';
+
+  const planningStatesBlock = (() => {
+    const lines: string[] = [];
+    const characterPlan = authorNarrative?.characterPlan;
+    if (characterPlan) {
+      lines.push('【执笔模式 · 人物规划】', characterPlan.summary);
+      if (characterPlan.characters?.length) {
+        characterPlan.characters.slice(0, 8).forEach((c) => {
+          lines.push([
+            `· ${c.name}${c.role ? `（${c.role}）` : ''}`,
+            c.surfaceGoal ? `表面目的：${c.surfaceGoal}` : '',
+            c.hiddenIntent ? `隐藏动机：${c.hiddenIntent}（只用于暗示，不得直接剧透）` : '',
+            c.visibleBehavior ? `可表现：${c.visibleBehavior}` : '',
+            c.doNotReveal?.length ? `不得明说：${c.doNotReveal.join('；')}` : '',
+          ].filter(Boolean).join('；'));
+        });
+      }
+      if (characterPlan.relationshipSignals?.length) lines.push(`关系信号：${characterPlan.relationshipSignals.join('；')}`);
+      if (characterPlan.absentCharacters?.length) {
+        lines.push(`不应登场：${characterPlan.absentCharacters.map((c) => `${c.name}（${c.reason}）`).join('；')}`);
+      }
+      if (characterPlan.risks?.length) lines.push(`人物风险：${characterPlan.risks.join('；')}`);
+      lines.push('');
+    }
+
+    const scenePlan = authorNarrative?.scenePlan;
+    if (scenePlan) {
+      const s = scenePlan.scene;
+      lines.push('【执笔模式 · 场景规划】');
+      if (s.location) lines.push(`地点：${s.location}`);
+      if (s.time) lines.push(`时间：${s.time}`);
+      if (s.weather) lines.push(`天气：${s.weather}`);
+      if (s.atmosphere) lines.push(`氛围：${s.atmosphere}`);
+      if (s.resources?.length) lines.push(`可用资源：${s.resources.join('；')}`);
+      if (s.constraints?.length) lines.push(`场景限制：${s.constraints.join('；')}`);
+      if (scenePlan.sceneLogic) lines.push(`场景逻辑：${scenePlan.sceneLogic}`);
+      if (scenePlan.sceneResources?.length) lines.push(`额外资源：${scenePlan.sceneResources.join('；')}`);
+      if (scenePlan.opportunities?.length) lines.push(`机会：${scenePlan.opportunities.join('；')}`);
+      if (scenePlan.risks?.length) lines.push(`场景风险：${scenePlan.risks.join('；')}`);
+      lines.push('');
+    }
+
+    const eventPlan = authorNarrative?.eventPlan;
+    if (eventPlan) {
+      lines.push('【执笔模式 · 事件规划】', eventPlan.summary);
+      if (eventPlan.currentEvent) {
+        const ev = eventPlan.currentEvent;
+        if (ev.title) lines.push(`事件：${ev.title}`);
+        if (ev.lifecycle) lines.push(`生命周期：${ev.lifecycle}`);
+        if (ev.objective) lines.push(`事件目标：${ev.objective}`);
+        if (ev.progress) lines.push(`当前进度：${ev.progress}`);
+        if (ev.stopAt) lines.push(`事件内停止点：${ev.stopAt}`);
+        if (ev.completionCriteria?.length) lines.push(`完成标准：${ev.completionCriteria.join('；')}`);
+        if (ev.failureCriteria?.length) lines.push(`失败/延后标准：${ev.failureCriteria.join('；')}`);
+        if (ev.hiddenIntent) lines.push(`幕后目的：${ev.hiddenIntent}（只用于塑造行为，不得直接剧透）`);
+      }
+      if (eventPlan.candidateEvents?.length) lines.push(`候选事件：${eventPlan.candidateEvents.join('；')}`);
+      if (eventPlan.writingBoundary) lines.push(`建议写作边界：${eventPlan.writingBoundary}`);
+      if (eventPlan.successCriteria?.length) lines.push(`成功标准：${eventPlan.successCriteria.join('；')}`);
+      if (eventPlan.avoid?.length) lines.push(`避免：${eventPlan.avoid.join('；')}`);
+      lines.push('');
+    }
+    if (!lines.filter((x) => x.trim()).length) return '';
+    lines.push('执行规则：以上下级规划低于【本回合叙事包】，但高于故事写手自由发挥；若导演叙事包缺失，请用这些规划维持人物、场景和事件逻辑。');
+    return lines.join('\n');
+  })();
+
+  const narrativeBriefBlock = (() => {
+    const brief = plan?.writingBrief;
+    if (!brief) return '';
+    const lines: string[] = [
+      '【执笔模式 · 本回合叙事包】（最高执行包：故事写手只写这一小段，不要越界）',
+      `本回合目标：${brief.objective}`,
+    ];
+    if (brief.mustFollow?.length) {
+      lines.push('必须遵守：');
+      brief.mustFollow.slice(0, 10).forEach((x) => lines.push(`· ${x}`));
+    }
+    if (brief.currentEvent) {
+      const ev = brief.currentEvent;
+      lines.push('', '当前小事件：');
+      if (ev.title) lines.push(`· 名称：${ev.title}`);
+      if (ev.lifecycle) lines.push(`· 生命周期：${ev.lifecycle}`);
+      if (ev.objective) lines.push(`· 事件目标：${ev.objective}`);
+      if (ev.progress) lines.push(`· 当前进度：${ev.progress}`);
+      if (ev.stopAt) lines.push(`· 事件内停止点：${ev.stopAt}`);
+      if (ev.completionCriteria?.length) lines.push(`· 完成标准：${ev.completionCriteria.join('；')}`);
+      if (ev.failureCriteria?.length) lines.push(`· 失败/延后标准：${ev.failureCriteria.join('；')}`);
+      if (ev.hiddenIntent) lines.push(`· 幕后目的：${ev.hiddenIntent}（只用于塑造行为，不得直接剧透）`);
+    }
+    if (brief.characters?.length) {
+      lines.push('', '出场/牵动角色：');
+      brief.characters.slice(0, 8).forEach((c) => {
+        const parts = [
+          `· ${c.name}${c.role ? `（${c.role}）` : ''}`,
+          c.surfaceGoal ? `表面目的：${c.surfaceGoal}` : '',
+          c.hiddenIntent ? `真实动机：${c.hiddenIntent}` : '',
+          c.visibleBehavior ? `可表现：${c.visibleBehavior}` : '',
+          c.doNotReveal?.length ? `不得明说：${c.doNotReveal.join('；')}` : '',
+        ].filter(Boolean);
+        lines.push(parts.join('；'));
+      });
+    }
+    if (brief.scene) {
+      const s = brief.scene;
+      lines.push('', '本回合场景规划：');
+      if (s.location) lines.push(`· 地点：${s.location}`);
+      if (s.time) lines.push(`· 时间：${s.time}`);
+      if (s.weather) lines.push(`· 天气：${s.weather}`);
+      if (s.atmosphere) lines.push(`· 氛围：${s.atmosphere}`);
+      if (s.resources?.length) lines.push(`· 可用资源：${s.resources.join('；')}`);
+      if (s.constraints?.length) lines.push(`· 场景限制：${s.constraints.join('；')}`);
+    }
+    if (brief.sceneResources?.length) {
+      lines.push('', `场景资源：${brief.sceneResources.join('；')}`);
+    }
+    lines.push('', `写作边界：${brief.writingBoundary}`);
+    if (brief.successCriteria?.length) {
+      lines.push(`成功标准：${brief.successCriteria.join('；')}`);
+    }
+    if (brief.avoid?.length) {
+      lines.push('本回合避免：');
+      brief.avoid.slice(0, 8).forEach((x) => lines.push(`· ${x}`));
+    }
+    if (brief.hiddenKnowledge?.length) {
+      lines.push('', '隐藏信息（只用于暗示，不得旁白直说）：');
+      brief.hiddenKnowledge.slice(0, 8).forEach((x) => lines.push(`· ${x}`));
+    }
+    lines.push('', '执行纪律：本回合严格写到【写作边界】为止；即使知道事件后续，也不要提前完成、提前揭秘或替玩家做重大决定。');
+    return lines.join('\n');
+  })();
 
   const settingGuard = authorNarrative?.settingGuard;
   const settingGuardBlock = (() => {
@@ -300,6 +509,28 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   })();
 
   const logicReview = authorNarrative?.logicReview;
+  const eventBeat = authorNarrative?.eventBeat;
+  const eventBeatBlock = (() => {
+    if (!eventBeat?.verdicts?.length) return '';
+    const lines: string[] = [
+      '【执笔模式 · 本回合事件节奏判定】（来自司事，事件状态以此为准；写作时不要让事件状态与此冲突）',
+      `判定回合：第 ${eventBeat.updatedAtRound} 回合`,
+    ];
+    eventBeat.verdicts.slice(0, 6).forEach((v) => {
+      const parts = [
+        `· ${v.title || v.arcId}`,
+        `→ ${v.lifecycle}`,
+        v.progressPercent !== undefined ? `${v.progressPercent}%` : '',
+        v.triggeredCompletion ? '【本回合达成完成标准】' : '',
+        v.triggeredFailure ? '【本回合达成失败标准】' : '',
+      ].filter(Boolean);
+      lines.push(parts.join('｜'));
+      if (v.progressNote) lines.push(`  推进备注：${v.progressNote}`);
+      if (v.outcomeNote) lines.push(`  结算备注：${v.outcomeNote}`);
+    });
+    lines.push('', '执行规则：事件状态以本块为准，按其 lifecycle 走，不要把已完成事件写成"还在推进"，也不要把进行中事件写成"已收束"。');
+    return lines.join('\n');
+  })();
   const logicReviewBlock = (() => {
     if (!logicReview) return '';
     const issues = logicReview.issues ?? [];
@@ -345,7 +576,8 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
       `姓名：${characterName || '（未命名）'}`,
       `出身：${background.name} —— ${background.description}`,
       `特质：${background.traits.join('、') || '无'}`,
-      `携带：${background.startItems.join('、') || '无'}`,
+      `初始能力：${background.startItems.join('、') || '无'}`,
+      background.startScene ? `开局文本：${background.startScene}` : '',
     ].join('\n')
     : '';
 
@@ -406,7 +638,7 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   }
 
   const backpackBlock = backpack && backpack.length
-    ? ['【玩家背包】', formatItemsForPrompt(backpack)].join('\n')
+    ? ['【玩家能力】', formatItemsForPrompt(backpack)].join('\n')
     : '';
 
   const currentSceneBlock = currentScene
@@ -421,9 +653,9 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
 
   const usedItemsBlock = usedItems && usedItems.length
     ? [
-      '【本回合玩家使用的道具】',
+      '【本回合玩家使用的能力】',
       formatItemsForPrompt(usedItems),
-      '请在本回合的叙事中让这些道具发挥合理作用。若其中有"一次性"物品，请在叙事里体现它被消耗的事实。',
+      '请在本回合的叙事中让这些能力发挥合理作用。若其中有"一次性"能力，请在叙事里体现它失效的事实。',
     ].join('\n')
     : '';
 
@@ -439,21 +671,25 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     lengthRule,
     perspectiveRule(storyPromptMode, characterName),
     '3. 不要替玩家做出本回合的关键决定；叙述在自然的选择点或悬念处收束，但避免直接写"你会怎么做？"这类元指令。',
-    '4. 环境、NPC、时间推移你可以自由推进；玩家的具体行为应依据玩家上一条输入。若玩家输入含糊，你可合理演绎后果。',
-    '5. 允许使用 Markdown：**人名/关键地点/物品** 以粗体强调；*内心独白/感官细节* 以斜体表现。',
-    '6. 避免陈词滥调的"突然"、"仿佛一切都慢了下来"之类套话。写感官细节、矛盾张力、角色心境。',
-    '7. 严禁剧透结局；严禁元叙述（"这是 AI 编写的故事"）。',
-    '8. 节奏纪律（最高优先级）：本回合只完成上方【本回合聚焦】指明的一件事。绝不为了"追阶段进度"而把多步动作压在一回合（如：变身 + 走路 + 换装 + 对话 + 反思）。即使玩家输入提到多个动作，也要按 playerPace 对应的纪律拆分——如果玩家是 immersive 或 exploratory，挑最关键的第一步写完即可，停在自然的下一选择点。',
-    '9. 阶段纪律：当前阶段未完成时，不要主动让主角触发下一阶段标志性事件。完成条件由【本回合玩家意图与节奏】判断，不是由你判断。',
+    '4. 环境、NPC、时间推移你可以随故事发展推进；故事主角的具体行为应依据玩家上一条输入与玩家偏好。',
+    '5. 允许使用 Markdown：**人名/关键地点/能力** 以粗体强调；*内心独白/感官细节* 以斜体表现。',
+    '6. 避免陈词滥调，写感官细节、矛盾张力、角色心境。',
+    '7. 严禁剧透结局；严禁将提供的信息（如：故事节奏/事件节奏/大纲等）直接写入故事；严禁元叙述（"这是 AI 编写的故事"）。',
+    '8. 叙事与节奏纪律（重要）：故事的发展要严格参照已有信息，谨慎对待后续内容，没有依据的信息不要映射入故事（如：玩家与已有角色的互动不能无角色信息自由发挥，必须了解其角色设定再描写行为）。故事节奏要严格参照故事发展和已有信息，不要脱离节奏自由发挥，不要将多轮回合的事件融入一回合，依据已知信息判断本回合该发展到的情节，不要越界，故事可以在任意地方终止',
+    '9.5. 叙事包纪律：若存在【本回合叙事包】，它是本回合最具体的执行包。你可以知道隐藏动机，但只能用动作、语气、停顿、环境呼应来暗示，不得直接旁白揭露；必须写到叙事包给出的边界就停止。',
+    '9.6. milestone 纪律：若【叙事弧 / 长线事件】里有 [milestone] 标记的事件，它是主线大事件——写作时更克制，不要一回合压完核心节拍；完成 / 失败的关键时刻应留出余韵，让读者感知到分量。milestone 事件的生命周期判定更严格，按上方给出的 lifecycle 走。',
     '10. 信息优先级（当上方各块出现冲突时按此顺序取舍）：',
-    '   ① 本回合玩家意图与节奏（stageJudge）—— 决定本回合做什么、做多少',
-    '   ② 当前阶段（masterArc.currentStage）的完成条件与待完成节拍',
-    '   ③ 设定守护"必须遵守"补丁 + 偏离风险',
-    '   ④ alwaysActive 世界书条目（能力规则、世界基调等硬设定）',
-    '   ⑤ 玩家标记的关键记忆（anchors）',
-    '   ⑥ 长期一致性记忆 + 已登场人物的细节',
-    '   ⑦ 进行中的事件弧、导演计划、审校建议',
-    '   ⑧ 历史摘要、当前场景、背包',
+      '   ① 本回合玩家意图与节奏（stageJudge）—— 决定本回合做什么、做多少',
+      '   ② 本回合叙事包（writingBrief）—— 决定本回合目标、角色动机、事件边界',
+      '   ③ 本回合事件节奏判定 —— 决定事件真实 lifecycle 与结算结果',
+      '   ④ 下级规划（大纲映射 / 人物规划 / 场景规划 / 事件规划）—— 决定本回合为何发生、谁在场、在哪里、事件进退',
+      '   ⑤ 当前阶段（masterArc.currentStage）的完成条件与待完成节拍',
+      '   ⑥ 设定守护"必须遵守"补丁 + 偏离风险',
+      '   ⑦ alwaysActive 世界书条目（能力规则、世界基调等硬设定）',
+      '   ⑧ 玩家标记的关键记忆（anchors）',
+      '   ⑨ 长期一致性记忆 + 已登场人物的细节',
+      '   ⑩ 进行中的事件弧、导演计划、审校建议',
+      '   ⑪ 历史摘要、当前场景、能力',
     '   下方块（如长期记忆）若与上方块冲突，以上方块为准；但同样级别的"硬设定"不要互相覆盖。',
     '11. 如发现【已登场人物】与【长期一致性记忆】对同一人物的描述重复，以更具体、更近期的为准；不要因冗余信息而对人物画像产生分裂。',
   ].join('\n');
@@ -500,7 +736,11 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
     worldBookTriggeredBlock,
     summaryBlock,
     memoryBlock,
+    outlineMappingBlock,
     narrativePlanBlock,
+    planningStatesBlock,
+    narrativeBriefBlock,
+    eventBeatBlock,
     settingGuardBlock,
     logicReviewBlock,
     npcsBlock: npcLines.join('\n'),
@@ -519,6 +759,15 @@ export function buildStorySystem(p: BuildStorySystemParams): string {
   if (stageJudgeBlock && !rendered.includes('【执笔模式 · 本回合玩家意图与节奏】')) fallbackBlocks.push(stageJudgeBlock);
   if (memoryBlock && !rendered.includes('【长期一致性记忆】')) fallbackBlocks.push(memoryBlock);
   if (narrativePlanBlock && !rendered.includes('【执笔模式 · 当前叙事导演计划】')) fallbackBlocks.push(narrativePlanBlock);
+  if (outlineMappingBlock && !rendered.includes('【执笔模式 · 大纲映射】')) fallbackBlocks.push(outlineMappingBlock);
+  if (
+    planningStatesBlock
+    && !rendered.includes('【执笔模式 · 人物规划】')
+    && !rendered.includes('【执笔模式 · 场景规划】')
+    && !rendered.includes('【执笔模式 · 事件规划】')
+  ) fallbackBlocks.push(planningStatesBlock);
+  if (narrativeBriefBlock && !rendered.includes('【执笔模式 · 本回合叙事包】')) fallbackBlocks.push(narrativeBriefBlock);
+  if (eventBeatBlock && !rendered.includes('【执笔模式 · 本回合事件节奏判定】')) fallbackBlocks.push(eventBeatBlock);
   if (
     settingGuardBlock
     && !rendered.includes('【执笔模式 · 本回合设定守护】')
