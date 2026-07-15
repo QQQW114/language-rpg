@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   BookOpen,
+  BookPlus,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -158,6 +159,16 @@ export default function SetupPageV2() {
             title="选择一段命运"
             description="大纲规定故事必须经历的幕与故事节；你可以自由改变道路，规划模型会沿新的路径重新安排它们。"
           />
+
+          <div className="mx-auto mt-5 flex max-w-3xl flex-col items-center justify-between gap-3 rounded-md border border-gold-dark/35 bg-parchment-900/35 px-4 py-3 text-center sm:flex-row sm:text-left">
+            <div>
+              <div className="font-serif text-sm text-parchment-50">没有想走的故事？</div>
+              <div className="mt-0.5 text-xs leading-relaxed text-parchment-200/60">在命运工坊编写自己的幕、故事节与世界书，保存后会自动出现在这里。</div>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => nav('/workshop')}>
+              <BookPlus size={14} /> 打开命运工坊
+            </Button>
+          </div>
 
           <div className="mt-7 grid gap-5 md:grid-cols-2">
             {outlines.map((item) => {

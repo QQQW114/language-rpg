@@ -1,13 +1,13 @@
 {
   "name": "language-rpg",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
-    ,"test:story": "node scripts/test-story-flow.mjs",
+    "preview": "vite preview",
+    "test:story": "node scripts/test-story-flow.mjs",
     "test:patch": "node scripts/test-destiny-patch.mjs"
   },
   "dependencies": {

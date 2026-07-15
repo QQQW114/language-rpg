@@ -87,8 +87,10 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2): GameS
 
   // Temporary facts belong in prose/history. Discard old temporary rows and
   // cap additions so verbose planners cannot grow the canonical index forever.
-  const facts: CanonicalFactV2[] = (state.facts ?? [])
-    .filter((x) => x.stability !== 'temporary')
+  const persistedFacts = (state.facts ?? []).filter((x) => x.stability !== 'temporary');
+  const coreFacts = persistedFacts.filter((x) => x.stability === 'core').slice(0, MAX_CANONICAL_FACTS);
+  const stableFacts = persistedFacts.filter((x) => x.stability !== 'core');
+  const facts: CanonicalFactV2[] = [...coreFacts, ...stableFacts.slice(-Math.max(0, MAX_CANONICAL_FACTS - coreFacts.length))]
     .map((x) => ({ ...x, keywords: [...x.keywords] }));
   const factRows = (Array.isArray(patch.facts) ? patch.facts : [])
     .filter((row) => record(row))

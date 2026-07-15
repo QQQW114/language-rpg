@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
+  BookPlus,
   Compass,
   PlayCircle,
   ScrollText,
@@ -120,13 +121,16 @@ export default function HomePageV2() {
           )}
 
           <div
-            className={`mt-4 flex gap-2${playEntranceAnimation ? ' animate-fade-in' : ''}`}
+            className={`mt-4 flex flex-wrap justify-center gap-2${playEntranceAnimation ? ' animate-fade-in' : ''}`}
             style={
               playEntranceAnimation
                 ? { animationDelay: hasSaves ? '2150ms' : '2040ms' }
                 : undefined
             }
           >
+            <Button variant="ghost" onClick={() => nav('/workshop')}>
+              <BookPlus size={16} /> 故事与世界书工坊
+            </Button>
             <Button variant="ghost" onClick={() => nav('/settings')}>
               <Settings size={16} /> 模型与连接设置
             </Button>

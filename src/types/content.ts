@@ -95,3 +95,44 @@ export interface ImportBundle {
   events?: RandomEvent[];
   workspaceTemplates?: WorkspaceTemplate[];
 }
+
+/** 浏览器书库导出的稳定 JSON 包格式。 */
+export interface ContentExportPackage {
+  kind: 'language-rpg.content-library';
+  version: 1;
+  exportedAt: number;
+  content: ImportBundle;
+}
+
+export type ContentResourceKind =
+  | 'outline'
+  | 'background'
+  | 'worldBook'
+  | 'event'
+  | 'workspaceTemplate'
+  | 'bundle';
+
+export interface ContentValidationIssue {
+  kind: ContentResourceKind;
+  path: string;
+  code: string;
+  message: string;
+}
+
+export interface ContentValidationResult<T> {
+  ok: boolean;
+  value?: T;
+  issues: ContentValidationIssue[];
+}
+
+export interface ContentMutationResult {
+  ok: boolean;
+  issues: ContentValidationIssue[];
+}
+
+export interface ContentImportResult {
+  added: number;
+  updated: number;
+  skipped: number;
+  issues: ContentValidationIssue[];
+}
