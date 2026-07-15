@@ -6,5 +6,9 @@ dist
 .env
 .env.local
 test-saves/
+test-runs/
 docs/other/
 *.bak
+
+# Local legacy prompt and architecture references (not shipped)
+.legacy-reference/

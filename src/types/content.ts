@@ -1,6 +1,5 @@
 // 可导入/导出的内容资源类型：世界书、大纲、出身、随机事件
 
-import type { StoryArc } from './game';
 import type { WorkspaceDocumentKind } from './workspace';
 
 export interface WorldBookEntry {
@@ -19,27 +18,26 @@ export interface WorldBook {
   entries: WorldBookEntry[];
 }
 
-export interface OutlineStage {
-  name: string;                       // 阶段名称
-  description?: string;               // 阶段说明
-  themeRange?: string[];              // 该阶段可生成的事件题材范围
-  milestoneCandidates?: string[];     // 该阶段允许的主线大事件候选
-  exitMilestone?: string;             // 离开本阶段的关键 milestone
+// 大纲只保存命运骨架：幕说明阶段方向，故事节说明必须经历的叙事功能。
+// 具体地点、事件形式与承担角色由规划模型随玩家路径动态重构。
+export interface StoryBeat {
+  id: string;
+  title: string;
+  purpose: string;
+}
+
+export interface StoryAct {
+  id: string;
+  title: string;
+  purpose: string;
+  beats: StoryBeat[];
 }
 
 export interface StoryOutline {
   id: string;
   title: string;
   synopsis: string;           // 简介
-  acts: string[];             // 三幕（或更多）节点
-  stages?: OutlineStage[];    // 新结构；旧存档没有时继续使用 acts
-  themeAnchors?: string[];    // 整本大纲的题材锚点
-  progressAnchors?: Array<{
-    type: 'npc_relation' | 'goal' | 'world_state';
-    id: string;
-    label?: string;
-    weight?: number;
-  }>;
+  acts: StoryAct[];           // 有顺序的命运阶段与必要故事节
   tone?: string;              // 文风提示
   worldBookIds?: string[];    // 默认挂载
   coverEmoji?: string;        // 卡片上的装饰符号
@@ -64,7 +62,6 @@ export interface RandomEvent {
   cooldown?: number;          // 冷却轮数
   once?: boolean;             // 只触发一次
   tags?: string[];
-  arc?: StoryArc;             // 动态生成的长线事件弧（可作为书库素材保存）
 }
 
 export interface WorkspaceTemplateDocument {

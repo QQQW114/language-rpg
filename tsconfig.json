@@ -19,6 +19,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src/main.tsx", "src/App.tsx", "src/v2", "src/pages/SettingsPage.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

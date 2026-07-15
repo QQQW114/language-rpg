@@ -73,6 +73,9 @@ export interface ChatParams {
   maxToolRounds?: number;
   onToolCall?: (call: ChatToolInvocation) => Promise<unknown>;
   onToolActivity?: (activity: ChatToolActivity) => void;
+  responseFormat?: 'json_object';
+  thinking?: 'enabled' | 'disabled';
+  reasoningEffort?: 'high' | 'max';
 }
 
 export interface ChatResult {
@@ -81,6 +84,8 @@ export interface ChatResult {
   finishReason?: string;
   usage?: LlmUsage;
   trace?: AgentPromptTrace;
+  /** 完整可续接会话；仅供同一轮内的后续调用，不应长期持久化。 */
+  conversation?: ChatMessage[];
 }
 
 export interface ChatStreamParams extends ChatParams {
@@ -127,6 +132,9 @@ function buildChatBody(p: ChatParams, stream: boolean, includeUsage = false): Re
     stream,
     ...(stream && includeUsage ? { stream_options: { include_usage: true } } : {}),
     ...(p.maxTokens ? { max_tokens: p.maxTokens } : {}),
+    ...(p.responseFormat ? { response_format: { type: p.responseFormat } } : {}),
+    ...(p.thinking ? { thinking: { type: p.thinking } } : {}),
+    ...(p.reasoningEffort ? { reasoning_effort: p.reasoningEffort } : {}),
     ...(p.tools?.length && (p.toolChoice ?? 'auto') !== 'none' ? { tools: p.tools, tool_choice: p.toolChoice ?? 'auto' } : {}),
   };
 }
@@ -152,6 +160,7 @@ function buildResponsesBody(p: ChatParams, stream: boolean): Record<string, unkn
   if (systems.length) body.instructions = systems.join('\n\n');
   if (p.temperature !== undefined) body.temperature = p.temperature;
   if (p.maxTokens) body.max_output_tokens = p.maxTokens;
+  if (p.responseFormat) body.text = { format: { type: p.responseFormat } };
   return body;
 }
 
@@ -271,7 +280,7 @@ export async function chatStream(
 export async function chatStreamDetailed(
   cfg: ChatClientConfig,
   p: ChatStreamParams,
-): Promise<StreamResult & { trace?: AgentPromptTrace }> {
+): Promise<StreamResult & { trace?: AgentPromptTrace; conversation?: ChatMessage[] }> {
   if (!cfg.apiKey) throw new Error('未配置 API Key，请先在设置中填写');
   if (!cfg.baseUrl) throw new Error('未配置 API Base URL');
   if (!p.model) throw new Error('未选择模型');
@@ -422,12 +431,17 @@ export async function chatStreamDetailed(
         finishReason: result.finishReason,
         usage,
         trace: buildPromptTrace(messages),
+        conversation: [...messages, { role: 'assistant', content: result.text || '' }],
       };
     }
   }
 
   const result = await requestStreamOnce(p, true);
-  return { ...result, trace: buildPromptTrace(p.messages) };
+  return {
+    ...result,
+    trace: buildPromptTrace(p.messages),
+    conversation: [...p.messages, { role: 'assistant', content: result.text || '' }],
+  };
 }
 
 export async function chatJSON(
@@ -462,5 +476,6 @@ export async function chatJSONDetailed(
     finishReason: result.finishReason,
     usage: result.usage,
     trace: result.trace,
+    conversation: result.conversation,
   };
 }
