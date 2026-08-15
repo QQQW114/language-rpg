@@ -53,7 +53,7 @@ ${director ? plannerPostDirectorAgency : ''}
 故事节状态含义：pending未到条件；available条件成熟；active正在发生；satisfied核心功能已由正文满足；weakened已满足结果被后续削弱；reframed因路线变化需换实现方式；superseded已由等价故事节承担。
 satisfied不是“提到过标题”或“计划过”的标记，只有当CURRENT_STORY实际实现了该故事节的purpose（叙事功能），并能用正文原句证明时才可使用。只完成了铺垫、绕开、切断、改走其他路径时，不得标记satisfied，应使用active、weakened或reframed，并说明当前实现/缺口。已satisfied的故事节不得无理由回退为active、available或pending；若后续正文确实削弱已实现结果，只能使用weakened或reframed，并提供直接证据和原因。beatChanges只提交本轮发生变化的故事节，不重抄全部。
 玩家改变路线时优先reframed并更新currentPlan，不删除命运功能。不要强行拉回旧地点。
-若写前计划包含额外随机事件要求，只有正文已经实际发生了对应事件时randomEvent.handled才为true；计划留到下一回合时保持false。
+若CURRENT_WRITE_PLAN中的randomEvent.planned为true，只有CURRENT_STORY已经实际发生了对应安排的事件时randomEvent.handled才为true；计划留到下一回合时保持false。
 characters、relationships、inventory、threads、facts全部是增量Patch，不得重抄完整状态。没有变化必须输出空数组。
 必须复用权威状态中已有ID。新对象ID使用稳定、简短、语义化的小写ASCII ID；同一对象后续永远复用该ID。
 relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityDelta每回合范围-20到20；只有正文出现实际关系变化才提交。
@@ -66,6 +66,16 @@ fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occup
 function withRoleInject(baseSystem: string, inject: RoleInjectConfig | undefined): string {
   const text = inject?.enabled ? String(inject.text ?? '').trim() : '';
   return text ? `${text}\n\n${baseSystem}` : baseSystem;
+}
+
+/** 把规划模型输出的 randomEvent 安排 JSON 转为纯文字。 */
+function randomEventPlanToText(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const plan = raw as { planned?: unknown; summary?: unknown };
+  if (plan.planned !== true) return undefined;
+  const summary = typeof plan.summary === 'string' ? plan.summary.trim() : '';
+  if (summary) return summary;
+  return '规划模型已安排一个随机事件，但未提供文字摘要。';
 }
 
 const plannerToolDiscipline = `
@@ -560,7 +570,7 @@ export async function runTurnV2(p: TurnRequestV2) {
   const preMessages: ChatMessage[] = [
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-    { role: 'user', content: `【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n只输出 {"intent":"","currentAct":"","activeBeatIds":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":""}` },
+    { role: 'user', content: `【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n只输出 {"intent":"","currentAct":"","activeBeatIds":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"summary":""}}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   let pre;
@@ -591,6 +601,7 @@ export async function runTurnV2(p: TurnRequestV2) {
     throw error;
   }
   const brief = extractJSON(pre.text) as any;
+  const randomEventPlanForStory = randomEventPlanToText(brief?.randomEvent) ?? '本回合无随机事件安排';
 
   emitPhase(p, 'story', storyModel, 'started');
   let story;
@@ -605,7 +616,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       messages: [
         { role: 'system', content: storyPrompt },
         { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-        { role: 'user', content: `【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}` },
+        { role: 'user', content: `【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}` },
       ],
       onThinkingDelta: (text) => emitThinking(p, 'story', storyModel, text),
       onDelta: (text) => {
@@ -666,5 +677,7 @@ export async function runTurnV2(p: TurnRequestV2) {
   next.turn = p.state.turn + 1;
   next.phase = 'input';
   if (shouldInjectPlanner) next.plannerInjectApplied = true;
+  const randomEventPlanText = randomEventPlanToText(brief?.randomEvent);
+  if (randomEventPlanText) next.randomEvent.lastPlan = randomEventPlanText;
   return { state: next, story: story.text, brief, patch, usage: { pre: pre.usage, story: story.usage, post: post.usage } };
 }

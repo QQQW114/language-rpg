@@ -102,6 +102,8 @@ export interface RandomEventStateV2 {
   triggerIntervalMin: number;
   /** 下一次随机事件距离上次触发的最长回合数。 */
   triggerIntervalMax: number;
+  /** 规划模型最近一次为本回合/下回合安排的随机事件（已转为纯文字）。 */
+  lastPlan?: string;
 }
 
 export interface CharacterV2 {
