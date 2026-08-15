@@ -342,7 +342,9 @@ function paceInstruction(p: TurnRequestV2) {
 }
 
 function randomEventInstruction(p: TurnRequestV2) {
-  const due = p.state.randomEvent.pending || p.state.turn >= p.state.randomEvent.nextTriggerTurn;
+  const randomEvent = p.state.randomEvent;
+  const enabled = randomEvent?.enabled !== false;
+  const due = enabled && (randomEvent.pending || p.state.turn >= randomEvent.nextTriggerTurn);
   if (!due) return '';
   const instructions = {
     related: '---额外---：在本回合或下回合自然插入一个与当前故事严格相关的随机事件。事件必须联系当前角色、环境、关系或active/available故事节，不能是无关装饰。',

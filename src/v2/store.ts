@@ -32,6 +32,11 @@ interface StoreV2 {
     outline?: StoryOutline;
     background?: Background;
     worldFacts?: WorldBookEntry[];
+    randomEvent?: {
+      enabled?: boolean;
+      triggerIntervalMin?: number;
+      triggerIntervalMax?: number;
+    };
   }) => string;
   setActive: (id: string) => void;
   update: (id: string, fn: (s: SaveV2) => SaveV2) => void;
@@ -52,6 +57,9 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({
     const id = genId('save');
     const now = Date.now();
     const startScene = p.background?.startScene;
+    const triggerIntervalMin = Math.max(1, Math.min(100, Math.round(Number(p.randomEvent?.triggerIntervalMin) || 3)));
+    const triggerIntervalMax = Math.max(triggerIntervalMin, Math.min(100, Math.round(Number(p.randomEvent?.triggerIntervalMax) || 6)));
+    const nextTriggerTurn = triggerIntervalMin + Math.floor(Math.random() * (triggerIntervalMax - triggerIntervalMin + 1));
     const save: SaveV2 = {
       id,
       name: p.name || p.outline?.title || '新的旅程',
@@ -106,9 +114,12 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({
           updatedAtTurn: 0,
         },
         randomEvent: {
-          nextTriggerTurn: 3,
+          enabled: p.randomEvent?.enabled !== false,
+          nextTriggerTurn,
           pending: false,
           intensity: 'related',
+          triggerIntervalMin,
+          triggerIntervalMax,
         },
       },
     };

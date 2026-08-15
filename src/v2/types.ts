@@ -93,10 +93,15 @@ export interface DestinyProgressV2 {
 }
 
 export interface RandomEventStateV2 {
+  enabled: boolean;
   nextTriggerTurn: number;
   pending: boolean;
   intensity: RandomEventIntensityV2;
   lastTriggeredTurn?: number;
+  /** 下一次随机事件距离上次触发的最短回合数。 */
+  triggerIntervalMin: number;
+  /** 下一次随机事件距离上次触发的最长回合数。 */
+  triggerIntervalMax: number;
 }
 
 export interface CharacterV2 {

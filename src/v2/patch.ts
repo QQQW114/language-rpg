@@ -151,15 +151,26 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2): GameS
     destiny.updatedAtTurn = state.turn;
   }
 
-  const dueRandomEvent = state.randomEvent.pending || state.turn >= state.randomEvent.nextTriggerTurn;
+  const randomEventEnabled = state.randomEvent.enabled !== false;
+  const dueRandomEvent = randomEventEnabled && (state.randomEvent.pending || state.turn >= state.randomEvent.nextTriggerTurn);
   let randomEvent = { ...state.randomEvent };
   if (dueRandomEvent) {
     if (patch.randomEvent?.handled) {
       const intensities: RandomEventIntensityV2[] = ['related', 'progress', 'destiny'];
-      randomEvent = { nextTriggerTurn: state.turn + 3 + Math.floor(Math.random() * 4), pending: false, intensity: intensities[Math.floor(Math.random() * intensities.length)], lastTriggeredTurn: state.turn };
+      const intervalMin = Math.max(1, Math.round(randomEvent.triggerIntervalMin ?? 3));
+      const intervalMax = Math.max(intervalMin, Math.round(randomEvent.triggerIntervalMax ?? 6));
+      randomEvent = {
+        ...randomEvent,
+        nextTriggerTurn: state.turn + intervalMin + Math.floor(Math.random() * (intervalMax - intervalMin + 1)),
+        pending: false,
+        intensity: intensities[Math.floor(Math.random() * intensities.length)],
+        lastTriggeredTurn: state.turn,
+      };
     } else {
       randomEvent = { ...randomEvent, pending: true, nextTriggerTurn: state.turn + 1 };
     }
+  } else if (!randomEventEnabled) {
+    randomEvent = { ...randomEvent, pending: false };
   }
 
   return { ...state, revision: state.revision + 1, summary: text(patch.roundSummary || state.summary, 5000), latestProgress: text(patch.latestProgress, 500), characters, relationships, inventory: inventory.filter((x) => x.quantity > 0), storyThreads: threads, facts, destiny, randomEvent, currentScene: patch.scene ? { id: text(patch.scene.id, 80) || state.currentScene?.id || genId('scene'), name: text(patch.scene.name, 50) || state.currentScene?.name || '未知地点', description: text(patch.scene.description, 240) || state.currentScene?.description, time: text(patch.scene.time, 40) || state.currentScene?.time, weather: text(patch.scene.weather, 40) || state.currentScene?.weather } : state.currentScene, availableActions: state.mode === 'adventure' ? (patch.actions ?? []).slice(0, 4) : [], lastCommitId: patch.commitId };

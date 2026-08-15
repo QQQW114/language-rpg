@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Compass,
+  Dices,
   Feather,
   Footprints,
   Layers3,
@@ -50,6 +51,9 @@ export default function SetupPageV2() {
   const [backgroundId, setBackgroundId] = useState(firstBackground?.id ?? '');
   const [worldBookIds, setWorldBookIds] = useState<string[]>(firstOutline?.worldBookIds ?? []);
   const [journeyName, setJourneyName] = useState(firstOutline?.title ?? '');
+  const [randomEventEnabled, setRandomEventEnabled] = useState(true);
+  const [randomEventMin, setRandomEventMin] = useState(3);
+  const [randomEventMax, setRandomEventMax] = useState(6);
 
   const outline = useMemo(
     () => outlines.find((item) => item.id === outlineId),
@@ -66,6 +70,8 @@ export default function SetupPageV2() {
 
   const currentIndex = STEPS.findIndex((item) => item.id === step);
   const canContinue = step === 'outline' ? !!outline : step === 'background' ? !!background : !!outline && !!background;
+  const randomEventMinSafe = Math.min(100, Math.max(1, Math.round(randomEventMin) || 3));
+  const randomEventMaxSafe = Math.min(100, Math.max(randomEventMinSafe, Math.round(randomEventMax) || randomEventMinSafe));
 
   const selectOutline = (id: string) => {
     const next = outlines.find((item) => item.id === id);
@@ -94,6 +100,11 @@ export default function SetupPageV2() {
       outline,
       background,
       worldFacts: flattenWorldBookEntries(worldBooks, worldBookIds),
+      randomEvent: {
+        enabled: randomEventEnabled,
+        triggerIntervalMin: randomEventMinSafe,
+        triggerIntervalMax: randomEventMaxSafe,
+      },
     });
     nav('/game');
   };
@@ -328,6 +339,55 @@ export default function SetupPageV2() {
               </Card>
 
               <Card>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Dices size={17} /> 随机事件
+                    </CardTitle>
+                    <CardMeta>
+                      事件到点后由模型在本回合或下回合自然插入，并服从当前叙事速度。
+                    </CardMeta>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={randomEventEnabled}
+                    aria-label="开启随机事件"
+                    onClick={() => setRandomEventEnabled((value) => !value)}
+                    className={`relative mt-1 h-6 w-11 shrink-0 rounded-full border transition-colors ${randomEventEnabled
+                      ? 'border-gold/70 bg-gold/55'
+                      : 'border-parchment-500/55 bg-parchment-800/80'}`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-parchment-50 shadow transition-transform ${randomEventEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+                {randomEventEnabled && (
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <Input
+                      label="最短触发间隔（回合）"
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={randomEventMin}
+                      onChange={(event) => setRandomEventMin(Number(event.target.value))}
+                      hint="距离上次事件至少间隔多少回合。"
+                    />
+                    <Input
+                      label="最长触发间隔（回合）"
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={randomEventMax}
+                      onChange={(event) => setRandomEventMax(Number(event.target.value))}
+                      hint="距离上次事件至多间隔多少回合；不能小于最短间隔。"
+                    />
+                  </div>
+                )}
+              </Card>
+
+              <Card>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <BookOpen size={17} /> 世界资料
                 </CardTitle>
@@ -400,6 +460,7 @@ export default function SetupPageV2() {
                   <PreviewRow label="故事" value={`${outline.coverEmoji ?? ''} ${outline.title}`.trim()} />
                   <PreviewRow label="出身" value={`${background.coverEmoji ?? ''} ${background.name}`.trim()} />
                   <PreviewRow label="模式" value={mode === 'author' ? '执笔模式 · 自由输入' : '游历模式 · 选项与自由输入'} />
+                  <PreviewRow label="随机事件" value={randomEventEnabled ? `开启 · ${randomEventMinSafe}～${randomEventMaxSafe} 回合` : '关闭'} />
                   <PreviewRow label="世界资料" value={selectedBooks.length ? selectedBooks.map((book) => book.name).join('、') : '未选择'} />
                 </dl>
 
