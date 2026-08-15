@@ -155,6 +155,24 @@ export default function SettingsPage() {
             <span className="mt-1 block text-xs leading-relaxed text-parchment-200/50">模型100%信任输入，输入要求故事如何发展就如何发展、发展到哪。</span>
           </button>
         </div>
+        <div className="mt-3 flex items-start justify-between gap-4 border-t border-parchment-600/15 pt-3">
+          <div className="min-w-0">
+            <div className="text-sm text-parchment-100">展示故事推进详情</div>
+            <p className="mt-1 text-xs leading-relaxed text-parchment-200/55">在命运卡中展示下一阶段要求、后续路径与模型期待的故事推进方向。</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={draft.showDestinyDetails}
+            aria-label="展示故事推进详情"
+            onClick={() => setDraft((current) => ({ ...current, showDestinyDetails: !current.showDestinyDetails }))}
+            className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors ${draft.showDestinyDetails
+              ? 'border-gold/70 bg-gold/55'
+              : 'border-parchment-500/55 bg-parchment-800/80'}`}
+          >
+            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-parchment-50 shadow transition-transform ${draft.showDestinyDetails ? 'translate-x-5' : 'translate-x-0'}`} />
+          </button>
+        </div>
       </div>
 
       <div className="mb-4 overflow-hidden rounded-md border border-parchment-600/45 bg-parchment-900/35">

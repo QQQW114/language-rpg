@@ -8,7 +8,7 @@ import { confirmDialog } from '@/components/ui/ConfirmDialog';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { DestinyProgressV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, StoryBeatRuntimeV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, StoryBeatRuntimeV2, StoryThreadV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
 
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
@@ -21,6 +21,14 @@ const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> 
 const BEAT_STATUS: Record<StoryBeatRuntimeV2['status'], string> = {
   pending: '未展开', available: '条件成熟', active: '进行中', satisfied: '已完成',
   weakened: '影响减弱', reframed: '路线改写', superseded: '等价承接',
+};
+
+const THREAD_STATUS: Record<StoryThreadV2['status'], string> = {
+  candidate: '候选', active: '进行中', completed: '已完成', failed: '已失败', cancelled: '已取消',
+};
+
+const CHARACTER_STATUS: Record<CharacterV2['status'], string> = {
+  active: '活跃', absent: '暂离', missing: '失踪', dead: '死亡', unknown: '未知',
 };
 
 function cleanError(error: unknown): string {
@@ -79,19 +87,21 @@ function UsageLine({ usage, total = false }: { usage: LlmUsage; total?: boolean 
   </div>;
 }
 
-function DestinyCard({ destiny }: { destiny: DestinyProgressV2 }) {
+function DestinyCard({ destiny, showDetails }: { destiny: DestinyProgressV2; showDetails: boolean }) {
   const [open, setOpen] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
   const completion = Math.max(0, Math.min(100, Math.round(Number(destiny.completionEstimate) || 0)));
-  // 玩家面板只展示已经发生的故事节与其证据；available/pending/currentPlan
-  // 属于规划模型的未来信息，不能提前泄露。
-  const beats = (destiny.beats ?? []).filter((b) => (
-    b.status === 'active'
-    || b.status === 'satisfied'
-    || b.status === 'weakened'
-    || b.status === 'reframed'
-    || b.status === 'superseded'
-  ));
+  // 默认只展示已经发生的故事节，避免把未来路径提前剧透；
+  // 开启“故事推进详情”后，展示全部故事节、下一里程碑与收敛计划。
+  const beats = showDetails
+    ? (destiny.beats ?? [])
+    : (destiny.beats ?? []).filter((b) => (
+      b.status === 'active'
+      || b.status === 'satisfied'
+      || b.status === 'weakened'
+      || b.status === 'reframed'
+      || b.status === 'superseded'
+    ));
   return (
     <section className="rounded-xl border border-gold/25 bg-parchment-900/45 p-4 shadow-[0_8px_30px_rgba(0,0,0,.2)]">
       <div className="flex items-start justify-between gap-3">
@@ -103,10 +113,11 @@ function DestinyCard({ destiny }: { destiny: DestinyProgressV2 }) {
         <div><span className="text-parchment-200/45">当前幕</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.currentStage}>{destiny.currentStage || '尚未定位'}</p></div>
         <div><span className="text-parchment-200/45">当前路径</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.currentPath}>{destiny.currentPath || '自由发展'}</p></div>
       </div>
-      {destiny.completionReason && <button type="button" onClick={() => setReasonOpen((v) => !v)} className="mt-2 inline-flex items-center gap-1 text-xs text-gold/75 hover:text-gold-light">{reasonOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{reasonOpen ? '收起完成度说明' : '为什么是这个完成度'}</button>}
+      {showDetails && destiny.nextMilestone && <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><div><span className="text-parchment-200/45">下一里程碑</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.nextMilestone}>{destiny.nextMilestone}</p></div>{destiny.convergencePlan && <div><span className="text-parchment-200/45">收敛计划</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.convergencePlan}>{destiny.convergencePlan}</p></div>}</div>}
+      {destiny.completionReason && <button type="button" onClick={() => setReasonOpen((v) => !v)} className="mt-2 inline-flex items-center gap-1 text-xs text-gold/75 hover:text-gold-light">{reasonOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{reasonOpen ? '收起完成度说明' : '当前完成度说明'}</button>}
       {reasonOpen && destiny.completionReason && <p className="mt-2 border-t border-parchment-600/15 pt-2 text-xs leading-relaxed text-parchment-200/70">{destiny.completionReason}</p>}
       <button type="button" onClick={() => setOpen((v) => !v)} className="mt-2 inline-flex items-center gap-1 text-xs text-gold/75 hover:text-gold-light">{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{open ? '收起故事节' : '展开故事节'}</button>
-      {open && <div className="mt-2 space-y-1 border-t border-parchment-600/15 pt-2 text-xs">{beats.length ? beats.map((beat) => <div key={beat.beatId} className="flex gap-2"><span className="text-parchment-100">{beat.evidenceSummary || '本故事节已在正文中发生。'}</span><span className="shrink-0 text-gold/70">{BEAT_STATUS[beat.status]}</span></div>) : <span className="text-parchment-200/45">尚未发生可展示的故事节。</span>}</div>}
+      {open && <div className="mt-2 space-y-1 border-t border-parchment-600/15 pt-2 text-xs">{beats.length ? beats.map((beat) => <div key={beat.beatId} className="flex gap-2"><span className="text-parchment-100">{showDetails ? (beat.evidenceSummary || beat.currentPlan || '尚未展开。') : (beat.evidenceSummary || '本故事节已在正文中发生。')}</span><span className="shrink-0 text-gold/70">{BEAT_STATUS[beat.status]}</span></div>) : <span className="text-parchment-200/45">尚未发生可展示的故事节。</span>}</div>}
     </section>
   );
 }
@@ -173,23 +184,23 @@ function ModelActivityPanel({ activities, thinking, busy }: { activities: ModelA
   </section>;
 }
 
-function SidePanel({ save }: { save: NonNullable<ReturnType<typeof useActiveSaveV2>> }) {
+function SidePanel({ save, showDestinyDetails }: { save: NonNullable<ReturnType<typeof useActiveSaveV2>>; showDestinyDetails: boolean }) {
   const [tab, setTab] = useState<'people' | 'world' | 'items' | 'threads'>('people');
   const [factsOpen, setFactsOpen] = useState(false);
   const tabs = [{ id: 'people' as const, label: '人物', icon: <Users size={14} /> }, { id: 'world' as const, label: '世界', icon: <Compass size={14} /> }, { id: 'items' as const, label: '背包', icon: <Package size={14} /> }, { id: 'threads' as const, label: '故事', icon: <ScrollText size={14} /> }];
   const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;
   return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
-    <DestinyCard destiny={save.state.destiny} />
+    <DestinyCard destiny={save.state.destiny} showDetails={showDestinyDetails} />
     <section className="overflow-hidden rounded-xl border border-parchment-600/25 bg-parchment-900/35">
       <div className="flex border-b border-parchment-600/20">{tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex flex-1 items-center justify-center gap-1 py-3 text-xs transition ${tab === item.id ? 'border-b-2 border-gold text-gold-light' : 'text-parchment-200/55 hover:text-parchment-100'}`}>{item.icon}{item.label}</button>)}</div>
       <div className="p-3 text-sm">
         {tab === 'people' && <div className="space-y-3">
-          {save.state.characters.length ? save.state.characters.map((c) => <div key={c.id} className="rounded-lg border border-parchment-600/20 bg-ink/20 p-3"><div className="flex items-center justify-between"><span className="text-gold-light">{c.name}</span><span className="text-[10px] text-parchment-200/45">{c.status}</span></div><div className="mt-1 text-xs text-parchment-200/60">{c.role || c.description || '尚无详细资料'}</div>{c.knownFacts.length > 0 && <div className="mt-2 space-y-0.5 text-[11px] text-parchment-200/50">{c.knownFacts.slice(-3).map((fact, i) => <div key={`${c.id}-f-${i}`}>· {fact}</div>)}</div>}</div>) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
+          {save.state.characters.length ? save.state.characters.map((c) => <div key={c.id} className="rounded-lg border border-parchment-600/20 bg-ink/20 p-3"><div className="flex items-center justify-between"><span className="text-gold-light">{c.name}</span><span className="text-[10px] text-parchment-200/45">{CHARACTER_STATUS[c.status] ?? c.status}</span></div><div className="mt-1 text-xs text-parchment-200/60">{c.role || c.description || '尚无详细资料'}</div>{c.knownFacts.length > 0 && <div className="mt-2 space-y-0.5 text-[11px] text-parchment-200/50">{c.knownFacts.slice(-3).map((fact, i) => <div key={`${c.id}-f-${i}`}>· {fact}</div>)}</div>}</div>) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
           {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <div key={rel.id} className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-xs text-parchment-200/70"><span className="text-parchment-100">{characterName(rel.fromId)}</span><span className="mx-1 text-parchment-200/40">→</span><span className="text-parchment-100">{characterName(rel.toId)}</span>{rel.label && <span className="ml-2 text-gold/70">{rel.label}</span>}<span className="ml-2 text-parchment-200/50">好感 {rel.affinity > 0 ? `+${rel.affinity}` : rel.affinity}</span></div>)}</div></div>}
         </div>}
         {tab === 'world' && <div className="space-y-3">{save.state.currentScene && <div><div className="text-xs text-parchment-200/45">当前场景</div><div className="mt-1 text-gold-light">{save.state.currentScene.name}</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/65">{save.state.currentScene.description}</p><div className="mt-2 text-[11px] text-parchment-200/45">{[save.state.currentScene.time, save.state.currentScene.weather].filter(Boolean).join(' · ')}</div></div>}<div className="border-t border-parchment-600/15 pt-3"><div className="text-xs text-parchment-200/45">最新进展</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/70">{save.state.latestProgress || save.state.summary || '故事刚刚开始。'}</p></div>{save.state.facts.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><button type="button" onClick={() => setFactsOpen((v) => !v)} className="flex w-full items-center justify-between text-xs text-parchment-200/45 hover:text-parchment-100"><span>正史事实（{save.state.facts.length}）</span>{factsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{factsOpen && <div className="mt-2 space-y-1.5">{save.state.facts.map((fact) => <div key={fact.id} className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-parchment-200/70"><span className="text-parchment-100">{fact.subjectId}</span><span className="mx-1 text-parchment-200/40">·</span>{fact.predicate}<span className="mx-1 text-parchment-200/40">=</span>{fact.value}</div>)}</div>}</div>}</div>}
         {tab === 'items' && <div className="space-y-2">{save.state.inventory.length ? save.state.inventory.map((item) => <div key={item.id} className="flex items-start justify-between rounded-lg border border-parchment-600/20 p-2.5"><div><div className="flex items-center gap-2"><span className="text-parchment-100">{item.name}</span>{item.consumable && <span className="rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/75">消耗品</span>}</div><div className="text-[11px] text-parchment-200/50">{item.description || item.kind}</div></div><span className="text-gold-light">×{item.quantity}</span></div>) : <p className="text-xs text-parchment-200/45">暂无物品。</p>}</div>}
-        {tab === 'threads' && <div className="space-y-2">{save.state.storyThreads.length ? save.state.storyThreads.map((thread) => <div key={thread.id} className="rounded-lg border border-parchment-600/20 p-2.5"><div className="flex justify-between gap-2"><span className="text-parchment-100">{thread.title}</span><span className="text-[10px] text-gold/70">{thread.status}</span></div>{thread.currentStep && <p className="mt-1 text-xs text-parchment-200/60">{thread.currentStep}</p>}{thread.progress !== undefined && <div className="mt-2 h-1 overflow-hidden rounded-full bg-ink/60"><div className="h-full rounded-full bg-gold/60" style={{ width: `${Math.max(0, Math.min(100, thread.progress))}%` }} /></div>}</div>) : <p className="text-xs text-parchment-200/45">故事线索将在推进后出现。</p>}</div>}
+        {tab === 'threads' && <div className="space-y-2">{save.state.storyThreads.length ? save.state.storyThreads.map((thread) => <div key={thread.id} className="rounded-lg border border-parchment-600/20 p-2.5"><div className="flex justify-between gap-2"><span className="text-parchment-100">{thread.title}</span><span className="text-[10px] text-gold/70">{THREAD_STATUS[thread.status] ?? thread.status}</span></div>{thread.currentStep && <p className="mt-1 text-xs text-parchment-200/60">{thread.currentStep}</p>}{thread.progress !== undefined && <div className="mt-2 flex items-center gap-2"><div className="h-1 flex-1 overflow-hidden rounded-full bg-ink/60"><div className="h-full rounded-full bg-gold/60" style={{ width: `${Math.max(0, Math.min(100, thread.progress))}%` }} /></div><span className="text-[10px] tabular-nums text-parchment-200/45">{Math.max(0, Math.min(100, Math.round(thread.progress)))}%</span></div>}</div>) : <p className="text-xs text-parchment-200/45">故事线索将在推进后出现。</p>}</div>}
       </div>
     </section>
     <div className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
@@ -430,7 +441,7 @@ export default function GamePageV2() {
           </div>
         </div>
       </section>
-      <SidePanel save={save} />
+      <SidePanel save={save} showDestinyDetails={settings.showDestinyDetails !== false} />
     </main>
   </div>;
 }

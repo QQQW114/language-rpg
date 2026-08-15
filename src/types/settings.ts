@@ -46,6 +46,8 @@ export interface AppSettings {
   roleInjects: RoleInjectSettings;
   /** 执笔模式下，玩家输入作为“玩家行动”还是“导演指令”处理。 */
   inputPerspective: InputPerspective;
+  /** 前端是否展示故事推进详情：下一阶段要求、后续路径、模型期待方向。 */
+  showDestinyDetails: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -69,4 +71,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
     post: { enabled: false, text: '' },
   },
   inputPerspective: 'player',
+  showDestinyDetails: true,
 };

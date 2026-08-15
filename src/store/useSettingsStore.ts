@@ -53,6 +53,7 @@ function normalizeSettings(value?: Partial<AppSettings>): AppSettings {
       post: normalizeRoleInject(persistedInjects.post, defaultInjects.post),
     },
     inputPerspective: value?.inputPerspective === 'director' ? 'director' : 'player',
+    showDestinyDetails: value?.showDestinyDetails !== false,
   };
 }
 

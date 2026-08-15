@@ -82,7 +82,19 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2): GameS
       if (duplicate) { duplicate.updatedAtTurn = state.turn; continue; }
       threads.push({ id, title: text(row.title, 80), kind: oneOf(row.kind, ['main', 'relationship', 'quest', 'hook'] as const, 'hook'), status: oneOf(row.status, ['candidate', 'active', 'completed', 'failed', 'cancelled'] as const, 'candidate'), progress: row.progress === undefined ? undefined : clamp(Number(row.progress) || 0, 0, 100), currentStep: text(row.currentStep, 160) || undefined, involvedCharacterIds: Array.isArray(row.involvedCharacterIds) ? row.involvedCharacterIds.map((x) => text(x, 80)).filter(Boolean) : [], note: text(row.note, 200) || undefined, updatedAtTurn: state.turn });
     }
-    else { const target = threads.find((x) => x.id === row.id); if (!target) continue; if (row.status) target.status = oneOf(row.status, ['candidate', 'active', 'completed', 'failed', 'cancelled'] as const, target.status); if (row.progress !== undefined) target.progress = clamp(Number(row.progress) || 0, 0, 100); if (row.currentStep !== undefined) target.currentStep = text(row.currentStep, 160) || undefined; if (row.note !== undefined) target.note = text(row.note, 200) || undefined; target.updatedAtTurn = state.turn; }
+    else {
+      const target = threads.find((x) => x.id === row.id);
+      if (!target) continue;
+      if (row.kind) target.kind = oneOf(row.kind, ['main', 'relationship', 'quest', 'hook'] as const, target.kind);
+      if (Array.isArray(row.involvedCharacterIds)) {
+        target.involvedCharacterIds = Array.from(new Set(row.involvedCharacterIds.map((x) => text(x, 80)).filter(Boolean)));
+      }
+      if (row.status) target.status = oneOf(row.status, ['candidate', 'active', 'completed', 'failed', 'cancelled'] as const, target.status);
+      if (row.progress !== undefined) target.progress = clamp(Number(row.progress) || 0, 0, 100);
+      if (row.currentStep !== undefined) target.currentStep = text(row.currentStep, 160) || undefined;
+      if (row.note !== undefined) target.note = text(row.note, 200) || undefined;
+      target.updatedAtTurn = state.turn;
+    }
   }
 
   // Temporary facts belong in prose/history. Discard old temporary rows and
