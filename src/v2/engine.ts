@@ -8,6 +8,7 @@ import {
 } from '@/services/llmClient';
 import { resolvePlannerModel, resolveStoryModel } from '@/lib/agentModels';
 import { extractJSON, genId } from '@/lib/utils';
+import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import { commitTurnPatchV2 } from './patch';
@@ -313,7 +314,7 @@ function recentHistoryWithinBudget(p: TurnRequestV2, tokenBudget: number) {
   return selected.reverse();
 }
 
-function snapshot(p: TurnRequestV2, recent: TurnRequestV2['state']['history']) {
+function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) {
   return JSON.stringify({
     mode: p.state.mode,
     narrativePace: p.state.narrativePace,
@@ -329,7 +330,7 @@ function snapshot(p: TurnRequestV2, recent: TurnRequestV2['state']['history']) {
     destiny: p.state.destiny,
     randomEvent: p.state.randomEvent,
     canonicalFacts: relevantFacts(p),
-    recent,
+    ...(recent ? { recent } : {}),
   });
 }
 
@@ -558,6 +559,12 @@ export async function runTurnV2(p: TurnRequestV2) {
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
   const reasoningEffort = isOfficialDeepSeek && p.settings.thinkingMode !== 'disabled' ? p.settings.reasoningEffort : undefined;
   const roleInjects = p.settings.roleInjects;
+  // 收集本回合所有阶段的思维链，导出与展示可共用。
+  const turnThinkingParts: string[] = [];
+  const collectThinking = (phase: ModelPhaseV2, model: string, text: string) => {
+    if (text) turnThinkingParts.push(text);
+    emitThinking(p, phase, model, text);
+  };
   // 导演视角只在执笔模式下生效；游历模式仍按玩家行动处理。
   const directorPerspective = p.state.mode === 'author' && p.settings.inputPerspective === 'director';
   // 规划角色有长期上下文，高优先级注入只在存档第一次规划调用时生效一次。
@@ -569,13 +576,16 @@ export async function runTurnV2(p: TurnRequestV2) {
     shouldInjectPlanner ? roleInjects.planner : undefined,
   );
   const storyPrompt = withRoleInject(buildStorySystem(directorPerspective), roleInjects?.story);
+  // 写后结算只做状态提交，不检索历史，因此不注入工具纪律、不提供工具。
   const plannerPostPrompt = withRoleInject(
-    `${buildPlannerPostSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}`,
+    buildPlannerPostSystem(directorPerspective),
     roleInjects?.post,
   );
   // 规划模型的近期原文由设置中的软 token 预算控制；摘要、世界书、
   // 结构化状态和大纲不在该预算内，始终完整注入。
   const plannerAuthority = snapshot(p, recentHistoryWithinBudget(p, plannerContextTokenBudget(p)));
+  // 写后结算只需要回合开始前的结构化状态，不再注入 recent 历史正文。
+  const plannerAuthorityBeforeTurn = snapshot(p);
   // 故事模型保持原有、稳定的最近四回合窗口，不跟随规划上下文设置缩放。
   const storyAuthority = snapshot(p, p.state.history.slice(-STORY_RECENT_MESSAGE_COUNT));
   const stableContext = stableStoryContext(p);
@@ -602,7 +612,7 @@ export async function runTurnV2(p: TurnRequestV2) {
         onToolCall: plannerToolHandler(p, plannerToolMaxCalls),
         onToolActivity: (activity: ChatToolActivity) => emitToolActivity(p, 'planner_pre', plannerModel, activity),
       } : {}),
-      onThinkingDelta: (text) => emitThinking(p, 'planner_pre', plannerModel, text),
+      onThinkingDelta: (text) => collectThinking('planner_pre', plannerModel, text),
       onDelta: (text) => emitOutput(p, 'planner_pre', plannerModel, text),
     });
     ensureModelResult('planner_pre', pre);
@@ -630,7 +640,7 @@ export async function runTurnV2(p: TurnRequestV2) {
         { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
         { role: 'user', content: `【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}` },
       ],
-      onThinkingDelta: (text) => emitThinking(p, 'story', storyModel, text),
+      onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {
         safelyNotify(() => p.onStoryDelta?.(text));
         emitOutput(p, 'story', storyModel, text);
@@ -647,10 +657,9 @@ export async function runTurnV2(p: TurnRequestV2) {
   const commitId = genId('commit');
   const postMessages: ChatMessage[] = [
     { role: 'system', content: plannerPostPrompt },
-    { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-    { role: 'user', content: `【TURN_ID】${p.state.turn}:${commitId}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n【CURRENT_STORY】${story.text}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape.replace('COMMIT_ID', commitId).replace('"baseRevision":0', `"baseRevision":${p.state.revision}`).replace('"turn":0', `"turn":${p.state.turn}`)}` },
+    { role: 'user', content: `【TURN_ID】${p.state.turn}:${commitId}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n【CURRENT_STORY】${story.text}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape.replace('COMMIT_ID', commitId).replace('"baseRevision":0', `"baseRevision":${p.state.revision}`).replace('"turn":0', `"turn":${p.state.turn}`)}` },
   ];
-  emitPhase(p, 'planner_post', plannerModel, 'started', undefined, plannerToolsEnabled);
+  emitPhase(p, 'planner_post', plannerModel, 'started', undefined, false);
   let post;
   try {
     post = await chatJSONDetailed(cfg, {
@@ -661,21 +670,14 @@ export async function runTurnV2(p: TurnRequestV2) {
       ...(plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
       ...(thinking ? { thinking } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(plannerToolsEnabled ? {
-        tools: [plannerContextTool],
-        toolChoice: 'auto' as const,
-        maxToolRounds: plannerToolMaxCalls,
-        onToolCall: plannerToolHandler(p, plannerToolMaxCalls),
-        onToolActivity: (activity: ChatToolActivity) => emitToolActivity(p, 'planner_post', plannerModel, activity),
-      } : {}),
-      onThinkingDelta: (text) => emitThinking(p, 'planner_post', plannerModel, text),
+      onThinkingDelta: (text) => collectThinking('planner_post', plannerModel, text),
       onDelta: (text) => emitOutput(p, 'planner_post', plannerModel, text),
     });
     ensureModelResult('planner_post', post);
     emitUsage(p, 'planner_post', plannerModel, post.usage);
-    emitPhase(p, 'planner_post', plannerModel, 'completed', undefined, plannerToolsEnabled);
+    emitPhase(p, 'planner_post', plannerModel, 'completed', undefined, false);
   } catch (error) {
-    emitPhase(p, 'planner_post', plannerModel, 'failed', error, plannerToolsEnabled);
+    emitPhase(p, 'planner_post', plannerModel, 'failed', error, false);
     throw error;
   }
   const patch = asPatch(requireJSONObject(post.text, phaseLabels.planner_post), p, commitId, story.text);
@@ -684,7 +686,7 @@ export async function runTurnV2(p: TurnRequestV2) {
   const now = Date.now();
   next.history = [...p.state.history,
     { id: genId('msg'), role: 'user', content: p.input, turn: p.state.turn, createdAt: now },
-    { id: genId('msg'), role: 'assistant', content: story.text, turn: p.state.turn, createdAt: now },
+    { id: genId('msg'), role: 'assistant', content: story.text, turn: p.state.turn, createdAt: now, thinking: joinThinking(...turnThinkingParts) },
   ];
   next.turn = p.state.turn + 1;
   next.phase = 'input';

@@ -169,7 +169,15 @@ export interface CanonicalFactV2 {
   createdAtTurn: number;
   updatedAtTurn: number;
 }
-export interface MessageV2 { id: string; role: 'user' | 'assistant'; content: string; turn: number; createdAt: number; }
+export interface MessageV2 {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  turn: number;
+  createdAt: number;
+  /** 该回合模型思维链（若存在，仅 assistant 消息使用）。 */
+  thinking?: string;
+}
 
 /**
  * 最近一次成功回合的轻量回退点。
