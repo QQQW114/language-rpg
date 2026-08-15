@@ -3,6 +3,21 @@ export type ApiFormat = 'chat' | 'responses';
 export type PlannerContextPreset = 'compact' | 'standard' | 'rich' | 'custom';
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled';
 export type ReasoningEffort = 'high' | 'max';
+export type InputPerspective = 'player' | 'director';
+
+export interface RoleInjectConfig {
+  enabled: boolean;
+  text: string;
+}
+
+export interface RoleInjectSettings {
+  /** 规划：写前规划。每个存档仅最开始注入一次。 */
+  planner: RoleInjectConfig;
+  /** 故事：正文写作。每次调用都注入。 */
+  story: RoleInjectConfig;
+  /** 整理：写后结算。每次调用都注入。 */
+  post: RoleInjectConfig;
+}
 
 export const PLANNER_CONTEXT_PRESET_TOKENS: Record<
   Exclude<PlannerContextPreset, 'custom'>,
@@ -28,6 +43,9 @@ export interface AppSettings {
   plannerJsonMode: ProviderFeatureMode;
   thinkingMode: ProviderFeatureMode;
   reasoningEffort: ReasoningEffort;
+  roleInjects: RoleInjectSettings;
+  /** 执笔模式下，玩家输入作为“玩家行动”还是“导演指令”处理。 */
+  inputPerspective: InputPerspective;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -45,4 +63,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   plannerJsonMode: 'auto',
   thinkingMode: 'auto',
   reasoningEffort: 'high',
+  roleInjects: {
+    planner: { enabled: false, text: '' },
+    story: { enabled: false, text: '' },
+    post: { enabled: false, text: '' },
+  },
+  inputPerspective: 'player',
 };

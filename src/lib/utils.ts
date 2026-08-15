@@ -14,8 +14,9 @@ export function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
-// 提取首个 JSON 对象（应对模型包裹 markdown code fence 的情况）
-export function extractJSON<T = unknown>(text: string): T | null {
+// 提取首个 JSON 对象的原始文本（应对模型包裹 markdown code fence 的情况）。
+// 返回的是可直接 JSON.parse 的字符串；解析失败时返回 null。
+export function extractJSONText(text: string): string | null {
   if (!text) return null;
   // 去掉 ```json ... ``` 包裹
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -23,7 +24,19 @@ export function extractJSON<T = unknown>(text: string): T | null {
   const match = cand.match(/\{[\s\S]*\}/);
   if (!match) return null;
   try {
-    return JSON.parse(match[0]) as T;
+    JSON.parse(match[0]);
+    return match[0];
+  } catch {
+    return null;
+  }
+}
+
+// 提取并解析首个 JSON 对象（应对模型包裹 markdown code fence 的情况）
+export function extractJSON<T = unknown>(text: string): T | null {
+  const raw = extractJSONText(text);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
   } catch {
     return null;
   }

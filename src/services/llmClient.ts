@@ -76,6 +76,11 @@ export interface ChatParams {
   responseFormat?: 'json_object';
   thinking?: 'enabled' | 'disabled';
   reasoningEffort?: 'high' | 'max';
+  /**
+   * 'json'：让 SSE 解析器兼容“自适应思考”模型——当模型不产生 <think> 块、
+   * content 为空，却把 JSON 放进 reasoning/thinking 通道时，将 JSON 回退为正文。
+   */
+  thinkingFallback?: 'json';
 }
 
 export interface ChatResult {
@@ -326,6 +331,7 @@ export async function chatStreamDetailed(
             onThinkingDelta: params.onThinkingDelta,
             signal: params.signal,
             format: cfg.format,
+            thinkingFallback: params.thinkingFallback,
           });
         }
         const retryMsg = await readErrorBody(res);
@@ -339,6 +345,7 @@ export async function chatStreamDetailed(
       onThinkingDelta: params.onThinkingDelta,
       signal: params.signal,
       format: cfg.format,
+      thinkingFallback: params.thinkingFallback,
     });
   };
 
@@ -464,6 +471,7 @@ export async function chatJSONDetailed(
     ...p,
     onDelta: p.onDelta ?? (() => {}),
     onThinkingDelta: p.onThinkingDelta,
+    thinkingFallback: 'json',
   });
   const split = splitThinkingFromText(result.text);
   return {

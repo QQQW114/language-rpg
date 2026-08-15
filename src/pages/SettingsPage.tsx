@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import {
   PLANNER_CONTEXT_PRESET_TOKENS,
   type PlannerContextPreset,
+  type RoleInjectConfig,
 } from '@/types/settings';
 import { Card } from '@/components/ui/Card';
 import { CornerFiligree, OrnateDivider } from '@/components/ui/Ornaments';
@@ -48,6 +49,7 @@ export default function SettingsPage() {
   const { settings, update } = useSettingsStore();
   const [draft, setDraft] = useState(settings);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [injectOpen, setInjectOpen] = useState(false);
   const [customTokens, setCustomTokens] = useState(String(settings.plannerContextTokens));
   const customTokenNumber = Number(customTokens);
   const customTokensValid = Number.isInteger(customTokenNumber)
@@ -62,6 +64,16 @@ export default function SettingsPage() {
       plannerContextTokens: presetTokens ?? current.plannerContextTokens,
     }));
     if (preset !== 'custom' && presetTokens) setCustomTokens(String(presetTokens));
+  };
+
+  const updateRoleInject = (role: 'planner' | 'story' | 'post', patch: Partial<RoleInjectConfig>) => {
+    setDraft((current) => ({
+      ...current,
+      roleInjects: {
+        ...current.roleInjects,
+        [role]: { ...current.roleInjects[role], ...patch },
+      },
+    }));
   };
 
   const saveSettings = () => {
@@ -113,6 +125,114 @@ export default function SettingsPage() {
         onChange={(event) => setDraft({ ...draft, plannerModel: event.target.value })}
         hint="同一回合完成写前规划与写后状态结算"
       />
+
+      <div className="mb-4 rounded-md border border-parchment-600/45 bg-parchment-900/35 p-3">
+        <div className="text-sm text-parchment-100">执笔模式输入视角</div>
+        <p className="mt-1 text-xs leading-relaxed text-parchment-200/55">
+          控制执笔模式下模型如何对待你的新输入：玩家视角会判断合理性，必要时让主角拒绝；导演视角则100%信任输入，故事完全按你的要求发展。
+        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            aria-pressed={draft.inputPerspective === 'player'}
+            onClick={() => setDraft({ ...draft, inputPerspective: 'player' })}
+            className={`rounded-md border px-3 py-2.5 text-left transition-all ${draft.inputPerspective === 'player'
+              ? 'border-gold/70 bg-gold/10 shadow-[0_0_16px_rgba(201,165,102,0.08)]'
+              : 'border-parchment-600/40 bg-parchment-900/35 hover:border-parchment-500/70 hover:bg-parchment-700/20'}`}
+          >
+            <span className={`block text-sm ${draft.inputPerspective === 'player' ? 'text-gold-light' : 'text-parchment-100'}`}>玩家视角（默认）</span>
+            <span className="mt-1 block text-xs leading-relaxed text-parchment-200/50">模型将输入作为玩家行动，判断合理性，可能让主角拒绝违背世界观的要求。</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={draft.inputPerspective === 'director'}
+            onClick={() => setDraft({ ...draft, inputPerspective: 'director' })}
+            className={`rounded-md border px-3 py-2.5 text-left transition-all ${draft.inputPerspective === 'director'
+              ? 'border-gold/70 bg-gold/10 shadow-[0_0_16px_rgba(201,165,102,0.08)]'
+              : 'border-parchment-600/40 bg-parchment-900/35 hover:border-parchment-500/70 hover:bg-parchment-700/20'}`}
+          >
+            <span className={`block text-sm ${draft.inputPerspective === 'director' ? 'text-gold-light' : 'text-parchment-100'}`}>导演视角</span>
+            <span className="mt-1 block text-xs leading-relaxed text-parchment-200/50">模型100%信任输入，输入要求故事如何发展就如何发展、发展到哪。</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-4 overflow-hidden rounded-md border border-parchment-600/45 bg-parchment-900/35">
+        <button
+          type="button"
+          aria-expanded={injectOpen}
+          onClick={() => setInjectOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-parchment-700/25"
+        >
+          <span>
+            <span className="block text-sm tracking-[0.08em] text-gold-light">高优先级注入</span>
+            <span className="mt-1 block text-xs text-parchment-200/55">
+              放在请求系统提示词最前方；适合破限词、风格要求或对特定模型的特殊要求。
+            </span>
+          </span>
+          {injectOpen
+            ? <ChevronDown size={17} className="shrink-0 text-gold/70" />
+            : <ChevronRight size={17} className="shrink-0 text-gold/70" />}
+        </button>
+
+        {injectOpen && (
+          <div className="space-y-3 border-t border-parchment-600/35 px-4 py-4">
+            {([
+              {
+                role: 'planner' as const,
+                label: '规划',
+                description: '写前规划角色。每个存档仅最开始注入一次，后续回合不再重复。',
+              },
+              {
+                role: 'story' as const,
+                label: '故事',
+                description: '故事正文角色。每次生成正文都注入。',
+              },
+              {
+                role: 'post' as const,
+                label: '整理',
+                description: '写后状态结算角色。每次结算都注入。',
+              },
+            ]).map(({ role, label, description }) => {
+              const inject = draft.roleInjects[role];
+              return (
+                <div key={role} className="rounded-md border border-parchment-600/35 bg-ink/25 p-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-sm text-parchment-100">
+                        <span>{label}</span>
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] tracking-wider ${inject.enabled ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200/80' : 'border-parchment-500/40 bg-parchment-800/70 text-parchment-200/45'}`}>
+                          {inject.enabled ? '注入开启' : '注入关闭'}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-parchment-200/55">{description}</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={inject.enabled}
+                      aria-label={`${label}高优先级注入`}
+                      onClick={() => updateRoleInject(role, { enabled: !inject.enabled })}
+                      className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors ${inject.enabled
+                        ? 'border-gold/70 bg-gold/55'
+                        : 'border-parchment-500/55 bg-parchment-800/80'}`}
+                    >
+                      <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-parchment-50 shadow transition-transform ${inject.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+                  <textarea
+                    value={inject.text}
+                    onChange={(event) => updateRoleInject(role, { text: event.target.value })}
+                    placeholder={`输入要注入给${label}角色的系统提示词；开启后才会生效。`}
+                    rows={4}
+                    className="mt-3 w-full resize-y rounded border border-parchment-600/40 bg-ink/50 px-2 py-2 text-sm leading-6 text-parchment-100 outline-none transition placeholder:text-parchment-200/35 focus:border-gold/70"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="mb-4 overflow-hidden rounded-md border border-parchment-600/45 bg-parchment-900/35">
         <button

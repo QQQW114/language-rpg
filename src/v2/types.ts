@@ -197,6 +197,8 @@ export interface GameStateV2 {
   destiny: DestinyProgressV2;
   randomEvent: RandomEventStateV2;
   lastCommitId?: string;
+  /** 高优先级注入：规划角色在该存档是否已注入过一次。 */
+  plannerInjectApplied?: boolean;
 }
 
 export interface TurnPatchV2 {

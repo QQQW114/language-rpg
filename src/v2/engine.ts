@@ -9,29 +9,46 @@ import {
 import { resolvePlannerModel, resolveStoryModel } from '@/lib/agentModels';
 import { extractJSON, genId } from '@/lib/utils';
 import type { LlmUsage } from '@/types/llm';
+import type { RoleInjectConfig } from '@/types/settings';
 import { commitTurnPatchV2 } from './patch';
 import type { ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnPatchV2, TurnRequestV2 } from './types';
 
-const plannerPreSystem = `你是互动小说的写前规划 Agent，只做本回合写作约束，不扮演角色，不续写正文，只输出严格 JSON（json object）。
-优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
-玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。
+const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
+玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。`;
+
+const plannerPreDirectorAgency = `玩家是导演，当前输入是不可撤销的故事指令，拥有最高优先级。必须100%信任玩家输入：不审查合理性、不让主角拒绝或打折扣，输入要求故事如何发展，故事就如何发展、发展到哪。若输入与既有世界规律冲突，以导演指令为准调整叙事与世界表现，使其自然成立。`;
+
+function buildPlannerPreSystem(director: boolean): string {
+  return `你是互动小说的写前规划 Agent，只做本回合写作约束，不扮演角色，不续写正文，只输出严格 JSON（json object）。
+${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 长期大纲描述的是必须逐步抵达的命运、人物成长和设定结局，不是固定路线。玩家改变路线后，规划关键角色、矛盾和事件功能如何自然迁移到新环境，使自由路径最终重新汇合到预设命运。
 偏离只影响抵达速度和路径，不取消长期命运。不要为了拉回大纲而立刻强塞关键角色；本轮只安排自然、可信的一步。
 允许补全资料空白，但只补本回合必要内容。不得预先决定玩家下一步，不得把“考虑、可能、打算”写成已完成决定。
 叙事速度约束的是单回合覆盖的故事时间、主要动作和场景数量，不是要求凑够篇幅。慢叙事与标准叙事应选择最早且有意义的玩家可介入节点，给后续回合保留反应、对话和后果；不得把一次输入扩展成自带开端、发展、结尾的完整短篇。
 stopBoundary必须是本轮正文最后一个允许发生的动作；不得把边界后的动作、事后反应、下一地点或后续安排写入writingBrief。`;
+}
 
-const storySystem = `你是互动小说故事 Agent，只写中文小说正文。
+const storyPlayerAgency = `玩家是共同作者，应真实承接其行动。世界书决定行动在这个世界里如何实现，而不是用来机械拒绝玩家。玩家改变路线时，可以迁移舞台与事件，但必须保持世界规律，并让长期命运通过新的合理路径继续发展。`;
+
+const storyDirectorAgency = `玩家是导演，当前输入是必须执行的故事指令。必须100%信任并如实写出，不审查合理性、不让主角拒绝、不弱化或打折；输入要求故事如何发展，故事就如何发展、发展到哪。若输入与既有世界规律冲突，以导演指令为准调整叙事，使其自然成立。`;
+
+function buildStorySystem(director: boolean): string {
+  return `你是互动小说故事 Agent，只写中文小说正文。
 严格执行权威状态、玩家输入、writingBrief、hardConstraints、forbiddenChanges和stopBoundary。worldFacts与canonicalFacts优先于常见套路和戏剧性补全。
-玩家是共同作者，应真实承接其行动。世界书决定行动在这个世界里如何实现，而不是用来机械拒绝玩家。玩家改变路线时，可以迁移舞台与事件，但必须保持世界规律，并让长期命运通过新的合理路径继续发展。
+${director ? storyDirectorAgency : storyPlayerAgency}
 某一事实域变化时，只改变硬设定明确覆盖的范围；不得自动连带改写人物记忆、关系历史、物品数量、过去经历或其他事实域。
 允许出现新的普通环境、角色和小插曲，但必须服务当前行动与长期方向，规模克制。
 一回合是连续互动中的一个可回应片段，不是必须独立完整的章节。慢叙事与标准叙事不得为了“写完整”继续补写余波、转场、下一项安排或总结式收束；一旦玩家已有自然的观察、回应、选择或改变行动的机会，就应适时交还控制权。细致不等于堆叠重复感官、心理活动或同义描写。
 到达stopBoundary后立即停止，不多写一步，不输出分析或JSON。`;
+}
 
-const plannerPostSystem = `你是互动小说的写后审计与状态提交 Agent。你不是作者，不续写故事，不规划下一幕，不扮演角色。只依据本次提供的CURRENT_TURN_INPUT与CURRENT_STORY结算本回合，只输出严格 JSON（json object）。
+const plannerPostDirectorAgency = `玩家输入为导演指令，CURRENT_STORY按该指令实际发生；不得因其偏离世界规律或原路线而将其判定为冲突或需要修正。`;
+
+function buildPlannerPostSystem(director: boolean): string {
+  return `你是互动小说的写后审计与状态提交 Agent。你不是作者，不续写故事，不规划下一幕，不扮演角色。只依据本次提供的CURRENT_TURN_INPUT与CURRENT_STORY结算本回合，只输出严格 JSON（json object）。
 绝对禁止引用其他回合的玩家要求来填充本回合冲突。摘要、进度和Patch必须是CURRENT_STORY已经明确发生的内容；“准备、考虑、计划、可能”不能记为已完成行动。
 玩家偏离原路线不是冲突。conflicts只记录CURRENT_STORY内部无法同时成立的硬事实，供后续模型修正；程序不会因为路线偏离而拒绝故事。
+${director ? plannerPostDirectorAgency : ''}
 每轮必须更新destiny，但只更新实际变化的故事节。故事完成度是当前全部事件与人物状态距离预设结尾的综合估值，可上升也可下降，不是累计积分。completionEstimate直接输出0到100的当前估值，并用completionReason说明已满足和仍缺少的核心结尾条件。
 故事节状态含义：pending未到条件；available条件成熟；active正在发生；satisfied核心功能已由正文满足；weakened已满足结果被后续削弱；reframed因路线变化需换实现方式；superseded已由等价故事节承担。
 satisfied不是“提到过标题”或“计划过”的标记，只有当CURRENT_STORY实际实现了该故事节的purpose（叙事功能），并能用正文原句证明时才可使用。只完成了铺垫、绕开、切断、改走其他路径时，不得标记satisfied，应使用active、weakened或reframed，并说明当前实现/缺口。已satisfied的故事节不得无理由回退为active、available或pending；若后续正文确实削弱已实现结果，只能使用weakened或reframed，并提供直接证据和原因。beatChanges只提交本轮发生变化的故事节，不重抄全部。
@@ -43,6 +60,13 @@ relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityD
 facts只保存正文新确认、且需要跨回合保持一致的长期硬事实（例如稳定身份、持续关系属性、固定地点/安排、能力边界或已确立的长期设定）。不保存氛围、临时动作、一次性场景细节、短期计划、想法、摘要、推测或已有worldFacts；这类内容即使出现在正文，也不要提交canonical fact。不要把stability写成temporary来绕过筛选，临时事实不进入持久状态。通常每轮只需0到3条，确有多个独立长期设定时才增加；没有新的长期硬事实必须输出空数组。每条必须使用结构化字段；禁止字符串facts，禁止kind/content格式，禁止推测事实。
 fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。
 若CURRENT_STORY越过stopBoundary，canonCheck.stopBoundaryViolated=true；否则为false。该字段仅供审计，不阻止故事提交。`;
+}
+
+/** 高优先级注入放在系统提示词最前方。 */
+function withRoleInject(baseSystem: string, inject: RoleInjectConfig | undefined): string {
+  const text = inject?.enabled ? String(inject.text ?? '').trim() : '';
+  return text ? `${text}\n\n${baseSystem}` : baseSystem;
+}
 
 const plannerToolDiscipline = `
 【上下文查询工具纪律】
@@ -509,6 +533,22 @@ export async function runTurnV2(p: TurnRequestV2) {
   const plannerJsonEnabled = p.settings.apiFormat === 'chat' && (p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek));
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
   const reasoningEffort = isOfficialDeepSeek && p.settings.thinkingMode !== 'disabled' ? p.settings.reasoningEffort : undefined;
+  const roleInjects = p.settings.roleInjects;
+  // 导演视角只在执笔模式下生效；游历模式仍按玩家行动处理。
+  const directorPerspective = p.state.mode === 'author' && p.settings.inputPerspective === 'director';
+  // 规划角色有长期上下文，高优先级注入只在存档第一次规划调用时生效一次。
+  const shouldInjectPlanner = !!roleInjects?.planner?.enabled
+    && !!String(roleInjects.planner.text ?? '').trim()
+    && !p.state.plannerInjectApplied;
+  const plannerPrePrompt = withRoleInject(
+    `${buildPlannerPreSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}`,
+    shouldInjectPlanner ? roleInjects.planner : undefined,
+  );
+  const storyPrompt = withRoleInject(buildStorySystem(directorPerspective), roleInjects?.story);
+  const plannerPostPrompt = withRoleInject(
+    `${buildPlannerPostSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}`,
+    roleInjects?.post,
+  );
   // 规划模型的近期原文由设置中的软 token 预算控制；摘要、世界书、
   // 结构化状态和大纲不在该预算内，始终完整注入。
   const plannerAuthority = snapshot(p, recentHistoryWithinBudget(p, plannerContextTokenBudget(p)));
@@ -516,7 +556,7 @@ export async function runTurnV2(p: TurnRequestV2) {
   const storyAuthority = snapshot(p, p.state.history.slice(-STORY_RECENT_MESSAGE_COUNT));
   const stableContext = stableStoryContext(p);
   const preMessages: ChatMessage[] = [
-    { role: 'system', content: `${plannerPreSystem}${plannerToolsEnabled ? plannerToolDiscipline : ''}` },
+    { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
     { role: 'user', content: `【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n只输出 {"intent":"","currentAct":"","activeBeatIds":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":""}` },
   ];
@@ -561,7 +601,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       ...(thinking ? { thinking } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       messages: [
-        { role: 'system', content: storySystem },
+        { role: 'system', content: storyPrompt },
         { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
         { role: 'user', content: `【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}` },
       ],
@@ -581,7 +621,7 @@ export async function runTurnV2(p: TurnRequestV2) {
 
   const commitId = genId('commit');
   const postMessages: ChatMessage[] = [
-    { role: 'system', content: `${plannerPostSystem}${plannerToolsEnabled ? plannerToolDiscipline : ''}` },
+    { role: 'system', content: plannerPostPrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
     { role: 'user', content: `【TURN_ID】${p.state.turn}:${commitId}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n【CURRENT_STORY】${story.text}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape.replace('COMMIT_ID', commitId).replace('"baseRevision":0', `"baseRevision":${p.state.revision}`).replace('"turn":0', `"turn":${p.state.turn}`)}` },
   ];
@@ -623,5 +663,6 @@ export async function runTurnV2(p: TurnRequestV2) {
   ];
   next.turn = p.state.turn + 1;
   next.phase = 'input';
+  if (shouldInjectPlanner) next.plannerInjectApplied = true;
   return { state: next, story: story.text, brief, patch, usage: { pre: pre.usage, story: story.usage, post: post.usage } };
 }

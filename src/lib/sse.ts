@@ -4,6 +4,7 @@
 //  2) responses: 事件 response.output_text.delta → {"delta":"..."}
 
 import { mergeLlmUsage, normalizeLlmUsage } from '@/lib/llmUsage';
+import { extractJSONText } from '@/lib/utils';
 import type { LlmUsage } from '@/types/llm';
 
 export interface StreamOptions {
@@ -11,6 +12,13 @@ export interface StreamOptions {
   onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
   format?: 'chat' | 'responses';
+  /**
+   * 'json'：兼容“自适应思考”模型。部分模型在不产生 <think> 块时，会把真正的
+   * 正文（通常是 JSON）放进 reasoning/thinking 通道，而 content 为空。
+   * 开启后，流结束时若正文为空、没有显式 <think> 块，且“思考”内容可解析为
+   * JSON，则把该 JSON 回退为正文，不再视为思考。
+   */
+  thinkingFallback?: 'json';
 }
 
 export interface StreamResult {
@@ -249,7 +257,27 @@ export async function readSSEDetailed(
   const splitter = createThinkTagSplitter(opts.onDelta, (t) => opts.onThinkingDelta?.(t));
   const finish = (): StreamResult => {
     const result = splitter.finish();
-    const thinking = [nativeThinking.trim(), result.thinking]
+    const tagThinking = result.thinking;
+    let native = nativeThinking.trim();
+    let text = result.text;
+
+    // 兜底：原生思考通道承载了完整 JSON、正文通道始终为空，且没有显式 <think> 块。
+    if (
+      opts.thinkingFallback === 'json'
+      && !text.trim()
+      && !tagThinking
+      && native
+    ) {
+      const recovered = extractJSONText(native);
+      if (recovered) {
+        text = recovered;
+        // 已恢复为正文的部分不再重复算作思考；其余推理前缀仍保留。
+        native = native.replace(recovered, '').trim();
+        opts.onDelta?.(recovered);
+      }
+    }
+
+    const thinking = [native, tagThinking]
       .map((x) => x?.trim())
       .filter(Boolean)
       .join('\n\n')
@@ -267,8 +295,9 @@ export async function readSSEDetailed(
       .filter((call) => call.function.name);
     return {
       ...result,
+      text,
       thinking,
-      reasoningContent: nativeThinking.trim() || undefined,
+      reasoningContent: native || undefined,
       finishReason,
       usage,
       toolCalls: toolCalls.length ? toolCalls : undefined,
