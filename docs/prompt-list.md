@@ -1,34 +1,37 @@
-# 当前提示词架构
+# 当前提示词清单
 
-本项目已从多 Agent 执笔链迁移到双模型回合：
+当前 V2 提示词全部内嵌在 `src/v2/engine.ts`，没有独立的 `src/prompts/` 目录。
 
-```text
-规划 Agent（写前） → 故事 Agent → 规划 Agent（写后结算）
-```
+## 三个模型与提示词函数
 
-当前唯一维护的核心提示词是：
+| 模型 | 阶段 | 提示词构造 | 说明 |
+|---|---|---|---|
+| 规划模型 | 写前规划 | `buildPlannerPreSystem(director)` | 输出本回合写作约束 JSON |
+| 故事模型 | 正文写作 | `buildStorySystem(director)` | 只输出中文小说正文 |
+| 规划模型 | 写后结算 | `buildPlannerPostSystem(director)` | 输出增量状态 Patch JSON |
 
-- `src/prompts/plannerSystem.ts`：规划 Agent 的写前/写后协议与检索纪律。
-- `src/prompts/storySystem.ts`：故事 Agent 的正文规则。
+## 共享提示词片段
 
-## 规划 Agent
+| 片段 | 作用 |
+|---|---|
+| `plannerPrePlayerAgency` / `plannerPreDirectorAgency` | 写前规划对玩家输入视角的处理 |
+| `storyPlayerAgency` / `storyDirectorAgency` | 故事模型对玩家输入视角的处理 |
+| `plannerPostDirectorAgency` | 写后结算在导演视角下的额外约束 |
+| `plannerToolDiscipline` | 规划模型上下文查询工具纪律 |
+| `plannerContextTool` | `search_story_context` 工具定义 |
+| `paceInstruction(p)` | 四档叙事速度说明 |
+| `randomEventInstruction(p)` | 随机事件到期指令（三档 intensity） |
+| `postShape` | 写后结算输出 JSON 模板 |
 
-规划 Agent 在同一回合内保留会话上下文。写前输出 `writingBrief`，写后读取实际正文并输出结构化状态变化：人物、好感、背包、场景、选项和进度摘要。
+## 高优先级注入
 
-它可以调用三个只读上下文工具：
+- 配置：`AppSettings.roleInjects.planner / story / post`；
+- 函数：`withRoleInject(baseSystem, inject)`；
+- 位置：拼接在对应系统提示词最前方；
+- 规划角色每个存档只注入一次（`state.plannerInjectApplied` 标记）。
 
-- `get_story_context`
-- `search_story_context`
-- `read_story_context`
+## 输入视角
 
-工具只用于查证。已有最新状态足够时不得搜索；通常最多一轮搜索加一轮精确读取。任何状态写入都由程序侧校验并提交，Agent 不得写司书库或数据库。
-
-## 故事 Agent
-
-故事 Agent 只负责正文表达，接收规划 Agent 的写作简报、事实约束和停止边界。它不得替玩家完成未授权重大选择，也不承担状态维护。
-
-## 旧提示词
-
-旧版司辰、阶段判断、设定守护、导演、事件规划和逻辑审校提示词已移至本地 Git 忽略目录 `.legacy-reference/prompts/`，仅供迁移参考，不属于当前产品架构，也不会随仓库提交。
-
-详见：[`dual-model-agent-architecture.md`](dual-model-agent-architecture.md)。
+- 配置：`AppSettings.inputPerspective = 'player' | 'director'`；
+- 只在执笔模式（`mode === 'author'`）下生效；
+- 通过 `director` 参数传入上述 `build*System` 函数。
