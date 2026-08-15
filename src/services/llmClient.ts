@@ -478,7 +478,6 @@ export async function chatJSONDetailed(
     text: split.text,
     thinking: joinThinking(
       result.thinking,
-      result.reasoningContent,
       split.thinking,
     ),
     finishReason: result.finishReason,

@@ -11,7 +11,7 @@ import { extractJSON, genId } from '@/lib/utils';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import { commitTurnPatchV2 } from './patch';
-import type { ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnPatchV2, TurnRequestV2 } from './types';
+import type { ChoiceV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnPatchV2, TurnRequestV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
 玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。`;
@@ -413,7 +413,7 @@ function asPatch(raw: unknown, p: TurnRequestV2, commitId: string, story: string
     inventory: list('inventory') as TurnPatchV2['inventory'],
     threads: list('threads') as TurnPatchV2['threads'],
     facts: list('facts') as TurnPatchV2['facts'],
-    actions: list('actions') as TurnPatchV2['actions'],
+    actions: normalizeActions(data.actions),
     warnings,
     destiny: normalizeDestinyPatch(data.destiny, warnings),
     randomEvent: data.randomEvent && typeof data.randomEvent === 'object' && !Array.isArray(data.randomEvent) ? data.randomEvent as TurnPatchV2['randomEvent'] : undefined,
@@ -510,6 +510,31 @@ function emitUsage(p: TurnRequestV2, phase: ModelPhaseV2, model: string, usage: 
   emitActivity(p, { type: 'usage', phase, model, usage });
 }
 
+function requireJSONObject(text: string, label: string): Record<string, unknown> {
+  const parsed = extractJSON(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${label}失败：模型返回的内容不是有效 JSON，请重试本回合。`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function normalizeActions(raw: unknown): ChoiceV2[] {
+  if (!Array.isArray(raw)) return [];
+  const actions: ChoiceV2[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const label = String(row.label ?? '').trim().slice(0, 80);
+    if (!label) continue;
+    actions.push({
+      id: String(row.id ?? '').trim().slice(0, 80) || genId('action'),
+      label,
+      hint: String(row.hint ?? '').trim().slice(0, 120) || undefined,
+    });
+  }
+  return actions.slice(0, 4);
+}
+
 function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishReason?: string }) {
   const label = phaseLabels[phase];
   if (!String(result.text ?? '').trim()) throw new Error(`${label}失败：模型返回了空内容，请重试本回合。`);
@@ -587,7 +612,7 @@ export async function runTurnV2(p: TurnRequestV2) {
     emitPhase(p, 'planner_pre', plannerModel, 'failed', error, plannerToolsEnabled);
     throw error;
   }
-  const brief = extractJSON(pre.text) as any;
+  const brief = requireJSONObject(pre.text, phaseLabels.planner_pre) as any;
   const randomEventPlanForStory = randomEventPlanToText(brief?.randomEvent) ?? '本回合无随机事件安排';
 
   emitPhase(p, 'story', storyModel, 'started');
@@ -653,7 +678,7 @@ export async function runTurnV2(p: TurnRequestV2) {
     emitPhase(p, 'planner_post', plannerModel, 'failed', error, plannerToolsEnabled);
     throw error;
   }
-  const patch = asPatch(extractJSON(post.text), p, commitId, story.text);
+  const patch = asPatch(requireJSONObject(post.text, phaseLabels.planner_post), p, commitId, story.text);
   emitPatchWarnings(p, plannerModel, patch.warnings);
   const next = commitTurnPatchV2(p.state, patch);
   const now = Date.now();

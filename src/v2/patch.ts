@@ -32,6 +32,9 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2): GameS
       characters.push({ id, name, aliases: (Array.isArray(row.aliases) ? row.aliases : []).map((x) => text(x, 30)).filter(Boolean).slice(0, 8), role: text(row.role, 40) || undefined, description: text(row.description, 240) || undefined, status: oneOf(row.status, ['active', 'absent', 'missing', 'dead', 'unknown'] as const, 'active'), knownFacts: (Array.isArray(row.addFacts) ? row.addFacts : []).map((x) => text(x, 100)).filter(Boolean).slice(0, 12), firstSeenTurn: state.turn, lastSeenTurn: state.turn });
     } else {
       const target = characters.find((x) => x.id === row.id); if (!target) continue;
+      if (Array.isArray(row.aliases)) {
+        target.aliases = Array.from(new Set([...target.aliases, ...row.aliases.map((x) => text(x, 30)).filter(Boolean)])).slice(0, 8);
+      }
       if (row.name) target.name = text(row.name, 30);
       if (row.role !== undefined) target.role = text(row.role, 40) || undefined;
       if (row.description !== undefined) target.description = text(row.description, 240) || undefined;
@@ -68,7 +71,7 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2): GameS
       else if (row.name) inventory.push({ id: text(row.id, 80) || genId('item'), name: text(row.name, 40), kind: oneOf(row.kind, ['item', 'ability', 'quest_item'] as const, 'item'), description: text(row.description, 240), quantity: Math.max(1, Math.round(row.quantity ?? 1)), consumable: !!row.consumable, acquiredAtTurn: state.turn, updatedAtTurn: state.turn });
     } else if (item && row.op === 'consume') item.quantity -= Math.max(1, Math.round(row.quantity ?? 1));
     else if (item && row.op === 'remove') item.quantity = 0;
-    else if (item && row.op === 'update') { if (row.description !== undefined) item.description = text(row.description, 240); if (row.kind) item.kind = oneOf(row.kind, ['item', 'ability', 'quest_item'] as const, item.kind); }
+    else if (item && row.op === 'update') { if (row.description !== undefined) item.description = text(row.description, 240); if (row.kind) item.kind = oneOf(row.kind, ['item', 'ability', 'quest_item'] as const, item.kind); if (row.consumable !== undefined) item.consumable = !!row.consumable; }
     if (item) item.updatedAtTurn = state.turn;
   }
 
