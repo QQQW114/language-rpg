@@ -147,13 +147,13 @@
 - DeepSeek：`plannerJsonMode / thinkingMode / reasoningEffort`
 - 高优先级注入：`roleInjects.planner / story / post`
 - 输入视角：`inputPerspective`
-- 展示：`showDestinyDetails`
+- 展示与编辑：`stateEditingEnabled`
 
 ## 8. 前端展示
 
 侧边栏四页：
 
-- 人物：人物卡 + 关系一行式；
+- 人物：人物卡 + 关系一行式；开启 `stateEditingEnabled` 后，可编辑/清除人物介绍，编辑/删除关系好感；
 - 世界：当前场景 + 最新进展 + 正史事实（折叠）；
 - 背包：物品 + 消耗品标签；
 - 故事：线程 + 本地化状态 + 进度条。
@@ -162,7 +162,7 @@
 
 - 完成度、当前幕、当前路径；
 - 当前完成度说明（折叠）；
-- 故事节状态（展开；开启详情时显示全部故事节与下一里程碑/收敛计划）。
+- 故事节状态（展开；开启 `stateEditingEnabled` 时显示全部故事节与下一里程碑/收敛计划）。
 
 ## 9. 已知边界
 

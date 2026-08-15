@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { AlertCircle, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, Circle, Clock3, Compass, Loader2, Package, Pencil, RotateCcw, ScrollText, Settings, Sparkles, Users, Wrench, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, Circle, Clock3, Compass, Download, Loader2, Package, Pencil, RotateCcw, ScrollText, Settings, Sparkles, Users, Wrench, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { confirmDialog } from '@/components/ui/ConfirmDialog';
+import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { CharacterV2, DestinyProgressV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, StoryBeatRuntimeV2, StoryThreadV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
 
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
@@ -30,6 +31,8 @@ const THREAD_STATUS: Record<StoryThreadV2['status'], string> = {
 const CHARACTER_STATUS: Record<CharacterV2['status'], string> = {
   active: '活跃', absent: '暂离', missing: '失踪', dead: '死亡', unknown: '未知',
 };
+
+const clampAffinity = (value: number) => Math.max(-100, Math.min(100, Math.round(value) || 0));
 
 function cleanError(error: unknown): string {
   if (error instanceof DOMException && error.name === 'AbortError') return '本次生成已取消。';
@@ -184,19 +187,158 @@ function ModelActivityPanel({ activities, thinking, busy }: { activities: ModelA
   </section>;
 }
 
-function SidePanel({ save, showDestinyDetails }: { save: NonNullable<ReturnType<typeof useActiveSaveV2>>; showDestinyDetails: boolean }) {
+function CharacterCard({ saveId, character, canEdit }: { saveId: string; character: CharacterV2; canEdit: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [role, setRole] = useState(character.role ?? '');
+  const [description, setDescription] = useState(character.description ?? '');
+
+  const persist = (patch: Partial<Pick<CharacterV2, 'role' | 'description'>>) => {
+    useGameStoreV2.getState().update(saveId, (s) => ({
+      ...s,
+      state: {
+        ...s.state,
+        characters: s.state.characters.map((c) => c.id === character.id
+          ? { ...c, ...patch }
+          : c),
+      },
+    }));
+  };
+  const save = () => {
+    persist({ role: role.trim() || undefined, description: description.trim() || undefined });
+    setEditing(false);
+  };
+  const clearIntro = () => {
+    setRole('');
+    setDescription('');
+    persist({ role: undefined, description: undefined });
+    setEditing(false);
+  };
+  const removeCharacter = async () => {
+    const ok = await confirmDialog({
+      title: '删除人物？',
+      message: `将从状态中删除“${character.name}”，并同步移除涉及该人物的关系、正史事实与故事线程参与记录。`,
+      confirmText: '删除',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    useGameStoreV2.getState().update(saveId, (s) => ({
+      ...s,
+      state: {
+        ...s.state,
+        characters: s.state.characters.filter((c) => c.id !== character.id),
+        relationships: s.state.relationships.filter((r) => r.fromId !== character.id && r.toId !== character.id),
+        facts: s.state.facts.filter((f) => f.subjectId !== character.id),
+        storyThreads: s.state.storyThreads.map((t) => ({
+          ...t,
+          involvedCharacterIds: t.involvedCharacterIds.filter((id) => id !== character.id),
+        })),
+      },
+    }));
+  };
+
+  return (
+    <div className="rounded-lg border border-parchment-600/20 bg-ink/20 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-gold-light">{character.name}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-parchment-200/45">{CHARACTER_STATUS[character.status] ?? character.status}</span>
+          {canEdit && <button type="button" onClick={() => { setRole(character.role ?? ''); setDescription(character.description ?? ''); setEditing((v) => !v); }} className="rounded p-1 text-parchment-200/45 transition hover:bg-gold/10 hover:text-gold-light" title={editing ? '取消编辑' : '编辑介绍'}><Pencil size={12} /></button>}
+          {canEdit && <button type="button" onClick={() => void removeCharacter()} className="rounded p-1 text-parchment-200/45 transition hover:bg-blood/15 hover:text-blood" title="删除人物"><X size={12} /></button>}
+        </div>
+      </div>
+      {editing ? (
+        <div className="mt-2 space-y-2">
+          <input value={role} onChange={(event) => setRole(event.target.value)} placeholder="角色定位（可选）" className="w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-1.5 text-xs text-parchment-100 outline-none focus:border-gold/70" />
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="人物介绍" rows={3} className="w-full resize-y rounded border border-parchment-600/40 bg-ink/50 px-2 py-1.5 text-xs leading-5 text-parchment-100 outline-none focus:border-gold/70" />
+          <div className="flex gap-2">
+            <button type="button" onClick={save} className="rounded border border-gold/40 bg-gold/10 px-2 py-1 text-[11px] text-gold-light hover:bg-gold/20">保存</button>
+            <button type="button" onClick={clearIntro} className="rounded border border-parchment-500/40 px-2 py-1 text-[11px] text-parchment-200/70 hover:bg-parchment-700/40">清除介绍</button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-1 text-xs text-parchment-200/60">{character.role || character.description || '尚无详细资料'}</div>
+      )}
+      {!editing && character.knownFacts.length > 0 && <div className="mt-2 space-y-0.5 text-[11px] text-parchment-200/50">{character.knownFacts.slice(-3).map((fact, i) => <div key={`${character.id}-f-${i}`}>· {fact}</div>)}</div>}
+    </div>
+  );
+}
+
+function RelationshipRow({ saveId, relationship, canEdit, nameById }: { saveId: string; relationship: RelationshipV2; canEdit: boolean; nameById: (id: string) => string }) {
+  const [editing, setEditing] = useState(false);
+  const [affinity, setAffinity] = useState(String(relationship.affinity));
+  const [label, setLabel] = useState(relationship.label ?? '');
+  const [note, setNote] = useState(relationship.note ?? '');
+
+  const save = () => {
+    useGameStoreV2.getState().update(saveId, (s) => ({
+      ...s,
+      state: {
+        ...s.state,
+        relationships: s.state.relationships.map((r) => r.id === relationship.id
+          ? { ...r, affinity: clampAffinity(Number(affinity) || 0), label: label.trim() || undefined, note: note.trim() || undefined }
+          : r),
+      },
+    }));
+    setEditing(false);
+  };
+  const remove = () => {
+    useGameStoreV2.getState().update(saveId, (s) => ({
+      ...s,
+      state: {
+        ...s.state,
+        relationships: s.state.relationships.filter((r) => r.id !== relationship.id),
+      },
+    }));
+  };
+
+  return (
+    <div className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-xs text-parchment-200/70">
+      {editing ? (
+        <div className="space-y-2">
+          <div className="text-parchment-100">{nameById(relationship.fromId)} → {nameById(relationship.toId)}</div>
+          <label className="block">
+            <span className="text-[10px] text-parchment-200/45">好感</span>
+            <input type="number" value={affinity} onChange={(event) => setAffinity(event.target.value)} className="mt-0.5 w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-1.5 text-xs text-parchment-100 outline-none focus:border-gold/70" />
+          </label>
+          <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="关系标签（可选）" className="w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-1.5 text-xs text-parchment-100 outline-none focus:border-gold/70" />
+          <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="备注（可选）" className="w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-1.5 text-xs text-parchment-100 outline-none focus:border-gold/70" />
+          <div className="flex gap-2">
+            <button type="button" onClick={save} className="rounded border border-gold/40 bg-gold/10 px-2 py-1 text-[11px] text-gold-light hover:bg-gold/20">保存</button>
+            <button type="button" onClick={() => setEditing(false)} className="rounded border border-parchment-500/40 px-2 py-1 text-[11px] text-parchment-200/70 hover:bg-parchment-700/40">取消</button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <span className="text-parchment-100">{nameById(relationship.fromId)}</span>
+            <span className="mx-1 text-parchment-200/40">→</span>
+            <span className="text-parchment-100">{nameById(relationship.toId)}</span>
+            {relationship.label && <span className="ml-2 text-gold/70">{relationship.label}</span>}
+            <span className="ml-2 text-parchment-200/50">好感 {relationship.affinity > 0 ? `+${relationship.affinity}` : relationship.affinity}</span>
+          </div>
+          {canEdit && <div className="flex shrink-0 gap-1">
+            <button type="button" onClick={() => { setAffinity(String(relationship.affinity)); setLabel(relationship.label ?? ''); setNote(relationship.note ?? ''); setEditing(true); }} className="rounded p-1 text-parchment-200/45 transition hover:bg-gold/10 hover:text-gold-light" title="编辑关系"><Pencil size={12} /></button>
+            <button type="button" onClick={remove} className="rounded p-1 text-parchment-200/45 transition hover:bg-blood/15 hover:text-blood" title="删除关系"><X size={12} /></button>
+          </div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SidePanel({ save, canEdit }: { save: NonNullable<ReturnType<typeof useActiveSaveV2>>; canEdit: boolean }) {
   const [tab, setTab] = useState<'people' | 'world' | 'items' | 'threads'>('people');
   const [factsOpen, setFactsOpen] = useState(false);
   const tabs = [{ id: 'people' as const, label: '人物', icon: <Users size={14} /> }, { id: 'world' as const, label: '世界', icon: <Compass size={14} /> }, { id: 'items' as const, label: '背包', icon: <Package size={14} /> }, { id: 'threads' as const, label: '故事', icon: <ScrollText size={14} /> }];
   const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;
   return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
-    <DestinyCard destiny={save.state.destiny} showDetails={showDestinyDetails} />
+    <DestinyCard destiny={save.state.destiny} showDetails={canEdit} />
     <section className="overflow-hidden rounded-xl border border-parchment-600/25 bg-parchment-900/35">
       <div className="flex border-b border-parchment-600/20">{tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex flex-1 items-center justify-center gap-1 py-3 text-xs transition ${tab === item.id ? 'border-b-2 border-gold text-gold-light' : 'text-parchment-200/55 hover:text-parchment-100'}`}>{item.icon}{item.label}</button>)}</div>
       <div className="p-3 text-sm">
         {tab === 'people' && <div className="space-y-3">
-          {save.state.characters.length ? save.state.characters.map((c) => <div key={c.id} className="rounded-lg border border-parchment-600/20 bg-ink/20 p-3"><div className="flex items-center justify-between"><span className="text-gold-light">{c.name}</span><span className="text-[10px] text-parchment-200/45">{CHARACTER_STATUS[c.status] ?? c.status}</span></div><div className="mt-1 text-xs text-parchment-200/60">{c.role || c.description || '尚无详细资料'}</div>{c.knownFacts.length > 0 && <div className="mt-2 space-y-0.5 text-[11px] text-parchment-200/50">{c.knownFacts.slice(-3).map((fact, i) => <div key={`${c.id}-f-${i}`}>· {fact}</div>)}</div>}</div>) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
-          {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <div key={rel.id} className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-xs text-parchment-200/70"><span className="text-parchment-100">{characterName(rel.fromId)}</span><span className="mx-1 text-parchment-200/40">→</span><span className="text-parchment-100">{characterName(rel.toId)}</span>{rel.label && <span className="ml-2 text-gold/70">{rel.label}</span>}<span className="ml-2 text-parchment-200/50">好感 {rel.affinity > 0 ? `+${rel.affinity}` : rel.affinity}</span></div>)}</div></div>}
+          {save.state.characters.length ? save.state.characters.map((c) => <CharacterCard key={c.id} saveId={save.id} character={c} canEdit={canEdit} />) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
+          {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <RelationshipRow key={rel.id} saveId={save.id} relationship={rel} canEdit={canEdit} nameById={characterName} />)}</div></div>}
         </div>}
         {tab === 'world' && <div className="space-y-3">{save.state.currentScene && <div><div className="text-xs text-parchment-200/45">当前场景</div><div className="mt-1 text-gold-light">{save.state.currentScene.name}</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/65">{save.state.currentScene.description}</p><div className="mt-2 text-[11px] text-parchment-200/45">{[save.state.currentScene.time, save.state.currentScene.weather].filter(Boolean).join(' · ')}</div></div>}<div className="border-t border-parchment-600/15 pt-3"><div className="text-xs text-parchment-200/45">最新进展</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/70">{save.state.latestProgress || save.state.summary || '故事刚刚开始。'}</p></div>{save.state.facts.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><button type="button" onClick={() => setFactsOpen((v) => !v)} className="flex w-full items-center justify-between text-xs text-parchment-200/45 hover:text-parchment-100"><span>正史事实（{save.state.facts.length}）</span>{factsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{factsOpen && <div className="mt-2 space-y-1.5">{save.state.facts.map((fact) => <div key={fact.id} className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-parchment-200/70"><span className="text-parchment-100">{fact.subjectId}</span><span className="mx-1 text-parchment-200/40">·</span>{fact.predicate}<span className="mx-1 text-parchment-200/40">=</span>{fact.value}</div>)}</div>}</div>}</div>}
         {tab === 'items' && <div className="space-y-2">{save.state.inventory.length ? save.state.inventory.map((item) => <div key={item.id} className="flex items-start justify-between rounded-lg border border-parchment-600/20 p-2.5"><div><div className="flex items-center gap-2"><span className="text-parchment-100">{item.name}</span>{item.consumable && <span className="rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/75">消耗品</span>}</div><div className="text-[11px] text-parchment-200/50">{item.description || item.kind}</div></div><span className="text-gold-light">×{item.quantity}</span></div>) : <p className="text-xs text-parchment-200/45">暂无物品。</p>}</div>}
@@ -209,6 +351,37 @@ function SidePanel({ save, showDestinyDetails }: { save: NonNullable<ReturnType<
       {save.state.randomEvent.lastNote && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件结果：</span>{save.state.randomEvent.lastNote}</div>}
     </div>
   </aside>;
+}
+
+type ExportMode = 'story' | 'story-input' | 'story-input-thinking';
+
+function downloadTextFile(filename: string, text: string) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildExportText(history: MessageV2[], mode: ExportMode): string {
+  if (mode === 'story') {
+    return history.filter((m) => m.role === 'assistant').map((m) => m.content).join('\n\n').trim() || '（暂无故事正文）';
+  }
+  return history.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => {
+    const heading = `第 ${m.turn + 1} 回合`;
+    if (m.role === 'user') return `${heading}\n玩家：${m.content}`;
+    const thinking = mode === 'story-input-thinking' ? `\n思维链：${m.thinking?.trim() || '（无）'}` : '';
+    return `${heading}\n正文：${m.content}${thinking}`;
+  }).join('\n\n').trim() || '（暂无故事记录）';
+}
+
+function exportSaveText(name: string, history: MessageV2[], mode: ExportMode) {
+  const safeName = name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+  const suffix = mode === 'story' ? '仅正文' : mode === 'story-input' ? '正文与输入' : '正文输入与思维链';
+  const text = buildExportText(history, mode);
+  downloadTextFile(`${safeName}-${suffix}-${new Date().toISOString().slice(0, 10)}.txt`, text);
 }
 
 export default function GamePageV2() {
@@ -416,8 +589,13 @@ export default function GamePageV2() {
     enqueueWithPace(revisedInput, revisedPace);
   };
   const activeItem = activeTurn;
+  const exportItems = [
+    { id: 'story', label: '仅导出故事正文', icon: <Download size={14} />, onClick: () => exportSaveText(save.name, save.state.history, 'story') },
+    { id: 'story-input', label: '导出正文与玩家输入', icon: <Download size={14} />, onClick: () => exportSaveText(save.name, save.state.history, 'story-input') },
+    { id: 'story-input-thinking', label: '导出正文、输入与思维链', icon: <Download size={14} />, onClick: () => exportSaveText(save.name, save.state.history, 'story-input-thinking') },
+  ];
   return <div className="min-h-screen">
-    <header className="sticky top-0 z-20 border-b border-gold-line-dim bg-parchment-800/90 shadow-[0_2px_18px_rgba(0,0,0,.45)] backdrop-blur-md"><div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6"><Button variant="ghost" size="sm" className="!h-10 !w-10 !px-0 rounded-full" onClick={() => void leavePage('/')} title="返回主页"><ArrowLeft size={17} /></Button><div className="min-w-0 flex-1"><div className="truncate font-serif tracking-[.08em] text-parchment-100">{save.name}</div><div className="text-[11px] text-parchment-200/50">{save.state.mode === 'author' ? '执笔模式 · 无限回合自由输入' : '游历模式 · 自由行动与命运线'} · 第 {save.state.turn} 回合</div></div><div className="hidden items-center gap-2 md:flex"><span className="rounded-full border border-gold/25 bg-ink/25 px-3 py-1 text-xs text-gold-light">{paceInfo.label}</span><Button variant="ghost" size="sm" onClick={() => void leavePage('/settings')} title="设置"><Settings size={16} /></Button></div><Button variant="ghost" size="sm" className="md:hidden" onClick={() => void leavePage('/settings')}><Settings size={16} /></Button></div></header>
+    <header className="sticky top-0 z-20 border-b border-gold-line-dim bg-parchment-800/90 shadow-[0_2px_18px_rgba(0,0,0,.45)] backdrop-blur-md"><div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6"><Button variant="ghost" size="sm" className="!h-10 !w-10 !px-0 rounded-full" onClick={() => void leavePage('/')} title="返回主页"><ArrowLeft size={17} /></Button><div className="min-w-0 flex-1"><div className="truncate font-serif tracking-[.08em] text-parchment-100">{save.name}</div><div className="text-[11px] text-parchment-200/50">{save.state.mode === 'author' ? '执笔模式 · 无限回合自由输入' : '游历模式 · 自由行动与命运线'} · 第 {save.state.turn} 回合</div></div><div className="hidden items-center gap-2 md:flex"><span className="rounded-full border border-gold/25 bg-ink/25 px-3 py-1 text-xs text-gold-light">{paceInfo.label}</span><DropdownMenu trigger={<Download size={16} />} items={exportItems} align="right" /><Button variant="ghost" size="sm" onClick={() => void leavePage('/settings')} title="设置"><Settings size={16} /></Button></div><div className="flex items-center gap-2 md:hidden"><DropdownMenu trigger={<Download size={16} />} items={exportItems} align="right" /><Button variant="ghost" size="sm" onClick={() => void leavePage('/settings')}><Settings size={16} /></Button></div></div></header>
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_340px]">
       <section className="min-w-0">
         <div className="rounded-xl border border-parchment-600/25 bg-ink/20 px-4 py-5 shadow-[0_12px_35px_rgba(0,0,0,.2)] sm:px-7">
@@ -441,7 +619,7 @@ export default function GamePageV2() {
           </div>
         </div>
       </section>
-      <SidePanel save={save} showDestinyDetails={settings.showDestinyDetails !== false} />
+      <SidePanel save={save} canEdit={settings.stateEditingEnabled !== false} />
     </main>
   </div>;
 }

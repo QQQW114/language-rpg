@@ -157,20 +157,20 @@ export default function SettingsPage() {
         </div>
         <div className="mt-3 flex items-start justify-between gap-4 border-t border-parchment-600/15 pt-3">
           <div className="min-w-0">
-            <div className="text-sm text-parchment-100">展示故事推进详情</div>
-            <p className="mt-1 text-xs leading-relaxed text-parchment-200/55">在命运卡中展示下一阶段要求、后续路径与模型期待的故事推进方向。</p>
+            <div className="text-sm text-parchment-100">创作者视角：展示并编辑故事推进状态</div>
+            <p className="mt-1 text-xs leading-relaxed text-parchment-200/55">在命运卡中展示下一阶段要求、后续路径与模型期待方向；同时允许在人物栏修改/删除人物介绍与关系好感。</p>
           </div>
           <button
             type="button"
             role="switch"
-            aria-checked={draft.showDestinyDetails}
-            aria-label="展示故事推进详情"
-            onClick={() => setDraft((current) => ({ ...current, showDestinyDetails: !current.showDestinyDetails }))}
-            className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors ${draft.showDestinyDetails
+            aria-checked={draft.stateEditingEnabled}
+            aria-label="创作者视角：展示并编辑故事推进状态"
+            onClick={() => setDraft((current) => ({ ...current, stateEditingEnabled: !current.stateEditingEnabled }))}
+            className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors ${draft.stateEditingEnabled
               ? 'border-gold/70 bg-gold/55'
               : 'border-parchment-500/55 bg-parchment-800/80'}`}
           >
-            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-parchment-50 shadow transition-transform ${draft.showDestinyDetails ? 'translate-x-5' : 'translate-x-0'}`} />
+            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-parchment-50 shadow transition-transform ${draft.stateEditingEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
           </button>
         </div>
       </div>
