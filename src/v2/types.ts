@@ -104,6 +104,8 @@ export interface RandomEventStateV2 {
   triggerIntervalMax: number;
   /** 规划模型最近一次为本回合/下回合安排的随机事件（已转为纯文字）。 */
   lastPlan?: string;
+  /** 结算模型最近一次提交的随机事件备注/结果说明。 */
+  lastNote?: string;
 }
 
 export interface CharacterV2 {
@@ -222,7 +224,6 @@ export interface TurnPatchV2 {
   facts?: Array<{ op: 'create' | 'replace'; id?: string; subjectId: string; predicate: string; value: string; scope?: CanonicalFactV2['scope']; stability?: CanonicalFactV2['stability']; confidence?: CanonicalFactV2['confidence']; keywords?: string[]; evidenceQuote?: string; reason?: string }>;
   scene?: Partial<SceneV2>;
   actions?: ChoiceV2[];
-  uncertainties?: string[];
   /** 模型输出被程序安全规范化时产生的可观察警告，不进入故事权威状态。 */
   warnings?: PatchWarningV2[];
   destiny?: {
@@ -238,12 +239,6 @@ export interface TurnPatchV2 {
     beatChanges?: Array<{ beatId: string; status: StoryBeatStatusV2; currentPlan?: string; evidenceSummary?: string; evidenceQuote?: string; replacementBeatId?: string; reason: string }>;
   };
   randomEvent?: { handled: boolean; note?: string };
-  canonCheck?: {
-    respectedFacts: string[];
-    newInferences: string[];
-    conflicts: string[];
-    stopBoundaryViolated?: boolean;
-  };
 }
 
 export interface TurnRequestV2 {

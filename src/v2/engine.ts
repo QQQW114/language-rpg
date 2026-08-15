@@ -46,8 +46,7 @@ const plannerPostDirectorAgency = `玩家输入为导演指令，CURRENT_STORY�
 
 function buildPlannerPostSystem(director: boolean): string {
   return `你是互动小说的写后审计与状态提交 Agent。你不是作者，不续写故事，不规划下一幕，不扮演角色。只依据本次提供的CURRENT_TURN_INPUT与CURRENT_STORY结算本回合，只输出严格 JSON（json object）。
-绝对禁止引用其他回合的玩家要求来填充本回合冲突。摘要、进度和Patch必须是CURRENT_STORY已经明确发生的内容；“准备、考虑、计划、可能”不能记为已完成行动。
-玩家偏离原路线不是冲突。conflicts只记录CURRENT_STORY内部无法同时成立的硬事实，供后续模型修正；程序不会因为路线偏离而拒绝故事。
+摘要、进度和Patch必须是CURRENT_STORY已经明确发生的内容；“准备、考虑、计划、可能”不能记为已完成行动。
 ${director ? plannerPostDirectorAgency : ''}
 每轮必须更新destiny，但只更新实际变化的故事节。故事完成度是当前全部事件与人物状态距离预设结尾的综合估值，可上升也可下降，不是累计积分。completionEstimate直接输出0到100的当前估值，并用completionReason说明已满足和仍缺少的核心结尾条件。
 故事节状态含义：pending未到条件；available条件成熟；active正在发生；satisfied核心功能已由正文满足；weakened已满足结果被后续削弱；reframed因路线变化需换实现方式；superseded已由等价故事节承担。
@@ -58,8 +57,7 @@ characters、relationships、inventory、threads、facts全部是增量Patch，�
 必须复用权威状态中已有ID。新对象ID使用稳定、简短、语义化的小写ASCII ID；同一对象后续永远复用该ID。
 relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityDelta每回合范围-20到20；只有正文出现实际关系变化才提交。
 facts只保存正文新确认、且需要跨回合保持一致的长期硬事实（例如稳定身份、持续关系属性、固定地点/安排、能力边界或已确立的长期设定）。不保存氛围、临时动作、一次性场景细节、短期计划、想法、摘要、推测或已有worldFacts；这类内容即使出现在正文，也不要提交canonical fact。不要把stability写成temporary来绕过筛选，临时事实不进入持久状态。通常每轮只需0到3条，确有多个独立长期设定时才增加；没有新的长期硬事实必须输出空数组。每条必须使用结构化字段；禁止字符串facts，禁止kind/content格式，禁止推测事实。
-fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。
-若CURRENT_STORY越过stopBoundary，canonCheck.stopBoundaryViolated=true；否则为false。该字段仅供审计，不阻止故事提交。`;
+fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。`;
 }
 
 /** 高优先级注入放在系统提示词最前方。 */
@@ -128,10 +126,8 @@ const postShape = `{
   "facts":[{"op":"create|replace","subjectId":"stable-subject-id","predicate":"stable-predicate","value":"跨回合长期明确值","scope":"character|relationship|location|world|schedule|identity|custom","stability":"core|stable","confidence":"explicit","keywords":[],"evidenceQuote":"正文原句","reason":"replace时必填"}],
   "scene":null,
   "actions":[],
-  "uncertainties":[],
   "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
-  "randomEvent":{"handled":false,"note":""},
-  "canonCheck":{"respectedFacts":[],"newInferences":[],"conflicts":[],"stopBoundaryViolated":false}
+  "randomEvent":{"handled":false,"note":""}
 }`;
 
 function relevantFacts(p: TurnRequestV2) {
@@ -404,8 +400,6 @@ function asPatch(raw: unknown, p: TurnRequestV2, commitId: string, story: string
   const data = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   const warnings: PatchWarningV2[] = [];
   const list = (key: string) => Array.isArray(data[key]) ? data[key] : [];
-  const canon = data.canonCheck && typeof data.canonCheck === 'object' && !Array.isArray(data.canonCheck)
-    ? data.canonCheck as Record<string, unknown> : {};
   const patch: TurnPatchV2 = {
     ...data,
     schemaVersion: 2,
@@ -420,14 +414,7 @@ function asPatch(raw: unknown, p: TurnRequestV2, commitId: string, story: string
     threads: list('threads') as TurnPatchV2['threads'],
     facts: list('facts') as TurnPatchV2['facts'],
     actions: list('actions') as TurnPatchV2['actions'],
-    uncertainties: list('uncertainties') as string[],
     warnings,
-    canonCheck: {
-      respectedFacts: Array.isArray(canon.respectedFacts) ? canon.respectedFacts.map(String) : [],
-      newInferences: Array.isArray(canon.newInferences) ? canon.newInferences.map(String) : [],
-      conflicts: Array.isArray(canon.conflicts) ? canon.conflicts.map(String) : [],
-      stopBoundaryViolated: canon.stopBoundaryViolated === true,
-    },
     destiny: normalizeDestinyPatch(data.destiny, warnings),
     randomEvent: data.randomEvent && typeof data.randomEvent === 'object' && !Array.isArray(data.randomEvent) ? data.randomEvent as TurnPatchV2['randomEvent'] : undefined,
   };
