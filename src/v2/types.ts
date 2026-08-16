@@ -1,6 +1,7 @@
 import type { StoryOutline, Background, WorldBookEntry } from '@/types/content';
 import type { AppSettings } from '@/types/settings';
 import type { LlmUsage } from '@/types/llm';
+import type { AgentPromptTrace } from '@/types/ledger';
 
 export type JourneyModeV2 = 'author' | 'adventure';
 export type NarrativePaceV2 = 'slow' | 'standard' | 'fast' | 'timeskip';
@@ -169,6 +170,22 @@ export interface CanonicalFactV2 {
   createdAtTurn: number;
   updatedAtTurn: number;
 }
+export interface TurnModelCallV2 {
+  phase: ModelPhaseV2;
+  model: string;
+  input?: AgentPromptTrace;
+  output?: string;
+  thinking?: string;
+  usage?: LlmUsage;
+}
+
+export interface TurnRecordV2 {
+  turn: number;
+  input: string;
+  story: string;
+  calls: TurnModelCallV2[];
+}
+
 export interface MessageV2 {
   id: string;
   role: 'user' | 'assistant';
@@ -216,6 +233,8 @@ export interface GameStateV2 {
   lastCommitId?: string;
   /** 高优先级注入：规划角色在该存档是否已注入过一次。 */
   plannerInjectApplied?: boolean;
+  /** 每回合模型输入/输出留档，用于“导出全部信息”。 */
+  turnRecords?: TurnRecordV2[];
 }
 
 export interface TurnPatchV2 {

@@ -12,7 +12,7 @@ import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import { commitTurnPatchV2 } from './patch';
-import type { ChoiceV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnPatchV2, TurnRequestV2 } from './types';
+import type { ChoiceV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnModelCallV2, TurnPatchV2, TurnRecordV2, TurnRequestV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
 玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。`;
@@ -317,22 +317,72 @@ function recentHistoryWithinBudget(p: TurnRequestV2, tokenBudget: number) {
 }
 
 function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) {
+  const scene = p.state.currentScene
+    ? {
+      id: p.state.currentScene.id,
+      name: p.state.currentScene.name,
+      description: p.state.currentScene.description,
+      time: p.state.currentScene.time,
+      weather: p.state.currentScene.weather,
+    }
+    : undefined;
+  const characters = p.state.characters.map(({ id, name, aliases, role, description, status, knownFacts }) => ({
+    id, name, aliases, role, description, status, knownFacts,
+  }));
+  const relationships = p.state.relationships.map(({ id, fromId, toId, affinity, label, note }) => ({
+    id, fromId, toId, affinity, label, note,
+  }));
+  const inventory = p.state.inventory.map(({ id, name, kind, description, quantity, consumable }) => ({
+    id, name, kind, description, quantity, consumable,
+  }));
+  const threads = p.state.storyThreads.map(({ id, title, kind, status, progress, currentStep, involvedCharacterIds, note }) => ({
+    id, title, kind, status, progress, currentStep, involvedCharacterIds, note,
+  }));
+  const facts = relevantFacts(p).map(({ id, subjectId, predicate, value, scope, stability, confidence, keywords }) => ({
+    id, subjectId, predicate, value, scope, stability, confidence, keywords,
+  }));
+  const randomEvent = {
+    enabled: p.state.randomEvent.enabled,
+    nextTriggerTurn: p.state.randomEvent.nextTriggerTurn,
+    pending: p.state.randomEvent.pending,
+    intensity: p.state.randomEvent.intensity,
+    lastTriggeredTurn: p.state.randomEvent.lastTriggeredTurn,
+    triggerIntervalMin: p.state.randomEvent.triggerIntervalMin,
+    triggerIntervalMax: p.state.randomEvent.triggerIntervalMax,
+    lastPlan: p.state.randomEvent.lastPlan,
+    lastNote: p.state.randomEvent.lastNote,
+  };
+  const destiny = {
+    completionEstimate: p.state.destiny.completionEstimate,
+    completionReason: p.state.destiny.completionReason,
+    currentActId: p.state.destiny.currentActId,
+    currentStage: p.state.destiny.currentStage,
+    currentPath: p.state.destiny.currentPath,
+    nextMilestone: p.state.destiny.nextMilestone,
+    convergencePlan: p.state.destiny.convergencePlan,
+    endingReached: p.state.destiny.endingReached,
+    beats: (p.state.destiny.beats ?? []).map(({ beatId, status, currentPlan, evidenceSummary, replacementBeatId }) => ({
+      beatId, status, currentPlan, evidenceSummary, replacementBeatId,
+    })),
+  };
+  // 顺序即缓存顺序：稳定字段在前，每回合必变的字段与 recent 放到最后，
+  // 避免 turn/revision/summary/progress 从中间截断前缀缓存。
   return JSON.stringify({
     mode: p.state.mode,
     narrativePace: p.state.narrativePace,
-    turn: p.state.turn,
-    revision: p.state.revision,
+    scene,
+    characters,
+    relationships,
+    facts,
+    threads,
+    inventory,
+    randomEvent,
+    destiny,
     summary: p.state.summary,
     progress: p.state.latestProgress,
-    scene: p.state.currentScene,
-    characters: p.state.characters,
-    relationships: p.state.relationships,
-    inventory: p.state.inventory,
-    threads: p.state.storyThreads,
-    destiny: p.state.destiny,
-    randomEvent: p.state.randomEvent,
-    canonicalFacts: relevantFacts(p),
-    ...(recent ? { recent } : {}),
+    turn: p.state.turn,
+    revision: p.state.revision,
+    ...(recent ? { recent: recent.map(({ role, content }) => ({ role, content })) } : {}),
   });
 }
 
@@ -563,6 +613,7 @@ export async function runTurnV2(p: TurnRequestV2) {
   const roleInjects = p.settings.roleInjects;
   // 收集本回合所有阶段的思维链，导出与展示可共用。
   const turnThinkingParts: string[] = [];
+  const turnCalls: TurnModelCallV2[] = [];
   const collectThinking = (phase: ModelPhaseV2, model: string, text: string) => {
     if (text) turnThinkingParts.push(text);
     emitThinking(p, phase, model, text);
@@ -618,6 +669,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       onDelta: (text) => emitOutput(p, 'planner_pre', plannerModel, text),
     });
     ensureModelResult('planner_pre', pre);
+    turnCalls.push({ phase: 'planner_pre', model: plannerModel, input: pre.trace, output: pre.text, thinking: pre.thinking, usage: pre.usage });
     emitUsage(p, 'planner_pre', plannerModel, pre.usage);
     emitPhase(p, 'planner_pre', plannerModel, 'completed', undefined, plannerToolsEnabled);
   } catch (error) {
@@ -649,6 +701,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       },
     });
     ensureModelResult('story', story);
+    turnCalls.push({ phase: 'story', model: storyModel, input: story.trace, output: story.text, thinking: story.thinking, usage: story.usage });
     emitUsage(p, 'story', storyModel, story.usage);
     emitPhase(p, 'story', storyModel, 'completed');
   } catch (error) {
@@ -676,6 +729,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       onDelta: (text) => emitOutput(p, 'planner_post', plannerModel, text),
     });
     ensureModelResult('planner_post', post);
+    turnCalls.push({ phase: 'planner_post', model: plannerModel, input: post.trace, output: post.text, thinking: post.thinking, usage: post.usage });
     emitUsage(p, 'planner_post', plannerModel, post.usage);
     emitPhase(p, 'planner_post', plannerModel, 'completed', undefined, false);
   } catch (error) {
@@ -690,6 +744,8 @@ export async function runTurnV2(p: TurnRequestV2) {
     { id: genId('msg'), role: 'user', content: p.input, turn: p.state.turn, createdAt: now },
     { id: genId('msg'), role: 'assistant', content: story.text, turn: p.state.turn, createdAt: now, thinking: joinThinking(...turnThinkingParts) },
   ];
+  const turnRecord: TurnRecordV2 = { turn: p.state.turn, input: p.input, story: story.text, calls: turnCalls };
+  next.turnRecords = [...(p.state.turnRecords ?? []), turnRecord].slice(-100);
   next.turn = p.state.turn + 1;
   next.phase = 'input';
   if (shouldInjectPlanner) next.plannerInjectApplied = true;

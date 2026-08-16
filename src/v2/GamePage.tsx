@@ -9,7 +9,7 @@ import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
 
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
@@ -377,11 +377,26 @@ function buildExportText(history: MessageV2[], mode: ExportMode): string {
   }).join('\n\n').trim() || '（暂无故事记录）';
 }
 
+function safeExportName(name: string) {
+  return name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+}
+
 function exportSaveText(name: string, history: MessageV2[], mode: ExportMode) {
-  const safeName = name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+  const safeName = safeExportName(name);
   const suffix = mode === 'story' ? '仅正文' : mode === 'story-input' ? '正文与输入' : '正文输入与思维链';
   const text = buildExportText(history, mode);
   downloadTextFile(`${safeName}-${suffix}-${new Date().toISOString().slice(0, 10)}.txt`, text);
+}
+
+function exportFullJson(name: string, history: MessageV2[], turnRecords: TurnRecordV2[]) {
+  const safeName = safeExportName(name);
+  const payload = {
+    name,
+    exportedAt: new Date().toISOString(),
+    history,
+    turnRecords,
+  };
+  downloadTextFile(`${safeName}-全部信息-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(payload, null, 2));
 }
 
 export default function GamePageV2() {
@@ -593,6 +608,7 @@ export default function GamePageV2() {
     { id: 'story', label: '仅导出故事正文', icon: <Download size={14} />, onClick: () => exportSaveText(save.name, save.state.history, 'story') },
     { id: 'story-input', label: '导出正文与玩家输入', icon: <Download size={14} />, onClick: () => exportSaveText(save.name, save.state.history, 'story-input') },
     { id: 'story-input-thinking', label: '导出正文、输入与思维链', icon: <Download size={14} />, onClick: () => exportSaveText(save.name, save.state.history, 'story-input-thinking') },
+    { id: 'all', label: '导出全部信息（JSON）', icon: <Download size={14} />, onClick: () => exportFullJson(save.name, save.state.history, save.state.turnRecords ?? []) },
   ];
   return <div className="min-h-screen">
     <header className="sticky top-0 z-20 border-b border-gold-line-dim bg-parchment-800/90 shadow-[0_2px_18px_rgba(0,0,0,.45)] backdrop-blur-md"><div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6"><Button variant="ghost" size="sm" className="!h-10 !w-10 !px-0 rounded-full" onClick={() => void leavePage('/')} title="返回主页"><ArrowLeft size={17} /></Button><div className="min-w-0 flex-1"><div className="truncate font-serif tracking-[.08em] text-parchment-100">{save.name}</div><div className="text-[11px] text-parchment-200/50">{save.state.mode === 'author' ? '执笔模式 · 无限回合自由输入' : '游历模式 · 自由行动与命运线'} · 第 {save.state.turn} 回合</div></div><div className="hidden items-center gap-2 md:flex"><span className="rounded-full border border-gold/25 bg-ink/25 px-3 py-1 text-xs text-gold-light">{paceInfo.label}</span><DropdownMenu trigger={<Download size={16} />} items={exportItems} align="right" /><Button variant="ghost" size="sm" onClick={() => void leavePage('/settings')} title="设置"><Settings size={16} /></Button></div><div className="flex items-center gap-2 md:hidden"><DropdownMenu trigger={<Download size={16} />} items={exportItems} align="right" /><Button variant="ghost" size="sm" onClick={() => void leavePage('/settings')}><Settings size={16} /></Button></div></div></header>
