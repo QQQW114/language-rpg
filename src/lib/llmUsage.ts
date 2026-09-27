@@ -78,14 +78,21 @@ export function normalizeLlmUsage(raw: unknown): LlmUsage | undefined {
 export function mergeLlmUsage(previous: LlmUsage | undefined, next: LlmUsage | undefined): LlmUsage | undefined {
   if (!previous) return next;
   if (!next) return previous;
+  // 逐字段保留已知值：normalizeLlmUsage 产出的 cache 带有显式 undefined 键，
+  // 直接用对象展开会把上一帧已经拿到的 hitTokens 覆盖成 undefined。
+  const hitTokens = next.cache?.hitTokens ?? previous.cache?.hitTokens;
+  const missTokens = next.cache?.missTokens ?? previous.cache?.missTokens;
+  const cachedTokens = next.cache?.cachedTokens ?? previous.cache?.cachedTokens;
+  // 与 normalizeLlmUsage 一致：只写真正有值的字段，避免产出带 undefined 键的对象。
+  const cache: LlmCacheUsage = {};
+  if (hasNumber(hitTokens)) cache.hitTokens = hitTokens;
+  if (hasNumber(missTokens)) cache.missTokens = missTokens;
+  if (hasNumber(cachedTokens)) cache.cachedTokens = cachedTokens;
   return {
     promptTokens: next.promptTokens ?? previous.promptTokens,
     completionTokens: next.completionTokens ?? previous.completionTokens,
     totalTokens: next.totalTokens ?? previous.totalTokens,
-    cache: {
-      ...previous.cache,
-      ...next.cache,
-    },
+    ...(Object.keys(cache).length ? { cache } : {}),
   };
 }
 

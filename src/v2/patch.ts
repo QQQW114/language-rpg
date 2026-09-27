@@ -1,4 +1,4 @@
-import { clamp, genId } from '@/lib/utils';
+import { clamp, genId, textOrPrevious } from '@/lib/utils';
 import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, RandomEventIntensityV2, RelationshipV2, StoryThreadV2, TurnPatchV2 } from './types';
 
 const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
@@ -190,5 +190,5 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2): GameS
     randomEvent = { ...randomEvent, pending: false, ...(randomEventNote ? { lastNote: randomEventNote } : {}) };
   }
 
-  return { ...state, revision: state.revision + 1, summary: text(patch.roundSummary || state.summary, 5000), latestProgress: text(patch.latestProgress, 500), characters, relationships, inventory: inventory.filter((x) => x.quantity > 0), storyThreads: threads, facts, destiny, randomEvent, currentScene: patch.scene ? { id: text(patch.scene.id, 80) || state.currentScene?.id || genId('scene'), name: text(patch.scene.name, 50) || state.currentScene?.name || '未知地点', description: text(patch.scene.description, 240) || state.currentScene?.description, time: text(patch.scene.time, 40) || state.currentScene?.time, weather: text(patch.scene.weather, 40) || state.currentScene?.weather } : state.currentScene, availableActions: state.mode === 'adventure' ? (patch.actions ?? []).slice(0, 4) : [], lastCommitId: patch.commitId };
+  return { ...state, revision: state.revision + 1, summary: textOrPrevious(patch.roundSummary, state.summary, 5000), latestProgress: textOrPrevious(patch.latestProgress, state.latestProgress, 500), characters, relationships, inventory: inventory.filter((x) => x.quantity > 0), storyThreads: threads, facts, destiny, randomEvent, currentScene: patch.scene ? { id: text(patch.scene.id, 80) || state.currentScene?.id || genId('scene'), name: text(patch.scene.name, 50) || state.currentScene?.name || '未知地点', description: text(patch.scene.description, 240) || state.currentScene?.description, time: text(patch.scene.time, 40) || state.currentScene?.time, weather: text(patch.scene.weather, 40) || state.currentScene?.weather } : state.currentScene, availableActions: state.mode === 'adventure' ? (patch.actions ?? []).slice(0, 4) : [], lastCommitId: patch.commitId };
 }
