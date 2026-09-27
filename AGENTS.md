@@ -12,15 +12,18 @@
 ```bash
 cmd /c npm run build      # tsc --noEmit + vite build（生产构建，必须通过）
 cmd /c npm run dev        # 开发服务器，默认 http://127.0.0.1:5173
-cmd /c npm test           # 单元测试（esbuild 打包 + node:test）
+cmd /c npm test           # 单元测试（esbuild 打包 + node:test，离线）
+cmd /c npm run test:e2e   # 端到端 mock 链路（本地 OpenAI 兼容服务器驱动真实 engine/store）
+cmd /c npm run test:storage # 存档体积与写入可靠性实测
 cmd /c npm run test:story # 故事链路脚本测试（无 Key 时自动 dry-run）
 cmd /c npm run test:patch # Patch/命运状态回归测试
 ```
 
 - 只跑部分单元测试：`node scripts/run-unit-tests.mjs --filter=patch`；复用上次产物：`--no-build`。
 - 单元测试位于 `tests/`，约定见 [`tests/README.md`](tests/README.md)，全部离线（模型调用 mock `fetch`）。
-- PowerShell 里直接敲 `npm` 可能被执行策略拦截（`npm.ps1`），优先用 `cmd /c npm ...`。
-- Windows 上一键脚本：`start.cmd`（开发）、`build.cmd`（构建 + preview）。
+- `npm run test:e2e` 会在随机端口起一个 mock 供应商，跑完整回合并断言请求形状与落盘状态；产物见被忽略的 `test-runs/e2e-mock-report.json`。
+- `npm run test:storage` 会跑 30 回合并测体积增长与配额行为；想要真实长局数据可传回合数（`node scripts/e2e-storage-growth.mjs 60`）。
+- PowerShell 里直接敲 `npm` 可能被执行策略拦截（`npm.ps1`），优先用 `cmd /c npm ...`。- Windows 上一键脚本：`start.cmd`（开发）、`build.cmd`（构建 + preview）。
 
 ## 代码结构（当前真实布局）
 
@@ -88,6 +91,9 @@ src/
 - 提示词没有独立的 `src/prompts/` 目录，全部内嵌在 `engine.ts`；改提示词前先读 `docs/destiny-driven-story-core.md`（最高层产品约束），并检查 `docs/known-issues.md` 是否已有相关登记。
 - 发现可疑但未确认是 bug 的行为，先登记到 `docs/known-issues.md` 再决定是否修改；确认是 bug 的（解析/合并丢数据一类）直接修复并补回归测试。
 - V2 不兼容 0.3 以下旧存档；`useContentStore` 的持久化数据由 `sanitizePersistedContent` 兜底，旧字段会被静默丢弃。
+- **存档体积**：`lrpg.v2` 的持久化会剔除 `turnRecords[].calls[].input`（三阶段完整提示词留档）。这些留档体积极大（实测每回合约 208 KB，30 回合 6 MB 级），写入 localStorage 会在第 26 回合左右撞上 5 MB 配额。出参、思维链与 usage 仍然持久化；提示词明细只在当次页面会话内可导出。改动持久化结构时务必用 `npm run test:storage` 复核增长曲线。
+- **写入失败必须可见**：`src/v2/store.ts` 用自定义 `StateStorage` 捕获 `QuotaExceededError`，写入 `persistError` 供界面渲染，并**继续抛出**异常（不要在这里吞掉异常，否则会把"用户能看到的失败"变成静默丢档）。
+- 世界书条目的 `alwaysActive` / `keywords` / `priority` 由 `engine.ts` 的 `selectWorldFacts` 实现：常驻条目每轮注入，其余只有关键词命中当前输入或最近历史时才进，再按优先级排序截断。改动注入逻辑时不要退回无条件的 `slice`。
 - 不要提交 `.env`、`dist/`、`node_modules/`、`test-runs/`、`test-saves/` 或真实 API Key。
 - `.legacy-reference/` 是本地保留的 V1 提示词与架构草稿（已在 `.gitignore` 中），**不参与构建、不要引用**；确认不再需要后可直接删除。
 - `scripts/test-story-flow.mjs` 通过环境变量读取配置：`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_PLANNER_MODEL` / `LRPG_STORY_MODEL`。
