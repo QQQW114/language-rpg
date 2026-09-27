@@ -124,19 +124,29 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
     const row = rawRow as NonNullable<TurnPatchV2['inventory']>[number];
     if (!text(row.reason, 200)) continue;
     let item = row.id ? inventory.find((x) => x.id === row.id) : inventory.find((x) => x.name === row.name);
+    // 数量按模型给的值严格执行（缺失时为 1），不再用 Math.max(1,…) 兜底：
+    // 模型写 0 就是"这次不增加"，写负数就是"减少这么多"。库存被减到 0 或以下时
+    // 会在提交前按"数量 > 0"过滤掉，因此不会留下数量为 0 的幽灵条目。
+    const requestedQuantity = row.quantity === undefined ? 1 : Math.round(Number(row.quantity) || 0);
     if (row.op === 'grant') {
-      if (item) item.quantity += Math.max(1, Math.round(row.quantity ?? 1));
-      else if (row.name) inventory.push({
-        id: text(row.id, 80) || genId('item'),
-        name: text(row.name, 40),
-        kind: oneOfChecked(row.kind, inventoryKinds, 'item', { warnings, path: `inventory[${text(row.id, 80) || text(row.name, 40)}].kind`, label: `物品「${text(row.name, 40)}」的 kind` }),
-        description: text(row.description, 240),
-        quantity: Math.max(1, Math.round(row.quantity ?? 1)),
-        consumable: !!row.consumable,
-        acquiredAtTurn: state.turn,
-        updatedAtTurn: state.turn,
-      });
-    } else if (item && row.op === 'consume') item.quantity -= Math.max(1, Math.round(row.quantity ?? 1));
+      if (item) {
+        item.quantity += requestedQuantity;
+      } else if (row.name && requestedQuantity > 0) {
+        // 新物品：给 0 或负数是模型表达"这次没获得"，不创建条目。
+        inventory.push({
+          id: text(row.id, 80) || genId('item'),
+          name: text(row.name, 40),
+          kind: oneOfChecked(row.kind, inventoryKinds, 'item', { warnings, path: `inventory[${text(row.id, 80) || text(row.name, 40)}].kind`, label: `物品「${text(row.name, 40)}」的 kind` }),
+          description: text(row.description, 240),
+          quantity: requestedQuantity,
+          consumable: !!row.consumable,
+          acquiredAtTurn: state.turn,
+          updatedAtTurn: state.turn,
+        });
+      }
+    } else if (item && row.op === 'consume') {
+      item.quantity -= Math.max(0, requestedQuantity);
+    }
     else if (item && row.op === 'remove') item.quantity = 0;
     else if (item && row.op === 'update') {
       if (row.description !== undefined) item.description = text(row.description, 240);

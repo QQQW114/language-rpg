@@ -277,9 +277,20 @@ describe('patch — 库存', () => {
     assert.equal(next.inventory[0].acquiredAtTurn, 1);
   });
 
-  it('grant 数量为 0 或负数时至少 +1（当前实现）', () => {
-    assert.equal(commit({}, { inventory: [{ op: 'grant', id: 'item-1', quantity: 0, reason: 'x' }] }).inventory[0].quantity, 3);
-    assert.equal(commit({}, { inventory: [{ op: 'grant', id: 'item-1', quantity: -5, reason: 'x' }] }).inventory[0].quantity, 3);
+  it('grant 严格照抄模型给的数量：0 不变、负数照减并在归零后移除（回归）', () => {
+    // 夹具里 item-1 的初始数量是 2。之前用 Math.max(1,…)，模型写 0 或负数也会 +1，
+    // 等于程序篡改了模型的数量意图。
+    assert.equal(commit({}, { inventory: [{ op: 'grant', id: 'item-1', quantity: 0, reason: 'x' }] }).inventory[0].quantity, 2, '0 表示这次不增加');
+    assert.equal(commit({}, { inventory: [{ op: 'grant', id: 'item-1', quantity: -1, reason: 'x' }] }).inventory[0].quantity, 1, '负数表示减少');
+    // 减到 0 或以下时按"数量 > 0"过滤，不留数量为 0 的幽灵条目
+    assert.equal(commit({}, { inventory: [{ op: 'grant', id: 'item-1', quantity: -5, reason: 'x' }] }).inventory.length, 0);
+  });
+
+  it('grant 新物品时数量 <= 0 不创建条目', () => {
+    const zero = commit({}, { inventory: [{ op: 'grant', id: 'item-z', name: '空物', quantity: 0, reason: 'x' }] });
+    assert.equal(zero.inventory.find((x) => x.id === 'item-z'), undefined, '数量 0 的新物品不应创建');
+    const negative = commit({}, { inventory: [{ op: 'grant', id: 'item-n', name: '负物', quantity: -3, reason: 'x' }] });
+    assert.equal(negative.inventory.find((x) => x.id === 'item-n'), undefined);
   });
 
   it('grant 新物品按 id 或 name 创建，缺 name 时忽略', () => {
