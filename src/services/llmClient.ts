@@ -75,7 +75,8 @@ export interface ChatParams {
   onStreamWarning?: (warning: { code: string; message: string }) => void;
   responseFormat?: 'json_object';
   thinking?: 'enabled' | 'disabled';
-  reasoningEffort?: 'high' | 'max';
+  /** 与 src/types/settings.ts 的 ReasoningEffort 一致：low/high/max（DeepSeek 官方三档）。 */
+  reasoningEffort?: 'low' | 'high' | 'max';
   /**
    * 'json'：让 SSE 解析器兼容“自适应思考”模型——当模型不产生 <think> 块、
    * content 为空，却把 JSON 放进 reasoning/thinking 通道时，将 JSON 回退为正文。

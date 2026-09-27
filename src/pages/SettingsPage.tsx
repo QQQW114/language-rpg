@@ -379,11 +379,31 @@ export default function SettingsPage() {
                 </label>
                 <label className="text-xs text-parchment-200/65 sm:col-span-2">思考强度
                   <select disabled={draft.thinkingMode === 'disabled'} value={draft.reasoningEffort} onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value as typeof draft.reasoningEffort })} className="mt-1 w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-2 text-parchment-100 disabled:opacity-40">
-                    <option value="high">High · 常规深度</option><option value="max">Max · 复杂规划/Agent任务</option>
+                    <option value="low">Low · 最省</option><option value="high">High · 常规深度</option><option value="max">Max · 复杂规划/Agent任务</option>
                   </select>
                 </label>
               </div>
-              <p className="mt-2 text-[11px] leading-relaxed text-parchment-200/45">DeepSeek当前不提供数字型思考Token预算，仅支持High与Max。JSON模式只用于规划模型，故事正文保持普通文本。</p>
+              <p className="mt-2 text-[11px] leading-relaxed text-parchment-200/45">DeepSeek 官方映射为 minimal/low → low、medium/high/xhigh → high、max/ultra → max，因此只有三档，不提供数字型思考预算；思考 token 按输出计费。JSON 模式只用于规划模型，故事正文保持普通文本。</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                {([['planner_pre', '写前规划'], ['story', '故事正文'], ['planner_post', '写后结算']] as const).map(([phase, label]) => (
+                  <label key={phase} className="text-xs text-parchment-200/65">{label}
+                    <select
+                      disabled={draft.thinkingMode === 'disabled'}
+                      value={draft.reasoningEffortByPhase?.[phase] ?? ''}
+                      onChange={(event) => setDraft({
+                        ...draft,
+                        reasoningEffortByPhase: {
+                          ...draft.reasoningEffortByPhase,
+                          [phase]: event.target.value === '' ? undefined : event.target.value as typeof draft.reasoningEffort,
+                        },
+                      })}
+                      className="mt-1 w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-2 text-parchment-100 disabled:opacity-40"
+                    >
+                      <option value="">跟随全局</option><option value="low">Low</option><option value="high">High</option><option value="max">Max</option>
+                    </select>
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
         )}

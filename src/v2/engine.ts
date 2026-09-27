@@ -685,7 +685,18 @@ export async function runTurnV2(p: TurnRequestV2) {
   try { isOfficialDeepSeek ||= /(^|\.)deepseek\.com$/i.test(new URL(p.settings.apiBaseUrl).hostname); } catch { /* 由LLM客户端负责报告无效URL */ }
   const plannerJsonEnabled = p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek);
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
-  const reasoningEffort = isOfficialDeepSeek && p.settings.thinkingMode !== 'disabled' ? p.settings.reasoningEffort : undefined;
+  // 逐阶段的思考强度覆盖。写后结算的产出结构由模板完全固定，属于机械性任务，
+  // 因此默认给它一档更省的强度；规划与正文跟随全局设置。
+  // 关闭思考时显式发送 `thinking: {type:'disabled'}`——官方文档说明思考模式
+  // **默认开启**，所以"什么都不发"会退回默认开启而不是关闭。
+  const reasoningEffortFor = (phase: 'planner_pre' | 'story' | 'planner_post') => (
+    isOfficialDeepSeek && p.settings.thinkingMode !== 'disabled'
+      ? (p.settings.reasoningEffortByPhase?.[phase] ?? p.settings.reasoningEffort)
+      : undefined
+  );
+  const reasoningEffort = reasoningEffortFor('planner_pre');
+  const storyReasoningEffort = reasoningEffortFor('story');
+  const postReasoningEffort = reasoningEffortFor('planner_post');
   const roleInjects = p.settings.roleInjects;
   // 收集本回合所有阶段的思维链，导出与展示可共用。
   const turnThinkingParts: string[] = [];
@@ -789,7 +800,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       maxTokens: p.settings.storyMaxTokens || undefined,
       signal: p.signal,
       ...(thinking ? { thinking } : {}),
-      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(storyReasoningEffort ? { reasoningEffort: storyReasoningEffort } : {}),
       messages: [
         { role: 'system', content: storyPrompt },
         { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
@@ -833,7 +844,7 @@ export async function runTurnV2(p: TurnRequestV2) {
       signal: p.signal,
       ...(plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
       ...(thinking ? { thinking } : {}),
-      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(postReasoningEffort ? { reasoningEffort: postReasoningEffort } : {}),
       onThinkingDelta: (text) => collectThinking('planner_post', plannerModel, text),
       onDelta: (text) => emitOutput(p, 'planner_post', plannerModel, text),
     });

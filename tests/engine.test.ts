@@ -813,6 +813,62 @@ describe('engine.runTurnV2 — 规划上下文工具循环', () => {
 // E. 前缀缓存结构：固定指令与模板必须占据最长的可复用前缀
 // ---------------------------------------------------------------------------
 
+describe('engine.runTurnV2 — 思考强度与思考成本', () => {
+  // 思考参数只对官方 DeepSeek 端点发送（第三方兼容端点常不认识这些字段）。
+  const official = { apiBaseUrl: 'https://api.deepseek.com/v1' };
+
+  it('逐阶段发送思考强度：结算默认 low，规划/正文跟随全局（回归：high 曾是最低档）', async () => {
+    const requests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { ...official, thinkingMode: 'enabled', reasoningEffort: 'high', reasoningEffortByPhase: { planner_post: 'low' } } }));
+      requests.push(...mock.requests);
+    });
+    const effortOf = (phase: ModelPhaseV2) => {
+      const request = requests.find((r) => phaseOf(r) === phase);
+      return (request?.body as { reasoning_effort?: string })?.reasoning_effort;
+    };
+    assert.equal(effortOf('planner_pre'), 'high');
+    assert.equal(effortOf('story'), 'high');
+    assert.equal(effortOf('planner_post'), 'low', '写后结算应使用覆盖后的 low 档');
+  });
+
+  it('逐阶段覆盖可缺席：不设置时三个阶段都用全局强度', async () => {
+    const requests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { ...official, thinkingMode: 'enabled', reasoningEffort: 'max', reasoningEffortByPhase: {} } }));
+      requests.push(...mock.requests);
+    });
+    for (const request of requests) {
+      assert.equal((request.body as { reasoning_effort?: string })?.reasoning_effort, 'max');
+    }
+  });
+
+  it('thinkingMode 为 disabled 时显式关闭思考，且不发送思考强度', async () => {
+    const requests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { ...official, thinkingMode: 'disabled' } }));
+      requests.push(...mock.requests);
+    });
+    for (const request of requests) {
+      const body = request.body as { thinking?: { type?: string }; reasoning_effort?: string };
+      // 官方文档：思考模式默认开启，因此关闭必须显式发送 disabled，
+      // "什么都不发"会退回默认开启。
+      assert.equal(body.thinking?.type, 'disabled', '应显式发送 thinking.type=disabled');
+      assert.equal(body.reasoning_effort, undefined, '关闭思考后不应发送 reasoning_effort');
+    }
+  });
+
+  it('非官方端点不发送思考参数（兼容端点可能不认识这些字段）', async () => {
+    const requests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { thinkingMode: 'enabled', reasoningEffort: 'max' } }));
+      requests.push(...mock.requests);
+    });
+    for (const request of requests) {
+      assert.equal('reasoning_effort' in (request.body as object), false);
+    }
+  });
+});
 describe('engine.runTurnV2 — 前缀缓存结构', () => {
   /** 跑两回合，返回两次请求（按阶段分组）。第二回合复用第一回合的真实落盘状态。 */
   async function runTwoTurns() {

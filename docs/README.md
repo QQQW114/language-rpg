@@ -5,6 +5,7 @@
 - [`destiny-driven-story-core.md`](destiny-driven-story-core.md)：V2 产品定位与最高设计约束。**改提示词、状态结构或前端交互前先读这篇。**
 - [`PROJECT_STATUS.md`](PROJECT_STATUS.md)：与代码同步的实现状态——架构、数据流、协议字段、存储键、测试体系、已移除的遗留部分。
 - [`cache-prefix-investigation.md`](cache-prefix-investigation.md)：前缀缓存调研——四个失效点的查证（含 DSH 源码与 DeepSeek 官方文档依据）、已修缺陷与仍需判断的问题。
+- [`cost-analysis.md`](cost-analysis.md)：一次真实三回合游玩的成本实测与优化优先级（含官方价格换算：输出占 82% 费用、时段差价 2 倍、缓存优化上限约 16%）。
 - [`known-issues.md`](known-issues.md)：审查与测试中发现、尚未修复的问题登记（含严重度、影响路径与处理建议）。
 - [`multiround-generation-evaluation.md`](multiround-generation-evaluation.md)：评估「是否该把故事回合拆成多轮增量生成」——含 29 个真实回合的量化证据、被证伪的假设与推荐的替代方案。
 - [`planner-multiround-evaluation.md`](planner-multiround-evaluation.md)：评估「规划模型是否需要类似 agent 的多轮工作」——结论是不需要，它需要的是被校验；含模型分工定位、体量实测与历史失败模式的归类。
