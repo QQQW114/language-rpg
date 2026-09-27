@@ -121,11 +121,14 @@ const plannerContextTool: ChatTool = {
   },
 };
 
+// 注意两点都与前缀缓存有关：
+//   1. **不放** commitId。它每回合随机生成，一旦内嵌在模板里，模板就永远无法
+//      逐字节复用。它改由消息里的【TURN_ID】行给出，提交时 asPatch 也用程序自己的值
+//      覆盖，因此模型不回显它也不影响提交。
+//   2. `baseRevision` / `turn` 这两个每回合必然变化的值放在**模板末尾**，
+//      让前面的字段说明（约 2KB、逐字节固定）成为可复用的缓存前缀。
 const postShape = `{
   "schemaVersion":2,
-  "commitId":"COMMIT_ID",
-  "baseRevision":0,
-  "turn":0,
   "roundSummary":"仅总结本轮正文",
   "latestProgress":"正文结束时的真实位置和状态",
   "characters":[{"op":"create|update","id":"stable-id","name":"仅create必填","aliases":[],"role":"","description":"","status":"active|absent|missing|dead|unknown","addFacts":[],"reason":"正文证据"}],
@@ -136,7 +139,9 @@ const postShape = `{
   "scene":{"id":"stable-scene-id","name":"地点名","description":"","time":"","weather":""},
   "actions":[{"id":"stable-action-id","label":"行动选项","hint":"可选提示"}],
   "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
-  "randomEvent":{"handled":false,"note":""}
+  "randomEvent":{"handled":false,"note":""},
+  "baseRevision":0,
+  "turn":0
 }`;
 
 function relevantFacts(p: TurnRequestV2) {
@@ -409,17 +414,19 @@ function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) 
   };
   // 顺序即缓存顺序：稳定字段在前，每回合必变的字段与 recent 放到最后，
   // 避免 turn/revision/summary/progress 从中间截断前缀缓存。
+  // 注意 scene / progress / summary 每回合几乎必变，因此放在结构化块之后；
+  // 数组（characters 等）只在内容真正变化处影响前缀，追加新元素不会破坏之前的字节。
   return JSON.stringify({
     mode: p.state.mode,
     narrativePace: p.state.narrativePace,
-    scene,
     characters,
     relationships,
     facts,
     threads,
     inventory,
-    randomEvent,
     destiny,
+    randomEvent,
+    scene,
     summary: p.state.summary,
     progress: p.state.latestProgress,
     turn: p.state.turn,
@@ -723,10 +730,15 @@ export async function runTurnV2(p: TurnRequestV2) {
     });
   }
   const stableContext = stableStoryContext(p, worldFactSelection);
+  // 提示词结构对缓存命中至关重要：供应商（DeepSeek / Anthropic / OpenAI）的前缀缓存
+  // 只认"从第一个字节开始、逐字节相同的部分"。因此每条消息都按
+  //   固定指令与输出模板（每回合逐字节相同） → 本回合可变的状态与输入
+  // 排列：固定部分占据最长的可复用前缀，可变部分一律压在最后。
+  // 反例（修复前）：结算消息把 ~2KB 的固定输出模板放在正文之后，模板因此永远无法命中。
   const preMessages: ChatMessage[] = [
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-    { role: 'user', content: `【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n只输出 {"intent":"","currentAct":"","activeBeatIds":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"summary":""}}` },
+    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"summary":""}}\n【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   let pre;
@@ -781,7 +793,8 @@ export async function runTurnV2(p: TurnRequestV2) {
       messages: [
         { role: 'system', content: storyPrompt },
         { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-        { role: 'user', content: `【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}` },
+        // 固定写作要求在前、可变材料在后（理由同 planner_pre 的注释）。
+        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}` },
       ],
       onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {
@@ -799,9 +812,16 @@ export async function runTurnV2(p: TurnRequestV2) {
   }
 
   const commitId = genId('commit');
+  // 结构顺序对缓存命中至关重要：固定指令 + 输出模板在前（每回合逐字节相同，
+  // 可长期命中前缀缓存），本回合的可变材料（正文、状态、输入、commitId）全部压到最后。
+  // 修复前有两个问题：模板被放在正文之后（永远进不了缓存），而且模板里内嵌了每回合
+  // 随机的 commitId（即使位置对了，模板本身也逐字节不同）。
+  const postShapeFilled = postShape
+    .replace('"baseRevision":0', `"baseRevision":${p.state.revision}`)
+    .replace('"turn":0', `"turn":${p.state.turn}`);
   const postMessages: ChatMessage[] = [
     { role: 'system', content: plannerPostPrompt },
-    { role: 'user', content: `【TURN_ID】${p.state.turn}:${commitId}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n【CURRENT_STORY】${story.text}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape.replace('COMMIT_ID', commitId).replace('"baseRevision":0', `"baseRevision":${p.state.revision}`).replace('"turn":0', `"turn":${p.state.turn}`)}` },
+    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShapeFilled}\n【baseRevision】${p.state.revision}\n【turn】${p.state.turn}\n【TURN_ID】${p.state.turn}:${commitId}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${story.text}` },
   ];
   emitPhase(p, 'planner_post', plannerModel, 'started', undefined, false);
   let post;

@@ -270,16 +270,23 @@ check('请求带 Authorization Bearer', requests[0].authorization === 'Bearer e2
 check('planner_post 请求体含 CURRENT_STORY（正文已注入结算）', JSON.stringify(requests[3].body.messages).includes(STORY_TEXT.slice(0, 12)), '未注入正文');
 check('planner_post 请求体含真实 TURN_ID（turn:commitId，commitId 由程序生成）', new RegExp(`【TURN_ID】${TURN_IN}:commit_[a-z0-9]+`).test(JSON.stringify(requests[3].body.messages)), 'TURN_ID 未注入');
 // 直接固化模板片段用于核对占位替换（曾出现正则匹配不上的假失败）。
+// 取到模板结尾为止，而不是固定 260 字符：每回合必变的 baseRevision / turn 现在
+// 排在字段说明之后（为了让前面 ~2KB 的字段说明能整段命中前缀缓存），
+// 截断前 260 字符会看不到它们。
 const postShapeSnippet = (() => {
   const msg = requests[3].body.messages.find((m) => typeof m.content === 'string' && m.content.includes('schemaVersion'));
   const text = msg?.content ?? '';
   const at = text.indexOf('"schemaVersion"');
-  return at >= 0 ? text.slice(at, at + 260) : '(未找到模板)';
+  const end = text.indexOf('【TURN_ID】');
+  return at >= 0 ? text.slice(at, end > at ? end : at + 2600) : '(未找到模板)';
 })();
 report.postShapeSnippet = postShapeSnippet;
-check('planner_post 模板中的 baseRevision 占位已替换为真实值', postShapeSnippet.includes(`"baseRevision":${REVISION_IN}`), postShapeSnippet.slice(0, 130));
-check('planner_post 模板中的 turn 占位已替换为真实值', postShapeSnippet.includes(`"turn":${TURN_IN}`), postShapeSnippet.slice(0, 130));
-check('planner_post 模板不再残留 0 占位', !/"baseRevision"\s*:\s*0/.test(postShapeSnippet) && !/"turn"\s*:\s*0/.test(postShapeSnippet), postShapeSnippet.slice(0, 130));
+check('planner_post 模板中的 baseRevision 占位已替换为真实值', postShapeSnippet.includes(`"baseRevision":${REVISION_IN}`), postShapeSnippet.slice(-160));
+check('planner_post 模板中的 turn 占位已替换为真实值', postShapeSnippet.includes(`"turn":${TURN_IN}`), postShapeSnippet.slice(-160));
+check('planner_post 模板不再残留 0 占位', !/"baseRevision"\s*:\s*0/.test(postShapeSnippet) && !/"turn"\s*:\s*0/.test(postShapeSnippet), postShapeSnippet.slice(-160));
+// 前缀缓存结构：每回合必变的注入值必须排在字段说明之后，模板里不得含每回合随机的 commitId。
+check('planner_post 模板把可变注入值排在字段说明之后（缓存前缀最大化）', postShapeSnippet.indexOf('"randomEvent"') < postShapeSnippet.indexOf('"baseRevision"') && postShapeSnippet.indexOf('"baseRevision"') >= 0, `randomEvent@${postShapeSnippet.indexOf('"randomEvent"')} baseRevision@${postShapeSnippet.indexOf('"baseRevision"')}`);
+check('planner_post 固定模板里不含每回合变化的 commitId', !/"commitId"/.test(postShapeSnippet) && !postShapeSnippet.includes('COMMIT_ID'), postShapeSnippet.slice(0, 80));
 check('返回状态 turn 递增、revision 递增、phase 回落 input', result1.state.turn === TURN_IN + 1 && result1.state.revision === REVISION_IN + 1 && result1.state.phase === 'input', JSON.stringify({ turn: result1.state.turn, revision: result1.state.revision, phase: result1.state.phase }));
 check('history 追加 user + assistant 两条', result1.state.history.length === before.history.length + 2, `实际 ${result1.state.history.length}`);
 check('assistant 消息带本轮思维链字段', 'thinking' in result1.state.history[result1.state.history.length - 1], '缺少 thinking');

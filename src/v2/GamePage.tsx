@@ -11,6 +11,7 @@ import { runTurnV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
 import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
+import { formatCacheHitRate } from '@/lib/llmUsage';
 
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
   { id: 'slow', label: '慢叙事', hint: '细致到每个动作，只推进很小节拍' },
@@ -76,15 +77,27 @@ function sumUsage(usages: Array<LlmUsage | undefined>): LlmUsage | undefined {
   const promptTokens = present.reduce((sum, usage) => sum + (usage.promptTokens ?? 0), 0);
   const completionTokens = present.reduce((sum, usage) => sum + (usage.completionTokens ?? 0), 0);
   const hitTokens = present.reduce((sum, usage) => sum + cacheHitTokens(usage), 0);
-  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens, cache: { hitTokens } };
+  // 未命中量也要累加，否则合计行算不出缓存命中率（命中率 = 命中 / 完整输入量）。
+  // 某阶段缺这一项时按"该阶段输入量 − 命中量"补，避免整体分母偏小。
+  const missTokens = present.reduce(
+    (sum, usage) => sum + (usage.cache?.missTokens ?? Math.max(0, (usage.promptTokens ?? 0) - cacheHitTokens(usage))),
+    0,
+  );
+  const totalTokens = promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens, cache: { hitTokens, missTokens } };
 }
 
 function UsageLine({ usage, total = false }: { usage: LlmUsage; total?: boolean }) {
   const totalTokens = usage.totalTokens ?? (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+  const hit = cacheHitTokens(usage);
+  const miss = usage.cache?.missTokens ?? Math.max(0, (usage.promptTokens ?? 0) - hit);
+  const rate = formatCacheHitRate(usage);
   return <div className={`flex flex-wrap gap-x-3 gap-y-1 text-[10px] ${total ? 'text-gold/70' : 'text-parchment-200/40'}`}>
     <span>{total ? '本轮总计' : 'Token'}</span>
     <span>输入 {tokenCount(usage.promptTokens)}</span>
-    <span>缓存命中 {tokenCount(cacheHitTokens(usage))}</span>
+    {/* 命中率只在数据可信时显示：分母是完整输入量，缺总量时宁可显示"—"也不给假数字。 */}
+    <span>缓存命中 {tokenCount(hit)}{rate ? `（${rate}）` : ''}</span>
+    <span>未命中 {tokenCount(miss)}</span>
     <span>输出 {tokenCount(usage.completionTokens)}</span>
     <span>合计 {tokenCount(totalTokens)}</span>
   </div>;

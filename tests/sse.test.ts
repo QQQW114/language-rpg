@@ -293,8 +293,9 @@ describe('sse.readSSEDetailed — usage 与 finish_reason', () => {  it('合并�
     );
     assert.equal(result.usage?.promptTokens, 3);
     assert.equal(result.usage?.completionTokens, 1);
-    assert.equal(result.usage?.totalTokens, undefined);
-    assert.equal(result.usage?.cache, undefined);
+    // 供应商没给 total_tokens 时按"输入 + 输出"补，而不是留空让界面显示 0。
+    assert.equal(result.usage?.totalTokens, 4);
+    assert.equal(result.usage?.cache, undefined, '没有任何缓存字段时不造 cache 对象');
   });
 });
 

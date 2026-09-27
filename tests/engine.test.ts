@@ -167,6 +167,21 @@ const phaseOf = (request: RecordedRequest): ModelPhaseV2 => {
   return 'story';
 };
 
+/** 逐字节公共前缀长度：供应商的前缀缓存只认"从头开始完全相同"的部分。 */
+function commonPrefixLength(a: string, b: string): number {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i += 1;
+  return i;
+}
+
+/** 把一条请求的消息按顺序拼成候选前缀（system 在前，与发送顺序一致）。 */
+function messagePrefixOf(request: RecordedRequest): string {
+  const messages = request.body?.messages;
+  if (!Array.isArray(messages)) return '';
+  return messages.map((m: any) => `${m?.role}\u0000${String(m?.content ?? '')}`).join('\u0001');
+}
+
 // ---------------------------------------------------------------------------
 // D. normalizeDestinyPatch
 // ---------------------------------------------------------------------------
@@ -432,7 +447,14 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
       assert.ok(!/"turn"\s*:\s*0/.test(template), '不应残留 turn 0 占位');
       const commitId = /【TURN_ID】2:([a-z0-9_]+)/.exec(post)?.[1];
       assert.ok(commitId, 'TURN_ID 应带 commitId');
-      assert.ok(template.includes(`"commitId":"${commitId}"`), 'commitId 占位应被替换为 TURN_ID 中的同一个值');
+      // 回归：commitId 曾内嵌在输出模板里，而它每回合随机生成，导致模板（~2KB）
+      // 永远无法逐字节复用、前缀缓存失效。现在模板里不得出现它，它只出现在可变区的
+      // TURN_ID 行；提交时 asPatch 仍用程序自己的 commitId 覆盖模型输出。
+      assert.ok(
+        !template.includes('"commitId"'),
+        `固定模板里不应出现每回合变化的 commitId：${template.slice(0, 120)}`,
+      );
+      assert.ok(!template.includes('COMMIT_ID'), '模板不应残留 COMMIT_ID 占位符');
     });
   });
 
@@ -784,5 +806,115 @@ describe('engine.runTurnV2 — 规划上下文工具循环', () => {
       assert.ok(evidence.includes('晴'), `返回证据应包含查询词，实际片段：${evidence.slice(0, 80)}`);
       assert.ok(evidence.includes('地名'), '返回证据应包含查询词的另一部分');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E. 前缀缓存结构：固定指令与模板必须占据最长的可复用前缀
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 前缀缓存结构', () => {
+  /** 跑两回合，返回两次请求（按阶段分组）。第二回合复用第一回合的真实落盘状态。 */
+  async function runTwoTurns() {
+    const first: RecordedRequest[] = [];
+    const second: RecordedRequest[] = [];
+    const state = makeState({
+      turn: 2,
+      revision: 4,
+      history: [
+        { id: 'msg-1', role: 'user', content: '我推开门。', turn: 1, createdAt: 1 },
+        { id: 'msg-2', role: 'assistant', content: '门轴发出干涩的响声。', turn: 1, createdAt: 1 },
+      ],
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state }));
+      first.push(...mock.requests);
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state, input: '我走进屋里。' }));
+      second.push(...mock.requests);
+    });
+    return { first, second };
+  }
+
+  const byPhase = (requests: RecordedRequest[]) => {
+    const map = new Map<ModelPhaseV2, RecordedRequest>();
+    for (const request of requests) map.set(phaseOf(request), request);
+    return map;
+  };
+
+  it('三个阶段的消息都以固定内容开头：system 与稳定上下文逐字节相同', async () => {
+    const { first, second } = await runTwoTurns();
+    const a = byPhase(first);
+    const b = byPhase(second);
+    for (const phase of ['planner_pre', 'story', 'planner_post'] as ModelPhaseV2[]) {
+      const pa = a.get(phase);
+      const pb = b.get(phase);
+      assert.ok(pa && pb, `${phase} 两回合都应发出请求`);
+      const ma = (pa.body.messages ?? []) as any[];
+      const mb = (pb.body.messages ?? []) as any[];
+      // system 提示词必须逐字节相同，否则整条请求从头就无法命中缓存
+      assert.equal(ma[0].content, mb[0].content, `${phase} 的 system 提示词在相邻回合必须完全一致`);
+      // 稳定上下文（若有）也必须一致
+      if (String(ma[1]?.content ?? '').includes('【STABLE_STORY_CONTEXT】')) {
+        assert.equal(ma[1].content, mb[1].content, `${phase} 的稳定上下文在相邻回合必须完全一致`);
+      }
+    }
+  });
+
+  it('固定输出模板位于可变材料之前（回归：模板曾被放在正文之后，永远无法命中）', async () => {
+    const { first, second } = await runTwoTurns();
+    const a = byPhase(first);
+    const b = byPhase(second);
+
+    // planner_pre：输出模板在 user 消息最前，权威状态与输入在其后
+    const preA = String(a.get('planner_pre')!.body.messages.at(-1).content);
+    assert.ok(preA.startsWith('只输出 '), 'planner_pre 的 user 消息应以固定输出模板开头');
+    assert.ok(preA.indexOf('只输出 ') < preA.indexOf('【AUTHORITATIVE_STATE】'), '模板必须排在可变状态之前');
+
+    // planner_post：模板 + 指令在最前，正文压到最后
+    const postA = String(a.get('planner_post')!.body.messages.at(-1).content);
+    const postB = String(b.get('planner_post')!.body.messages.at(-1).content);
+    assert.ok(postA.startsWith('严格按下列结构输出'), 'planner_post 的 user 消息应以固定指令开头');
+    assert.ok(postA.indexOf('"schemaVersion"') < postA.indexOf('【CURRENT_STORY】'), '模板必须排在正文之前');
+
+    // story：写作要求在前，权威状态与玩家输入在最后
+    const storyA = String(a.get('story')!.body.messages.at(-1).content);
+    assert.ok(storyA.startsWith('【NARRATIVE_PACE】'), 'story 的 user 消息应以固定写作要求开头');
+    assert.ok(storyA.indexOf('【STOP_BOUNDARY】') < storyA.indexOf('【AUTHORITATIVE_STATE】'));
+    assert.ok(storyA.indexOf('【AUTHORITATIVE_STATE】') < storyA.indexOf('【CURRENT_TURN_INPUT】'));
+
+    // 最关键的一条：结算请求的固定模板段（到注入值为止）必须能整段复用
+    const stableTemplate = (text: string) => text.slice(0, text.indexOf('"baseRevision"'));
+    const templateA = stableTemplate(postA);
+    const templateB = stableTemplate(postB);
+    assert.ok(templateA.length > 1500, `可复用的固定模板段应有实际体量，实际 ${templateA.length} 字符`);
+    assert.equal(templateA, templateB, '固定模板段在相邻回合必须逐字节相同');
+    // 每回合必变的 baseRevision / turn 必须排在字段说明之后，否则整段模板都失效。
+    assert.ok(
+      postA.indexOf('"randomEvent"') < postA.indexOf('"baseRevision"'),
+      'baseRevision 必须排在字段说明之后',
+    );
+  });
+
+  it('可变材料确实改变了前缀，但只发生在固定模板之后', async () => {
+    const { first, second } = await runTwoTurns();
+    const a = byPhase(first);
+    const b = byPhase(second);
+    for (const phase of ['planner_pre', 'story', 'planner_post'] as ModelPhaseV2[]) {
+      const prefixA = messagePrefixOf(a.get(phase)!);
+      const prefixB = messagePrefixOf(b.get(phase)!);
+      const shared = commonPrefixLength(prefixA, prefixB);
+      const total = Math.min(prefixA.length, prefixB.length);
+      assert.ok(shared > 0, `${phase} 两回合应有公共前缀`);
+      // 相邻回合之间至少 system 提示词要能整段复用
+      assert.ok(
+        shared >= String((a.get(phase)!.body.messages ?? [])[0]?.content ?? '').length,
+        `${phase} 的公共前缀应至少覆盖 system 提示词（实际 ${shared} 字符）`,
+      );
+      // 且不应整段相同——否则说明这轮根本没变化，测试失去意义
+      assert.notEqual(prefixA, prefixB, `${phase} 两回合的提示词应存在差异`);
+      assert.ok(total > shared, `${phase} 应存在差异部分`);
+    }
   });
 });

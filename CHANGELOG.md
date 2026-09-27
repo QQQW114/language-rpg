@@ -17,6 +17,11 @@
 
 ### 修复
 
+- **提示词结构破坏前缀缓存（命中率上不去的主因）**：供应商的前缀缓存只认"从头开始逐字节相同"的部分，而写后结算的请求把约 1.9KB 的固定输出模板放在了每回合都变的正文**之后**，模板因此永远无法命中；模板里还内嵌了每回合随机生成的 `commitId`，即使位置对了也逐字节不同；`baseRevision` / `turn` 两个递增的值又排在模板开头，把后面整段字段说明的复用性再次截断。现在三个阶段统一为「固定指令与输出模板 → 可变材料」，`commitId` 移出模板（改由 `【TURN_ID】` 行给出，提交时仍由程序覆盖），注入值挪到模板末尾，权威状态 JSON 也改为稳定字段在前、`scene/summary/progress/turn/revision/recent` 在后。实测可复用前缀：结算阶段 34.2% → 67.0%，三个阶段合计约 25% → 56.9%（最小存档下；真实存档比例更高）。
+- **`cache_read_input_tokens` / `cache_creation_input_tokens` / DeepSeek 原生缓存字段读不到**：缓存字段此前只在 `cache` 嵌套对象里查找，而 DeepSeek 把 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 放在 `usage` 顶层，Anthropic 把 `cache_read_input_tokens` 放在顶层——两者都读不到，直连时缓存命中永远显示 0。
+- **`input_tokens` 与 `prompt_tokens` 口径混用导致输入量少算**：OpenAI 风格的 `prompt_tokens` 已是完整输入量，而 Anthropic / DeepSeek 风格的 `input_tokens` 只表示未命中部分，完整量需加上缓存读写（与 DSH 的 `totalTokens = input + output + cacheRead + cacheWrite` 一致）。现在按字段组合判别口径，而不是按字段名猜。
+- **未命中量被误派生成 0，算出 100% 的假命中率**：只带 `prompt_cache_hit_tokens` 的中间帧曾被当成完整输入量。现在总量只从可信来源取，数据不足时留空、界面显示"—"，同时新增 `cacheHitRate` / `formatCacheHitRate` 与缓存写 token 字段。
+- **后到的残缺 usage 帧把已统计的缓存量抹成 0**：流式响应中多个 usage 帧先后到达，后者可能只重复部分字段。缓存计数改为取较大值（一次请求内单调不减），顶层 `promptTokens` 仍按每个请求各自取值。
 - **`superseded` 缺少有效替代者时虚增结局完成度**：`replacementBeatId` 只校验非空、不校验存在性，指向不存在的故事节时状态仍被置为 `superseded`，而结局判定把所有 `superseded` 视为已完成 → 可能提前触发结局。现在必须指向真实存在的故事节，否则降级为 `reframed` 并发警告；已落库的历史坏数据会在下次提交时回收。不会卡住流程：`endingReached` 只记录状态、不终止游戏。
 - **多处静默丢弃/静默改写改为可观察**：人物 `create` 缺 `name`、线程 `create` 缺 `title`（此前会退化为按 id 覆盖已有线程且不校验 reason）、枚举字段收到表外取值、工具调用帧缺 `function.name`——现在都会产生进入活动流的警告；人物 aliases 与线程 `involvedCharacterIds` 的 create 分支补齐与合并/update 分支一致的去重。
 - **世界书 priority 区间统一**：工坊保存夹 `[0,100]`、内容库校验允许 `[-10000,10000]`，导致"保存 → 导出 → 再导入"静默改写；两处现已同区间。
