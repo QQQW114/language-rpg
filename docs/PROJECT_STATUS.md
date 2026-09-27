@@ -186,13 +186,14 @@ cmd /c npm run test:patch                    # Patch / 命运状态回归（scri
 cmd /c npm run test:story -- --dry-run       # 故事链路脚本（无 Key 自动 dry-run）
 ```
 
-- 单元测试源码位于 `tests/`，由 `scripts/run-unit-tests.mjs` 用 esbuild 以 `@ -> src` 别名打包到被 gitignore 的 `test-runs/unit/` 后再运行，因此测试可以像产品代码一样使用 `@/` 导入。
+- 单元测试源码位于 `tests/`，由 `scripts/run-unit-tests.mjs` 用 esbuild 以 `@ -> src` 别名打包到被 gitignore 的 `test-runs/unit/` 后再运行，因此测试可以像产品代码一样使用 `@/` 导入。当前 242 条用例。
 - 模型调用一律 mock `globalThis.fetch`，不产生真实网络请求。
-- 覆盖范围：通用工具与 JSON 提取、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支、`runTurnV2` 三阶段端到端与失败路径、`useGameStoreV2` 存档与回合回退、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆。
+- 覆盖范围：通用工具与 JSON 提取（含括号平衡扫描与病态输入性能）、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支、`runTurnV2` 三阶段端到端与失败路径（含工具循环、视角、注入）、`useGameStoreV2` 存档与回合回退、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆。
+- 未覆盖：React 组件与浏览器行为、`llmClient` 的非 2xx 与 `stream_options` 重试分支、真实供应商 SSE 分块边界——这些仍需配置 API 后人工冒烟。
 
 ## 10. 已移除的遗留部分
 
-V1 多 Agent 版本的代码已在接手清理中删除（均为零引用文件），包括：
+V1 多 Agent 版本的代码已在接手清理中删除（共 37 个文件：36 个被 git 跟踪的零引用文件 + 1 个从未纳入 git 的 `src/pages/GamePage.tsx.bak`），包括：
 
 - 旧页面与组件：`pages/LibraryPage.tsx`、`pages/GamePage.tsx.bak`、`components/StoryView` / `ChoicePanel` / `NpcList` / `CharacterPanel` / `SceneMap` / `SidebarTabs` / `TopBar` / `ReviewPanel` 等 18 个组件；
 - 旧数据层：`storage/ledgerRepository.ts`（IndexedDB 司书库）、`types/workspace.ts`、`types/custom.ts`、`lib/workspaceSeed.ts`、`lib/workspaceTemplates.ts`、`lib/journeyPackage.ts`、`lib/ledgerJourneyPackage.ts`、`lib/strictCustom.ts`、`lib/storage.ts`；

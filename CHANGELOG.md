@@ -6,13 +6,16 @@
 
 ### 移除
 
-- 清理 V1 遗留代码：删除 37 个零引用文件，包括旧页面（`LibraryPage`、`GamePage.tsx.bak`）、18 个旧组件、IndexedDB 司书库（`storage/ledgerRepository.ts`）、工作区/司书库模板链路、旧执笔链提示词与只服务旧类型的工具模块。
+- 清理 V1 遗留代码：删除 36 个被 git 跟踪的零引用文件（另有 1 个从未纳入 git 的 `src/pages/GamePage.tsx.bak`，共 37 个），包括旧页面（`LibraryPage`、`GamePage.tsx.bak`）、18 个旧组件、IndexedDB 司书库（`storage/ledgerRepository.ts`）、工作区/司书库模板链路、旧执笔链提示词与只服务旧类型的工具模块。
 - 移除内容库中的随机事件条目与司书库模板：`RandomEvent` / `WorkspaceTemplate` 类型、预设事件库、以及 `contentLibrary` / `useContentStore` 中的对应分支。随机事件改由 `engine.ts` 指令与 `patch.ts` 调度独立驱动（行为不变）。
 - 删除误导性的临时重构产物 `.tmp_cn_refs.txt` 与 `.tmp_item_refs.txt`。
 
 ### 修复
 
 - `tsconfig.json` 的 `include` 从 4 个路径改为 `["src"]`：此前大量文件不在类型检查范围内，`src/types/game.ts` 被删除后仍被十余个文件 import 而无人发现。
+- `extractJSONText` 贪婪匹配导致解析失败：模型在 JSON 之后继续输出文字、或一次返回多个对象时整体不是合法 JSON，直接返回 `null`，使整回合失败。改为逐个 `{` 做括号平衡扫描（跳过字符串字面量与转义引号），返回首个可解析对象；并修复了两个由复核发现的衍生问题——截断输入会退而返回内层对象（现在返回 `null`）、逐候选扫描在病态输入上退化成 O(n²)（200 KB 未闭合括号需 124 秒，现在 200 万个耗时 2 ms）；合法 JSON 在非法 fence 之前时不再被整体丢弃。
+- `mergeLlmUsage` 用 `undefined` 覆盖已知缓存统计：`normalizeLlmUsage` 产出的 cache 必带三个键（值可能为 `undefined`），对象展开会把上一帧已拿到的 `hitTokens` 覆盖掉。改为逐字段 `??` 合并，且只写入真正有值的字段。
+- Patch 缺 `latestProgress` 时清空进度：`summary` 与 `latestProgress` 现在统一走 `textOrPrevious`，"空串/空白串视为未提供、保留旧值"。此前的 `raw || previous` 写法无法拦住 `'   '`（truthy），清洗后仍会变成空串。
 
 ### 文档
 
@@ -23,7 +26,8 @@
 
 ### 新增
 
-- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`）；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 242 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+- 新增 `docs/known-issues.md`：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。
 
 ## [0.3.0] - 2026-07-16
 

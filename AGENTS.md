@@ -17,6 +17,8 @@ cmd /c npm run test:story # 故事链路脚本测试（无 Key 时自动 dry-run
 cmd /c npm run test:patch # Patch/命运状态回归测试
 ```
 
+- 只跑部分单元测试：`node scripts/run-unit-tests.mjs --filter=patch`；复用上次产物：`--no-build`。
+- 单元测试位于 `tests/`，约定见 [`tests/README.md`](tests/README.md)，全部离线（模型调用 mock `fetch`）。
 - PowerShell 里直接敲 `npm` 可能被执行策略拦截（`npm.ps1`），优先用 `cmd /c npm ...`。
 - Windows 上一键脚本：`start.cmd`（开发）、`build.cmd`（构建 + preview）。
 
@@ -83,7 +85,8 @@ src/
 - **不要收窄 `tsconfig.json` 的 `include`**。历史上它只列了 4 个路径，导致被排除的文件在无类型保护的情况下腐坏（`src/types/game.ts` 被删除后仍被十余个文件 import 而无人察觉）。现在 include 是 `["src"]`。
 - 删除模块前先做一次反向引用检查（全仓库搜索模块名），再跑 `npx tsc --noEmit` 确认没有悬空引用。
 - `src/lib/sse.ts` 与 `llmClient.ts` 是供应商差异的集中点：新增兼容分支时优先放这里，不要污染 `engine.ts`。
-- 提示词没有独立的 `src/prompts/` 目录，全部内嵌在 `engine.ts`；改提示词前先读 `docs/destiny-driven-story-core.md`（最高层产品约束）。
+- 提示词没有独立的 `src/prompts/` 目录，全部内嵌在 `engine.ts`；改提示词前先读 `docs/destiny-driven-story-core.md`（最高层产品约束），并检查 `docs/known-issues.md` 是否已有相关登记。
+- 发现可疑但未确认是 bug 的行为，先登记到 `docs/known-issues.md` 再决定是否修改；确认是 bug 的（解析/合并丢数据一类）直接修复并补回归测试。
 - V2 不兼容 0.3 以下旧存档；`useContentStore` 的持久化数据由 `sanitizePersistedContent` 兜底，旧字段会被静默丢弃。
 - 不要提交 `.env`、`dist/`、`node_modules/`、`test-runs/`、`test-saves/` 或真实 API Key。
 - `.legacy-reference/` 是本地保留的 V1 提示词与架构草稿（已在 `.gitignore` 中），**不参与构建、不要引用**；确认不再需要后可直接删除。
