@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { genId } from '@/lib/utils';
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
-import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2 } from './types';
+import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2, TurnRecordV2 } from './types';
 
 export interface SaveV2 {
   id: string;
@@ -23,6 +23,135 @@ export interface CommitSuccessfulTurnV2 {
   nextState: GameStateV2;
 }
 
+/** 存档持久化格式版本。新增/变更 GameStateV2 字段时递增，并在 migrate 里补一档迁移。 */
+export const SAVE_STORAGE_VERSION = 1;
+/** 最近一次 hydrate 时读到的存档格式版本（用于"高版本存档只读"判定）。 */
+let persistedVersionSeen: number | undefined;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * 存档字段兜底。
+ *
+ * 存档是唯一的权威状态来源，但它是从 localStorage 读回来的任意 JSON：手改过、
+ * 被截断过，或未来新增字段时漏了兼容，都会让 `snapshot()` 之类的读取点直接抛
+ * `TypeError`——而那时本轮已经花掉两三次模型调用了。这里把所有数组字段补成数组、
+ * 缺省标量补成默认值，让坏档退化成"内容少一点"而不是"直接崩"。
+ */
+export function sanitizeGameStateV2(raw: unknown): GameStateV2 | undefined {
+  if (!isRecord(raw)) return undefined;
+  const arrayOf = <T,>(value: unknown): T[] => (Array.isArray(value) ? value as T[] : []);
+  // 数组元素本身也可能是坏数据；读取点会对每个元素取属性，这里只保留对象元素。
+  const objectsOf = <T,>(value: unknown): T[] => arrayOf<unknown>(value).filter(isRecord) as T[];
+  const destinyRaw = isRecord(raw.destiny) ? raw.destiny : {};
+  const destinyBeats = objectsOf<GameStateV2['destiny']['beats'][number]>(destinyRaw.beats)
+    .filter((beat) => typeof beat.beatId === 'string' && beat.beatId)
+    .map((beat) => ({ ...beat, evidenceTurns: arrayOf<number>(beat.evidenceTurns).filter((turn) => typeof turn === 'number') }));
+  const randomEventRaw = isRecord(raw.randomEvent) ? raw.randomEvent : {};
+  const currentScene = isRecord(raw.currentScene) && typeof raw.currentScene.id === 'string'
+    ? raw.currentScene as unknown as GameStateV2['currentScene']
+    : undefined;
+  const history = objectsOf<GameStateV2['history'][number]>(raw.history)
+    .filter((message) => typeof message.content === 'string')
+    .map((message) => ({ ...message, turn: typeof message.turn === 'number' ? message.turn : 0, createdAt: typeof message.createdAt === 'number' ? message.createdAt : 0 }));
+
+  return {
+    ...(raw as unknown as GameStateV2),
+    schemaVersion: 2,
+    revision: typeof raw.revision === 'number' ? raw.revision : 0,
+    turn: typeof raw.turn === 'number' ? raw.turn : 0,
+    phase: raw.phase === 'input' || raw.phase === 'generating' || raw.phase === 'ended' ? raw.phase : 'input',
+    mode: raw.mode === 'adventure' ? 'adventure' : 'author',
+    narrativePace: raw.narrativePace === 'slow' || raw.narrativePace === 'standard' || raw.narrativePace === 'fast' || raw.narrativePace === 'timeskip' ? raw.narrativePace : 'standard',
+    history,
+    summary: typeof raw.summary === 'string' ? raw.summary : '',
+    latestProgress: typeof raw.latestProgress === 'string' ? raw.latestProgress : undefined,
+    currentScene,
+    characters: objectsOf<GameStateV2['characters'][number]>(raw.characters)
+      .filter((character) => typeof character.id === 'string' && character.id)
+      .map((character) => ({ ...character, aliases: arrayOf<string>(character.aliases), knownFacts: arrayOf<string>(character.knownFacts) })),
+    relationships: objectsOf<GameStateV2['relationships'][number]>(raw.relationships).filter((relationship) => typeof relationship.id === 'string'),
+    inventory: objectsOf<GameStateV2['inventory'][number]>(raw.inventory).filter((item) => typeof item.id === 'string'),
+    storyThreads: objectsOf<GameStateV2['storyThreads'][number]>(raw.storyThreads)
+      .filter((thread) => typeof thread.id === 'string')
+      .map((thread) => ({ ...thread, involvedCharacterIds: arrayOf<string>(thread.involvedCharacterIds) })),
+    // facts 的 keywords 是已知的崩溃点（`f.keywords.some(...)` 会直接抛）
+    facts: objectsOf<GameStateV2['facts'][number]>(raw.facts)
+      .filter((fact) => typeof fact.id === 'string')
+      .map((fact) => ({ ...fact, keywords: arrayOf<string>(fact.keywords) })),
+    availableActions: objectsOf<GameStateV2['availableActions'][number]>(raw.availableActions),
+    destiny: {
+      ...(destinyRaw as unknown as GameStateV2['destiny']),
+      completionEstimate: typeof destinyRaw.completionEstimate === 'number' ? destinyRaw.completionEstimate : 0,
+      completionReason: typeof destinyRaw.completionReason === 'string' ? destinyRaw.completionReason : '',
+      currentActId: typeof destinyRaw.currentActId === 'string' ? destinyRaw.currentActId : '',
+      currentStage: typeof destinyRaw.currentStage === 'string' ? destinyRaw.currentStage : '',
+      currentPath: typeof destinyRaw.currentPath === 'string' ? destinyRaw.currentPath : '',
+      beats: destinyBeats,
+      endingReached: destinyRaw.endingReached === true,
+      updatedAtTurn: typeof destinyRaw.updatedAtTurn === 'number' ? destinyRaw.updatedAtTurn : 0,
+    },
+    randomEvent: {
+      enabled: randomEventRaw.enabled !== false,
+      nextTriggerTurn: typeof randomEventRaw.nextTriggerTurn === 'number' ? randomEventRaw.nextTriggerTurn : 1,
+      pending: randomEventRaw.pending === true,
+      intensity: randomEventRaw.intensity === 'progress' || randomEventRaw.intensity === 'destiny' ? randomEventRaw.intensity : 'related',
+      triggerIntervalMin: typeof randomEventRaw.triggerIntervalMin === 'number' ? randomEventRaw.triggerIntervalMin : 3,
+      triggerIntervalMax: typeof randomEventRaw.triggerIntervalMax === 'number' ? randomEventRaw.triggerIntervalMax : 6,
+    },
+    turnRecords: objectsOf<TurnRecordV2>(raw.turnRecords),
+  };
+}
+
+/** 单个存档的字段兜底；结构坏到没有 state 时整体丢弃（宁可少一个存档也不要整页打不开）。 */
+function sanitizeSaveV2(raw: unknown, fallbackId: string): SaveV2 | undefined {
+  if (!isRecord(raw)) return undefined;
+  const state = sanitizeGameStateV2(raw.state);
+  if (!state) return undefined;
+  const now = Date.now();
+  return {
+    ...(raw as unknown as SaveV2),
+    id: typeof raw.id === 'string' && raw.id ? raw.id : fallbackId,
+    name: typeof raw.name === 'string' && raw.name ? raw.name : '未命名旅程',
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
+    worldFacts: arrayOfWorldFacts(raw.worldFacts),
+    state,
+    lastTurnCheckpoint: undefined,
+  };
+}
+
+function arrayOfWorldFacts(value: unknown): WorldBookEntry[] {
+  return (Array.isArray(value) ? value : []).filter(isRecord) as unknown as WorldBookEntry[];
+}
+
+/**
+ * 旧版本存档的迁移入口。
+ *
+ * 迁移链是"逐档递增"的：新增格式版本时在这里补一段 `if (version < N)`，
+ * 不要把多个版本合并成一步（跳过中间版本会漏掉中间引入的字段变换）。
+ */
+export function migrateV2State(persisted: unknown): { saves: Record<string, SaveV2>; activeId?: string } {
+  const root = isRecord(persisted) ? persisted : {};
+  const rawSaves = isRecord(root.saves) ? root.saves : {};
+  const saves: Record<string, SaveV2> = {};
+  for (const [id, save] of Object.entries(rawSaves)) {
+    const sanitized = sanitizeSaveV2(save, id);
+    if (sanitized) saves[id] = sanitized;
+  }
+  const activeId = typeof root.activeId === 'string' && saves[root.activeId] ? root.activeId : undefined;
+  return { saves, activeId };
+}
+
+/** 存档版本高于本程序：不做任何解读，只保留原始 JSON 并提示用户。 */
+function asReadOnlyState(persisted: unknown): { saves: Record<string, SaveV2>; activeId?: string } {
+  const root = isRecord(persisted) ? persisted : {};
+  return {
+    saves: (isRecord(root.saves) ? root.saves : {}) as Record<string, SaveV2>,
+    activeId: typeof root.activeId === 'string' ? root.activeId : undefined,
+  };
+}
+
 interface StoreV2 {
   saves: Record<string, SaveV2>;
   activeId?: string;
@@ -34,6 +163,14 @@ interface StoreV2 {
    * 磁盘上却停在旧状态——玩家以为在玩，刷新后全部丢失。
    */
   persistError?: { message: string; quotaExceeded: boolean; at: number };
+  /**
+   * 存档格式版本高于本程序时的提示。
+   *
+   * 规则来自"高版本写入的数据一律不解读，绝不尝试降级改写"：如果本程序把更新版
+   * 存档按自己的字段结构读一遍再写回去，会静默抹掉它不认识的新字段。因此这种情况下
+   * 只保留原始 JSON、进入只读提示，由用户自己决定用哪个版本打开。
+   */
+  stateVersionIssue?: { persistedVersion: number; currentVersion: number };
   create: (p: {
     name: string;
     mode: JourneyModeV2;
@@ -133,8 +270,15 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
     const id = genId('save');
     const now = Date.now();
     const startScene = p.background?.startScene;
-    const triggerIntervalMin = Math.max(1, Math.min(100, Math.round(Number(p.randomEvent?.triggerIntervalMin) || 3)));
-    const triggerIntervalMax = Math.max(triggerIntervalMin, Math.min(100, Math.round(Number(p.randomEvent?.triggerIntervalMax) || 6)));
+    // 用 `|| 默认值` 会把显式的 0 当成"没填"。这里只把 undefined/NaN 视为未提供，
+    // 0 会照实进入下面的区间夹取（夹到最小值 1），语义上不再含糊。
+    const numberOrUndefined = (value: unknown): number | undefined => {
+      if (value === undefined || value === null || value === '') return undefined;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const triggerIntervalMin = Math.max(1, Math.min(100, Math.round(numberOrUndefined(p.randomEvent?.triggerIntervalMin) ?? 3)));
+    const triggerIntervalMax = Math.max(triggerIntervalMin, Math.min(100, Math.round(numberOrUndefined(p.randomEvent?.triggerIntervalMax) ?? 6)));
     const nextTriggerTurn = triggerIntervalMin + Math.floor(Math.random() * (triggerIntervalMax - triggerIntervalMin + 1));
     const save: SaveV2 = {
       id,
@@ -270,6 +414,25 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
 }), {
   name: 'lrpg.v2',
   storage: reportingStorage,
+  version: SAVE_STORAGE_VERSION,
+  /**
+   * 旧版本存档的迁移入口。
+   *
+   * `version` 是 zustand persist 写入存储的格式版本号；读到旧版本时会把它交给这里。
+   * 迁移链按版本逐档递增（新增版本时在这里补一段），不做跨版本合并迁移。
+   */
+  migrate: (persisted, version) => {
+    persistedVersionSeen = version;
+    if (version > SAVE_STORAGE_VERSION) return asReadOnlyState(persisted);
+    return migrateV2State(persisted);
+  },
+  // hydrate 结束后才能拿到持久化的格式版本，用它决定是否提示"存档由更新版本写入"。
+  onRehydrateStorage: () => (state) => {
+    const version = persistedVersionSeen;
+    if (state && typeof version === 'number' && version > SAVE_STORAGE_VERSION) {
+      useGameStoreV2.setState({ stateVersionIssue: { persistedVersion: version, currentVersion: SAVE_STORAGE_VERSION } });
+    }
+  },
   // 持久化时剔除两类"可重建或可丢弃"的数据：
   //   1. lastTurnCheckpoint：只服务当前页面会话的重试，避免把完整历史复制一份写入。
   //   2. turnRecords[].calls[].input：三阶段完整提示词留档，实测每回合约 208 KB，

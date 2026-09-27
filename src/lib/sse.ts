@@ -102,7 +102,11 @@ function normalizeThinkTags(chunk: string): string {
   return chunk.replace(THINK_TAG_PATTERN, (_match, slash: string) => slash ? '</think>' : '<think>');
 }
 
-function createThinkTagSplitter(onText: (text: string) => void, onThinking: (text: string) => void) {
+function createThinkTagSplitter(
+  onText: (text: string) => void,
+  onThinking: (text: string) => void,
+  onRecoveredText?: (text: string) => void,
+) {
   let inThink = false;
   let pending = '';
   let text = '';
@@ -112,8 +116,12 @@ function createThinkTagSplitter(onText: (text: string) => void, onThinking: (tex
 
   const emitText = (chunk: string) => {
     if (!chunk) return;
-    text += chunk;
-    onText(chunk);
+    // 开标签自身会被拆分器丢掉，因此这里顺带吃掉正文开头的空白，
+    // 避免出现"正文以换行开头"这种由标签切分造成的假象。
+    const normalized = text ? chunk : chunk.replace(/^\s+/, '');
+    if (!normalized) return;
+    text += normalized;
+    onText(normalized);
   };
   const emitThinking = (chunk: string) => {
     if (!chunk) return;
@@ -141,6 +149,14 @@ function createThinkTagSplitter(onText: (text: string) => void, onThinking: (tex
             pending = rest.slice(-keep);
             return;
           }
+        } else {
+          // 流已经结束，"think 块"却始终没有闭标签：说明这不是思考块，而是模型把
+          // `<think>` 当普通文字写进了正文（或者只是忘了收尾）。此时若继续按思考
+          // 处理，正文会是空的，整回合会以"模型返回了空内容"失败——而内容其实在。
+          // 因此把剩余内容判为正文，不再当作思考。
+          inThink = false;
+          emitText(rest);
+          return;
         }
         emitThinking(rest);
         return;
@@ -168,15 +184,27 @@ function createThinkTagSplitter(onText: (text: string) => void, onThinking: (tex
   };
 
   const finish = () => {
+    // 先把可能残留的半个标签前缀吐出来。注意 `feed('')` 在 rest 为空时不会进入主循环，
+    // 所以"未闭合 think 块"的判定不能依赖它，必须在下面显式处理。
     if (pending) feed('', true);
-    const trimmedText = text.trim();
-    const trimmedThinking = thinking.trim() || undefined;
-    // 安全网：没有显式 <think> 块，却有"思考"内容，说明闭标签从未被识别。
-    // 那些内容其实是正文，不能当成思维链丢掉。
-    if (!trimmedText && trimmedThinking && !/<think>/i.test(trimmedThinking)) {
-      return { text: trimmedThinking, thinking: undefined };
+    // 走到这里 inThink 仍为 true，说明 think 块始终没有闭标签：这不是思考块，
+    // 而是模型把 `<think>` 当普通文字写进了正文（或只是忘了收尾）。若继续按思考处理，
+    // 正文会是空的，整回合以"模型返回了空内容"失败——而内容其实在。因此并入正文。
+    if (inThink) {
+      const recovered = thinking;
+      if (recovered) {
+        thinking = '';
+        text += recovered;
+        // 与其它兜底路径一致：恢复出来的正文也要上报给流式消费者，
+        // 否则实时界面看不到内容，只有最终结果里有。
+        onRecoveredText?.(recovered);
+      }
+      inThink = false;
     }
-    return { text: trimmedText, thinking: trimmedThinking };
+    return {
+      text: text.trim(),
+      thinking: thinking.trim() || undefined,
+    };
   };
 
   return { feed, finish };
@@ -217,25 +245,40 @@ export async function readSSEDetailed(
   let usage: LlmUsage | undefined;
   const partialToolCalls = new Map<number, PartialToolCall>();
 
-  const splitter = createThinkTagSplitter(opts.onDelta, (t) => opts.onThinkingDelta?.(t));
+  const splitter = createThinkTagSplitter(
+    opts.onDelta,
+    (t) => opts.onThinkingDelta?.(t),
+    (t) => opts.onDelta(t),
+  );
   const finish = (): StreamResult => {
     const result = splitter.finish();
-    const tagThinking = result.thinking;
+    let tagThinking = result.thinking;
     let native = nativeThinking.trim();
     let text = result.text;
 
-    // 兜底：原生思考通道承载了完整 JSON、正文通道始终为空，且没有显式 <think> 块。
-    if (
-      opts.thinkingFallback === 'json'
-      && !text.trim()
-      && !tagThinking
-      && native
-    ) {
+    // 兜底：正文通道为空、却把 JSON 放进了思考通道（自适应思考模型的常见行为）。
+    // 这段 JSON 其实是本次要用的正文，不能只当思考。
+    if (opts.thinkingFallback === 'json' && !text.trim() && native) {
       const recovered = extractJSONText(native);
       if (recovered) {
         text = recovered;
-        // 已恢复为正文的部分不再重复算作思考；其余推理前缀仍保留。
+        // 恢复为正文的部分必须从"思考"里移除，否则同一段 JSON 会在
+        // 「导出正文、输入与思维链」里出现两次（一次正文、一次思维链）。
+        // 两个来源都要清理：原生思考通道，以及正文通道里的 <think> 块。
         native = native.replace(recovered, '').trim();
+        if (tagThinking) tagThinking = tagThinking.replace(recovered, '').trim() || undefined;
+        opts.onDelta?.(recovered);
+      }
+    }
+
+    // 同类兜底的第二条路径：JSON 被包在 <think>…</think> 里（模型把结构化输出
+    // 写成了思考块），此时正文通道同样为空。之前 `!tagThinking` 的条件会把这种情况
+    // 排除掉，于是整回合以"模型返回了空内容"失败。
+    if (opts.thinkingFallback === 'json' && !text.trim() && tagThinking) {
+      const recovered = extractJSONText(tagThinking);
+      if (recovered) {
+        text = recovered;
+        tagThinking = tagThinking.replace(recovered, '').trim() || undefined;
         opts.onDelta?.(recovered);
       }
     }

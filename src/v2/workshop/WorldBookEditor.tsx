@@ -152,9 +152,10 @@ export function WorldBookEditor({ value, onChange, reference, showReference = fa
                     />
                     <Input
                       type="number"
-                      min={0}
-                      max={100}
-                      label="优先级（0–100）"
+                      min={-10000}
+                      max={10000}
+                      label="优先级（-10000 ~ 10000）"
+                      hint="多条设定同时命中时，数字大的先注入模型；留 0 表示默认。负数可用来把次要设定压后。"
                       value={entry.priority ?? 0}
                       onChange={(event) => onChange({
                         ...value,

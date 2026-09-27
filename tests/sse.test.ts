@@ -119,14 +119,24 @@ describe('sse.readSSEDetailed — <think> 拆分', () => {
     }
   });
 
-  it('闭标签始终缺失时，内容回退为正文而不是空正文（安全网）', async () => {
+  it('闭标签始终缺失时，剩余内容判为正文而不是空正文（回归）', async () => {
     const result = await readSSEDetailed(
       chatSSE([contentFrame('<think>模型忘了收尾的正文内容'), DONE_FRAME]),
       { onDelta: () => {} },
     );
-    // 没有规范的 <think> 块可归入思考时，宁可按正文返回，也不能让回合以"空内容"失败。
+    // 流结束时 think 块仍未闭合 → 那不是思考块，而是被误写成标签的正文。
+    // 若按思考处理，正文为空会让整回合以"模型返回了空内容"失败。
     assert.equal(result.text, '模型忘了收尾的正文内容');
     assert.equal(result.thinking, undefined);
+  });
+
+  it('已闭合的 think 块仍正常归入思考', async () => {
+    const result = await readSSEDetailed(
+      chatSSE([contentFrame('<think>真的思考</think>正文'), DONE_FRAME]),
+      { onDelta: () => {} },
+    );
+    assert.equal(result.text, '正文');
+    assert.equal(result.thinking, '真的思考');
   });
 });
 
@@ -179,6 +189,28 @@ describe('sse.readSSEDetailed — thinkingFallback', () => {
     assert.equal(result.text, '');
     assert.equal(result.thinking, '只是一段推理，没有 JSON。');
   });
+
+  it('JSON 被包在 <think> 块里且正文为空时同样能还原（回归：该路径此前被排除）', async () => {
+    const deltas: string[] = [];
+    const result = await readSSEDetailed(
+      chatSSE([contentFrame('<think>{"act":"act-1","beat":"beat-1"}</think>'), DONE_FRAME]),
+      { onDelta: (text) => deltas.push(text), thinkingFallback: 'json' },
+    );
+    assert.equal(result.text, '{"act":"act-1","beat":"beat-1"}', '正文为空的 <think> JSON 应被还原为正文');
+    assert.equal(result.thinking, undefined, '还原为正文的内容不应同时留在思维链里');
+    // 恢复发生在流结束时：<think> 里的内容先按思考回调上报，恢复后的 JSON 再作为正文补发一次。
+    assert.deepEqual(deltas, ['{"act":"act-1","beat":"beat-1"}']);
+  });
+
+  it('还原后同一段 JSON 不会在正文与思维链里各出现一次', async () => {
+    const result = await readSSEDetailed(
+      chatSSE([reasoningFrame('先推理。{"only":"in-thinking"}'), DONE_FRAME]),
+      { onDelta: noop, thinkingFallback: 'json' },
+    );
+    assert.equal(result.text, '{"only":"in-thinking"}');
+    assert.equal(result.thinking, '先推理。');
+    assert.ok(!result.thinking?.includes('"only"'), '思维链里不应残留已作为正文提交的 JSON');
+  });
 });
 
 describe('sse.readSSEDetailed — tool_calls 聚合', () => {
@@ -219,8 +251,7 @@ describe('sse.readSSEDetailed — tool_calls 聚合', () => {
     assert.equal(calls[1].type, 'function');
   });
 
-  it('缺少 function.name 的工具调用被忽略，并产生可观察警告（回归：曾完全静默）', async () => {
-    const warnings: Array<{ code: string; message: string }> = [];
+  it('缺少 function.name 的工具调用被忽略，并产生可观察警告（回归：曾完全静默）', async () => {    const warnings: Array<{ code: string; message: string }> = [];
     const result = await readSSEDetailed(
       chatSSE([
         toolCallFrame([{ index: 0, id: 'call_1', type: 'function', function: { arguments: '{"query":"甲"}' } }]),
@@ -236,8 +267,7 @@ describe('sse.readSSEDetailed — tool_calls 聚合', () => {
   });
 });
 
-describe('sse.readSSEDetailed — usage 与 finish_reason', () => {
-  it('合并多帧 usage 与缓存字段，并识别 finish_reason=length', async () => {
+describe('sse.readSSEDetailed — usage 与 finish_reason', () => {  it('合并多帧 usage 与缓存字段，并识别 finish_reason=length', async () => {
     const result = await readSSEDetailed(
       chatSSE([
         usageFrame({ prompt_tokens: 10, prompt_cache_hit_tokens: 4 }, '甲'),

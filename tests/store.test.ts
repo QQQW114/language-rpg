@@ -1,9 +1,9 @@
 // 必须先安装 localStorage 内存桩：persist 在 store 模块求值时就会读取它。
-import { clearPersisted, memoryStorage, readPersisted } from './helpers/localStorageStub';
+import { clearPersisted, memoryStorage, readPersisted, seedPersisted } from './helpers/localStorageStub';
 
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { useGameStoreV2, type CommitSuccessfulTurnV2, type SaveV2 } from '@/v2/store';
+import { useGameStoreV2, SAVE_STORAGE_VERSION, type CommitSuccessfulTurnV2, type SaveV2 } from '@/v2/store';
 import { makeBackground, makeOutline, makeState } from './helpers/fixtures';
 
 const store = () => useGameStoreV2.getState();
@@ -31,8 +31,104 @@ describe('useGameStoreV2 — 环境与持久化通道', () => {
   });
 });
 
-describe('useGameStoreV2 — create', () => {
-  it('初始状态：turn/revision/phase/history/summary/mode', () => {
+describe('useGameStoreV2 — 存档格式版本与迁移', () => {
+  const persistApi = () => (useGameStoreV2 as unknown as {
+    persist: { rehydrate: () => Promise<void> | void; getOptions: () => { version?: number } };
+  }).persist;
+
+  /** 造一份"旧版/坏档"存档：缺 facts[].keywords、缺 storyThreads、缺 destiny 等。 */
+  const brokenSave = (overrides: Record<string, unknown> = {}) => ({
+    id: 'save-legacy',
+    name: '旧档',
+    createdAt: 1,
+    updatedAt: 2,
+    state: {
+      schemaVersion: 2,
+      revision: 3,
+      turn: 5,
+      phase: 'input',
+      mode: 'author',
+      history: [{ id: 'm1', role: 'assistant', content: '开场', turn: 0, createdAt: 1 }],
+      summary: '旧摘要',
+      // 关键：keywords 缺失（`f.keywords.some(...)` 会直接抛 TypeError）
+      facts: [{ id: 'fact-1', subjectId: 'char-a', predicate: 'occupation', value: '医生' }],
+      // 关键：storyThreads / destiny / randomEvent / inventory 全部缺失
+      ...overrides,
+    },
+  });
+
+  it('persist 已声明格式版本（此前 store 是唯一没有 version 的持久化）', () => {
+    const version = persistApi().getOptions().version;
+    assert.equal(typeof version, 'number');
+  });
+
+  it('缺字段的旧档 hydrate 后不再崩：数组补空、枚举补默认值', async () => {
+    seedPersisted('lrpg.v2', { saves: { 'save-legacy': brokenSave() }, activeId: null }, 0);
+    await persistApi().rehydrate();
+    const save = useGameStoreV2.getState().saves['save-legacy'];
+    assert.ok(save, '坏档应被修复后保留，而不是整页打不开');
+    assert.deepEqual(save.state.storyThreads, []);
+    assert.deepEqual(save.state.inventory, []);
+    assert.deepEqual(save.state.relationships, []);
+    assert.deepEqual(save.state.turnRecords, []);
+    assert.deepEqual(save.state.destiny.beats, []);
+    assert.equal(save.state.destiny.completionEstimate, 0);
+    assert.equal(save.state.randomEvent.enabled, true);
+    assert.equal(save.state.randomEvent.triggerIntervalMin, 3);
+    assert.deepEqual(save.state.facts[0].keywords, [], 'facts[].keywords 是已知崩溃点，必须补成数组');
+    assert.equal(save.state.turn, 5, '已有字段应原样保留');
+  });
+
+  it('数组里混入坏元素时逐个过滤，不影响其余数据', async () => {
+    seedPersisted('lrpg.v2', {
+      saves: {
+        'save-legacy': brokenSave({
+          characters: [{ id: 'char-a', name: '阿黎' }, 'not-an-object', null, { name: '没有 id' }],
+          history: [{ id: 'm1', role: 'assistant', content: '开场', turn: 0, createdAt: 1 }, 'broken'],
+        }),
+      },
+      activeId: 'save-legacy',
+    }, 0);
+    await persistApi().rehydrate();
+    const save = useGameStoreV2.getState().saves['save-legacy'];
+    assert.equal(save.state.characters.length, 1);
+    assert.equal(save.state.characters[0].name, '阿黎');
+    assert.deepEqual(save.state.characters[0].aliases, []);
+    assert.equal(save.state.history.length, 1);
+  });
+
+  it('结构坏到没有 state 的条目会被丢弃，而不是让整个存档集失效', async () => {
+    seedPersisted('lrpg.v2', {
+      saves: { 'save-broken': { id: 'save-broken', name: '没有 state' }, 'save-legacy': brokenSave() },
+      activeId: 'save-broken',
+    }, 0);
+    await persistApi().rehydrate();
+    const { saves, activeId } = useGameStoreV2.getState();
+    assert.ok(saves['save-legacy'], '正常存档应保留');
+    assert.equal(saves['save-broken'], undefined, '无法修复的条目应被丢弃');
+    assert.equal(activeId, undefined, 'activeId 指向被丢弃的存档时应清空');
+  });
+
+  it('存档由更新版本写入时进入只读提示，且不改写原始数据', async () => {
+    const futureSave = brokenSave();
+    seedPersisted('lrpg.v2', { saves: { 'save-legacy': futureSave }, activeId: 'save-legacy' }, SAVE_STORAGE_VERSION + 3);
+    await persistApi().rehydrate();
+    const issue = useGameStoreV2.getState().stateVersionIssue;
+    assert.ok(issue, '应产生版本提示');
+    assert.equal(issue.persistedVersion, SAVE_STORAGE_VERSION + 3);
+    assert.equal(issue.currentVersion, SAVE_STORAGE_VERSION);
+    // 关键：不按本程序的字段结构解读，避免静默抹掉它不认识的新字段
+    const kept = useGameStoreV2.getState().saves['save-legacy'];
+    assert.equal(kept.state.storyThreads, undefined, '高版本存档不应被本程序补字段后写回');
+  });
+
+  it('清空版本提示后不再阻塞', async () => {
+    useGameStoreV2.setState({ stateVersionIssue: undefined });
+    assert.equal(useGameStoreV2.getState().stateVersionIssue, undefined);
+  });
+});
+
+describe('useGameStoreV2 — create', () => {  it('初始状态：turn/revision/phase/history/summary/mode', () => {
     const id = store().create({ name: '测试存档', mode: 'author' });
     const save = saveOf(id);
     assert.ok(save);
@@ -119,7 +215,9 @@ describe('useGameStoreV2 — create', () => {
       randomEvent: { enabled: true, triggerIntervalMin: 0, triggerIntervalMax: 1000 },
     });
     const randomEvent = saveOf(id)!.state.randomEvent;
-    assert.equal(randomEvent.triggerIntervalMin, 3, '0 会回退默认值 3');
+    // 回归：`Number(x) || 3` 会把显式的 0 当成"没填"变成 3。现在只有 undefined/NaN
+    // 才回退默认值，0 会照实进入区间夹取（夹到最小值 1）。
+    assert.equal(randomEvent.triggerIntervalMin, 1, '显式 0 应夹到最小 1，而不是回退默认值 3');
     assert.equal(randomEvent.triggerIntervalMax, 100, '上限被夹到 100');
     assert.ok(randomEvent.nextTriggerTurn >= randomEvent.triggerIntervalMin);
     assert.ok(randomEvent.nextTriggerTurn <= randomEvent.triggerIntervalMax);
