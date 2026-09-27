@@ -6,6 +6,7 @@
 - [`PROJECT_STATUS.md`](PROJECT_STATUS.md)：与代码同步的实现状态——架构、数据流、协议字段、存储键、测试体系、已移除的遗留部分。
 - [`known-issues.md`](known-issues.md)：审查与测试中发现、尚未修复的问题登记（含严重度、影响路径与处理建议）。
 - [`multiround-generation-evaluation.md`](multiround-generation-evaluation.md)：评估「是否该把故事回合拆成多轮增量生成」——含 29 个真实回合的量化证据、被证伪的假设与推荐的替代方案。
+- [`planner-multiround-evaluation.md`](planner-multiround-evaluation.md)：评估「规划模型是否需要类似 agent 的多轮工作」——结论是不需要，它需要的是被校验；含模型分工定位、体量实测与历史失败模式的归类。
 - [`prompt-list.md`](prompt-list.md)：当前实际存在的提示词与协议位置清单。
 - [`release-notes-v0.3.0.md`](release-notes-v0.3.0.md)：v0.3.0 发布说明。
 
