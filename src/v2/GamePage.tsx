@@ -348,7 +348,8 @@ function SidePanel({ save, canEdit }: { save: NonNullable<ReturnType<typeof useA
     <div className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
       <div>故事脉动：{save.state.randomEvent.enabled === false ? '随机事件已关闭' : save.state.randomEvent.pending ? '新的事件正在靠近' : '命运沿当前路径流动'}</div>
       {save.state.randomEvent.lastPlan && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件安排：</span>{save.state.randomEvent.lastPlan}</div>}
-      {save.state.randomEvent.lastNote && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件结果：</span>{save.state.randomEvent.lastNote}</div>}
+      {/* note 现在在任何回合都会记录（审计文本），因此只在事件真的触发过之后才显示为"结果"。 */}
+      {save.state.randomEvent.lastNote && save.state.randomEvent.lastTriggeredTurn !== undefined && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件结果：</span>{save.state.randomEvent.lastNote}</div>}
     </div>
   </aside>;
 }

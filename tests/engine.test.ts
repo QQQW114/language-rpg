@@ -719,4 +719,70 @@ describe('engine.runTurnV2 — 规划上下文工具循环', () => {
     assert.ok(results.some((text) => text.includes('未知工具：unknown_tool')), '未知工具应返回错误而不是抛错');
     assert.ok(results.some((text) => text.includes('已达到玩家设置的上限')), '超出调用上限应返回提示');
   });
+
+  it('中文单字关键词不会被丢弃（回归：曾因长度<2 而检索不到）', async () => {
+    const request = makeRequest({
+      settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 1 },
+      hooks: {
+        // 单字人名出现在较早的正文里；用 makeState 保留其余夹具字段，只换 history。
+        state: makeState({
+          history: [{ id: 'msg-old', role: 'assistant', content: '晴把那封信折好，放进口袋。', turn: 1, createdAt: 1 }],
+        }),
+      },
+    });
+
+    await withFetchMock((recorded) => {
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        if ((recorded.body.messages ?? []).some((m: any) => m.role === 'tool')) {
+          return jsonStream({ intent: 'done' });
+        }
+        return toolCallResponse([
+          { index: 0, id: 'call_cjk', type: 'function', function: { name: 'search_story_context', arguments: '{"query":"晴 在哪里"}' } },
+        ]);
+      }
+      if (system.includes('只写中文小说正文')) return storyStream();
+      return jsonStream(POST_PATCH);
+    }, async (mock) => {
+      await runTurnV2(request);
+      const toolMessages = (mock.requests[1].body.messages ?? []).filter((m: any) => m.role === 'tool');
+      assert.equal(toolMessages.length, 1);
+      const payload = JSON.parse(String(toolMessages[0].content));
+      assert.ok(payload.resultCount > 0, `「晴 在哪里」应能检索到单字人名的证据，实际 ${payload.resultCount} 条`);
+    });
+  });
+
+  it('长正文的证据按命中位置切片，返回内容必须包含查询词（回归：曾只截前 900 字）', async () => {
+    // 关键词位于 1200 字之后：只截前 900 字时返回的证据不含查询词，模型会误判为查不到。
+    const filler = '雨声持续，街灯在水洼里碎成几片。'.repeat(110);
+    const longText = `${filler}晴终于说出了那个地名。`;
+    const request = makeRequest({
+      settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 1 },
+      hooks: {
+        state: makeState({
+          history: [{ id: 'msg-long', role: 'assistant', content: longText, turn: 1, createdAt: 1 }],
+        }),
+      },
+    });
+
+    await withFetchMock((recorded) => {
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        if ((recorded.body.messages ?? []).some((m: any) => m.role === 'tool')) return jsonStream({ intent: 'done' });
+        return toolCallResponse([
+          { index: 0, id: 'call_long', type: 'function', function: { name: 'search_story_context', arguments: '{"query":"晴 地名"}' } },
+        ]);
+      }
+      if (system.includes('只写中文小说正文')) return storyStream();
+      return jsonStream(POST_PATCH);
+    }, async (mock) => {
+      await runTurnV2(request);
+      const toolMessages = (mock.requests[1].body.messages ?? []).filter((m: any) => m.role === 'tool');
+      const payload = JSON.parse(String(toolMessages[0].content));
+      assert.ok(payload.resultCount > 0, '应检索到该条正文');
+      const evidence = payload.results.map((r: any) => r.evidence).join('\n');
+      assert.ok(evidence.includes('晴'), `返回证据应包含查询词，实际片段：${evidence.slice(0, 80)}`);
+      assert.ok(evidence.includes('地名'), '返回证据应包含查询词的另一部分');
+    });
+  });
 });

@@ -7,6 +7,7 @@ import {
   type ChatToolInvocation,
 } from '@/services/llmClient';
 import { resolvePlannerModel, resolveStoryModel } from '@/lib/agentModels';
+import { normalizeChoices } from '@/lib/actions';
 import { extractJSON, genId } from '@/lib/utils';
 import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
@@ -92,13 +93,15 @@ const plannerContextTool: ChatTool = {
   type: 'function',
   function: {
     name: 'search_story_context',
-    description: '仅在当前权威状态不足时，查询较早的故事正文、人物、关系、Canonical facts或故事线程。返回少量带来源的历史证据。',
+    description: `在当前上下文不足时，查询较早的故事正文、人物档案、关系、Canonical facts 或故事线程，返回少量带来源与回合号的证据。
+适用于：核对某个承诺、约定或伏笔是否真的发生过；确认某人物此前是否出场、身份是否已揭示；确认某物品的来源与当前归属；确认某地点此前的描写；确认某故事节是否已经实现过。
+不适用于：当前 AUTHORITATIVE_STATE 或 worldFacts 已经写明的信息（那些已在上下文里，直接使用即可）。`,
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: '明确的检索关键词，例如人物名、地点、物品、承诺或事件。',
+          description: '明确的检索关键词：人名、地名、物品、承诺或事件。中文单字人名（如「晴」）也可以。',
         },
         limit: {
           type: 'integer',
@@ -109,7 +112,7 @@ const plannerContextTool: ChatTool = {
         scope: {
           type: 'string',
           enum: ['all', 'history', 'characters', 'relationships', 'facts', 'threads'],
-          description: '限定检索范围，默认all。',
+          description: '限定检索范围：history=过往正文与玩家输入，characters=人物档案，relationships=关系，facts=正史事实，threads=故事线程；默认all。',
         },
       },
       required: ['query'],
@@ -152,9 +155,42 @@ interface ContextSearchCandidate {
   searchable: string;
 }
 
-function clipContextEvidence(value: unknown, max = 900) {
+/**
+ * 截取证据文本用于回传模型。
+ *
+ * `anchors` 是本次查询命中的关键词。命中点落在长文本后段时，只截前 900 字会让返回的
+ * "证据"里根本没有查询词（模型只看到一段无关开头，然后误判为查不到）。因此当某个
+ * 关键词出现在截断点之后时，改为以该命中位置为中心的窗口切片。
+ * 注意锚点必须是**单词**而不是整条 query：文本里通常不存在"晴 地名"这样的连串。
+ */
+function clipContextEvidence(value: unknown, max = 900, anchors: string[] = []) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+  if (text.length <= max) return text;
+  const lower = text.toLowerCase();
+  // 在所有命中词里挑最早出现、且落在截断点之后的那个作为窗口中心。
+  let hit = -1;
+  let hitLength = 0;
+  for (const anchor of anchors) {
+    const needle = anchor.trim().toLowerCase();
+    if (!needle) continue;
+    const at = lower.indexOf(needle);
+    if (at < 0) continue;
+    if (at + needle.length <= max) {
+      // 起始部分已经包含这个命中词，保持原有的前段截取即可。
+      hit = at;
+      hitLength = needle.length;
+      break;
+    }
+    if (hit < 0 || at < hit) {
+      hit = at;
+      hitLength = needle.length;
+    }
+  }
+  if (hit < 0 || hit + hitLength <= max) return `${text.slice(0, max)}…`;
+  const context = Math.floor((max - hitLength) / 2);
+  const start = Math.max(0, hit - context);
+  const end = Math.min(text.length, start + max);
+  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }
 
 function contextSearchTerms(query: string) {
@@ -162,11 +198,13 @@ function contextSearchTerms(query: string) {
   const pieces = normalized
     .split(/[\s,，。；;、:：!?！？"“”'‘’()（）[\]【】]+/)
     .map((part) => part.trim())
-    .filter((part) => part.length >= 2);
+    // 中文单字是有效关键词（单字人名、地名很常见），只有拉丁字母才需要长度 2，
+    // 否则"晴 在哪里"这种查询会因为"晴"被丢掉而返回 0 条。
+    .filter((part) => part.length >= 2 || /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/.test(part));
   return { normalized, terms: [...new Set(pieces)].slice(0, 10) };
 }
 
-function contextSearchCandidates(p: TurnRequestV2): ContextSearchCandidate[] {
+function contextSearchCandidates(p: TurnRequestV2, anchors: string[] = []): ContextSearchCandidate[] {
   const characterNames = new Map(p.state.characters.map((character) => [
     character.id,
     character.name || character.id,
@@ -177,7 +215,8 @@ function contextSearchCandidates(p: TurnRequestV2): ContextSearchCandidate[] {
       id: message.id,
       turn: message.turn,
       label: message.role === 'user' ? '玩家输入' : '故事正文',
-      evidence: clipContextEvidence(message.content),
+      // 正文用命中词做锚点切片：否则长回合的证据可能整段不含查询词。
+      evidence: clipContextEvidence(message.content, 900, anchors),
       searchable: message.content,
     })),
     ...p.state.characters.map((character) => {
@@ -247,7 +286,7 @@ function searchStoryContext(p: TurnRequestV2, args: Record<string, unknown>) {
   const limit = Number.isFinite(numericLimit) ? Math.max(1, Math.min(8, Math.floor(numericLimit))) : 5;
   const { normalized, terms } = contextSearchTerms(query);
 
-  const results = contextSearchCandidates(p)
+  const results = contextSearchCandidates(p, terms)
     .filter((candidate) => scope === 'all' || candidate.source === scope)
     .map((candidate) => {
       const haystack = `${candidate.label}\n${candidate.searchable}`.toLowerCase();
@@ -278,7 +317,7 @@ function searchStoryContext(p: TurnRequestV2, args: Record<string, unknown>) {
     results,
     note: results.length
       ? '返回内容是既有故事证据；请与当前权威状态、worldFacts和canonicalFacts共同判断。'
-      : '没有找到匹配证据。不要据此编造历史；可改用更短、更明确的人名或事件关键词再查询一次。',
+      : '没有找到匹配证据。不要据此编造历史；可改用更短、更明确的人名、地点或事件关键词再查询一次（中文单字人名也可以）。',
   };
 }
 
@@ -616,20 +655,8 @@ function requireJSONObject(text: string, label: string): Record<string, unknown>
 }
 
 function normalizeActions(raw: unknown): ChoiceV2[] {
-  if (!Array.isArray(raw)) return [];
-  const actions: ChoiceV2[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-    const row = item as Record<string, unknown>;
-    const label = String(row.label ?? '').trim().slice(0, 80);
-    if (!label) continue;
-    actions.push({
-      id: String(row.id ?? '').trim().slice(0, 80) || genId('action'),
-      label,
-      hint: String(row.hint ?? '').trim().slice(0, 120) || undefined,
-    });
-  }
-  return actions.slice(0, 4);
+  // 与状态写入层共用同一份实现，避免两条路径规则漂移。
+  return normalizeChoices(raw);
 }
 
 function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishReason?: string }) {

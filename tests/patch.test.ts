@@ -922,11 +922,27 @@ describe('patch — 随机事件', () => {
     assert.deepEqual(next.randomEvent, state.randomEvent);
   });
 
-  it('未到期时提交 handled=true 与 note 会被忽略（note 丢失）', () => {
+  it('未到期时不改动调度字段，但 note 作为审计文本仍会记录（回归：曾无声丢弃）', () => {
     const next = commit({}, { randomEvent: { handled: true, note: '不该记录的备注' } });
+    // handled=true 不生效：事件没到期就不该被标记为已触发
     assert.equal(next.randomEvent.lastTriggeredTurn, undefined);
-    assert.equal(next.randomEvent.lastNote, undefined);
-    assert.equal(next.randomEvent.pending, false);
+    assert.equal(next.randomEvent.pending, false, '未到期不应把事件改成 pending');
+    // 但 lastNote 只是给玩家看的说明文本，不参与调度，没有理由丢掉
+    assert.equal(next.randomEvent.lastNote, '不该记录的备注');
+  });
+
+  it('note 不会影响到期回合的调度（handled 仍是唯一开关）', () => {
+    const pendingState = makeState({
+      randomEvent: { enabled: true, nextTriggerTurn: 1, pending: true, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 3 },
+    });
+    const next = commitTurnPatchV2(pendingState, makePatch({
+      baseRevision: pendingState.revision,
+      turn: pendingState.turn,
+      randomEvent: { handled: false, note: '计划留到下一回合' },
+    }));
+    assert.equal(next.randomEvent.pending, true, '未 handled 时事件继续 pending');
+    assert.equal(next.randomEvent.lastNote, '计划留到下一回合');
+    assert.equal(next.randomEvent.nextTriggerTurn, pendingState.turn + 1);
   });
 });
 

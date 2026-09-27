@@ -14,17 +14,13 @@
 
 每条都已被测试固定当前行为，改动前先确认取舍。
 
-### A. 世界书的 priority 区间
+### A. 世界书的 priority 区间 ✅ 已按决定处理
 
-- 位置：`src/v2/workshop/model.ts` 与 `src/lib/contentLibrary.ts`
-- 现状：两处已统一为 `[-10000, 10000]`（此前工坊夹 `[0,100]`、内容库允许 `[-10000,10000]`，"工坊保存 → 导出 → 再导入"会静默改写）。
-- 待定：是否希望作者能用负优先级？工坊输入框目前仍是 `min={0}`。若要支持，需要放开 UI 下限并说明排序含义。
+工坊输入框已放开到 `-10000 ~ 10000` 并加了说明；与内容库校验同区间，往返不再改写。
 
-### B. `nextMilestone` / `convergencePlan` 的空串语义
+### B. 里程碑与收敛计划的"清除"表达方式 ✅ 已保留现状（不对称是有意的）
 
-- 位置：`src/v2/patch.ts` 的 destiny 合并分支
-- 现状：`completionReason / currentActId / currentStage / currentPath` 空串 = 保留旧值；`nextMilestone / convergencePlan` 空串 = **清空字段**。
-- 这处不对称是有意的：只有可清空的字段才有"删除"语义。**若要统一，必须先给模型一个替代的"里程碑已达成"表达方式**，否则模型将无法清除已过期的里程碑。
+`nextMilestone` / `convergencePlan` 的**空串 = 清空**，其余 destingy 字段的空串 = 保留旧值。这是模型唯一的"里程碑已达成、可以撤下"表达方式，因此保留。**若将来要统一语义，必须同时给模型一个显式清除字段**，否则会失去删除能力。
 
 ### C. 库存 `grant` 的数量下限
 
@@ -32,35 +28,31 @@
 - 现状：`grant` 用 `Math.max(1, …)`，因此 `quantity: 0` 或负数仍然 +1；好处是避免模型输出 0 时产生无意义条目。
 - 待定：是否要严格照抄模型给的数量（允许 0 表示"不增加"）。
 
-### D. `setActive` 不校验存档是否存在
+### D. `setActive` 不校验存档是否存在 ✅ 保持现状
 
-- 位置：`src/v2/store.ts`
-- 现状：程序侧 API，UI 只传列表里的 id；传错时 `useActiveSaveV2` 返回 undefined，`GamePage` 有兜底渲染。
-- 待定：保持宽松，还是当作内部契约加断言（会在开发期更早暴露调用错误）。
+程序侧 API，UI 只传列表里的 id；传错时 `useActiveSaveV2` 返回 undefined，`GamePage` 有兜底渲染。
 
-### E. 显式 `triggerIntervalMin: 0` 被当成默认值
+### E. 显式 `triggerIntervalMin: 0` 被当成默认值 ✅ 已修
 
-- 位置：`src/v2/store.ts` 的 `create()`（`Number(x) || 3`）
-- 现状：0 与"未提供"不可区分；启程页最小值为 1，UI 不可达，只有手改 localStorage 才会遇到。
-- 待定：是否值得为这个不可达分支引入 `undefined` 判定。
+`Number(x) || 3` 会把显式的 0 当成"没填"（UI 不可达，但语义含糊）。现在只有 `undefined`/`NaN` 回退默认值，0 照实进入区间夹取（夹到最小 1）。
 
-### F. 未到期的随机事件 note 被丢弃
+### F. 未到期的随机事件 note 被丢弃 ✅ 已修
 
-- 位置：`src/v2/patch.ts` 的随机事件分支
-- 现状：只在事件到期时记录 `lastNote`；未到期时补丁里的 `note` 被忽略。
-- 待定：若认为 note 是审计信息，可改为始终记录。
+- 生命周期：写前规划安排事件（`lastPlan`）→ 程序的 `dueRandomEvent` 判断到期 → 写后结算回报 `handled` 与 `note`（`lastNote`，前端显示为「随机事件结果」）。
+- 原行为：`lastNote` 只在"事件到期"分支里记录，未到期回合的 note 被无声丢弃。
+- 修复：`lastNote` 是纯审计文本、不参与调度，现在所有分支都记录；调度字段（`pending` / `nextTriggerTurn` / `intensity` / `lastTriggeredTurn`）仍然只在到期时改动。前端相应改为"只在事件真的触发过之后才显示为结果"，避免未发生过事件时出现误导文案。
+- 回归测试：`tests/patch.test.ts`。
 
-### G. `thinkingFallback` 恢复的 JSON 同时出现在思维链里
+### G. `thinkingFallback` 恢复的 JSON 同时出现在思维链里 ✅ 已修
 
-- 位置：`src/lib/sse.ts` 的 `finish()`
-- 现状：思考通道里的 JSON 被恢复为正文后，原始增量已作为 thinking delta 上报过，于是"导出正文+输入+思维链"会出现重复内容。
-- 待定：仅是导出可读性问题，是否值得在恢复时同时从思维链中移除。
+恢复为正文的内容现在会从思考里移除（两个来源：原生思考通道 + 正文里的 `<think>` 块），且恢复内容会通过 `onDelta` 补发给流式消费者，实时界面不再空白。
 
-### H. `availableActions` 在 patch 层不校验内容
+### H. 「可选行动」的清洗放在哪一层 ✅ 已修（下沉到状态写入层）
 
-- 位置：`src/v2/patch.ts` 的返回分支（只做 `slice(0,4)`）
-- 现状：空 label 的选项会原样写入；清洗在 `engine.normalizeActions`。
-- 待定：是否把清洗下沉到 patch 层，让该层自洽（代价是 `engine` 与 `patch` 需要共同维护同一份规则）。
+- 数据流：`planner_post` 输出 `actions` → 规整成 `{id,label,hint}` → 存进 `availableActions` → 游历模式在游戏页渲染成可点击按钮。
+- 原缺陷：规整只在 `engine` 做，而 `patch.ts` 只 `slice(0,4)`。任何绕过 engine 直接提交 Patch 的调用方（脚本、测试工具、未来新增入口）都能写进**空 label 的按钮**，点下去会把空输入送进回合队列。
+- 修复：抽出 `src/lib/actions.ts` 的 `normalizeChoices`（去空、trim、去重、限长、限 4 条），`engine` 与 `patch` 共用同一份实现，两条路径规则不再可能漂移。
+- 回归测试：`tests/patch.test.ts`。
 
 ---
 
@@ -106,6 +98,17 @@
 ---
 
 # 三、已修复（本轮接手改造）
+
+### ✅ 检索工具：返回的"证据"经常不含查询词；中文单字检索不到
+
+`search_story_context` 的两个可用性缺陷，都会让模型"查了却什么也没得到"：
+
+1. **证据按前 900 字截断**，而命中判定用全文。长回合里关键词落在 1200 字之后时，返回的证据里根本没有查询词，模型只会看到一段无关开头。现在按**实际命中的词**定位，以命中位置为中心做窗口切片，并在两端标出省略。
+2. **分词把长度 < 2 的词全部丢掉**，中文单字人名（"晴"）因此无法检索。现在中文单字保留，只有拉丁字母才要求长度 ≥ 2。
+
+同时把工具描述改成面向操作的说明（列出适用场景与不适用场景），`scope` 参数补上每个取值的含义，"查不到"的提示改为建议改用更短的人名/地点/事件词。
+
+回归测试：`tests/engine.test.ts`（单字检索命中、长正文窗口切片必须包含查询词）。
 
 ### ✅ `superseded` 缺少有效替代者时虚增结局完成度
 
