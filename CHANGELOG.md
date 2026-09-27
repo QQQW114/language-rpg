@@ -2,7 +2,7 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
-## [未发布]
+## [0.4.0] - 2026-09-27
 
 ### 移除
 
@@ -57,14 +57,19 @@
 - 重写 `PROJECT_HANDOFF.md`：改为记录本次接手发现的问题、处理方式、验证结果与仍需人工完成的事项。
 - 同步 `docs/PROJECT_STATUS.md`（存储键、测试体系、已移除的遗留部分）与 `docs/README.md`（标注归档文档中的失效路径）。
 - `README.md` 补充测试与开发文档索引。
+- `docs/cache-prefix-investigation.md`：前缀缓存的四个失效点查证（含 DSH 源码与 DeepSeek 官方文档依据、真实请求体的字节级测量）。
+- `docs/cost-analysis.md`：一次真实三回合游玩的成本实测与优化优先级（输出占 82% 费用、时段差价 2 倍、缓存优化上限约 16%）。
+- `docs/multiround-generation-evaluation.md`、`docs/planner-multiround-evaluation.md`：两次"要不要多轮"的评估（含 29 个真实回合的量化证据与被证伪的假设）。
+- `docs/frontend-interaction-polish.md`：四项前端交互优化的成因与实现。
 
 ### 新增
 
-- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 252 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
-- 端到端 mock 链路测试：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，39 条断言覆盖完整回合、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）与 store 落盘。
+- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 304 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+- 端到端 mock 链路测试：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，43 条断言覆盖完整回合、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）、store 落盘与缓存前缀结构。
 - 存档体积与写入可靠性实测：`npm run test:storage` 测量每回合字节增长、距 localStorage 配额的剩余回合数，并注入 `QuotaExceededError` 验证失败可见性。
+- `scripts/mock-provider.mjs`：常驻的 OpenAI 兼容 mock 供应商，供浏览器手动冒烟使用（按轮次稳定改变侧边栏内容，一次点完即可观察四种更新特效）。
 - `tests/llmClient.test.ts`：补齐此前零覆盖的模型客户端（工具循环两个 HARD 缺陷的回归测试）。
-- 新增 `docs/known-issues.md`：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。
+- `docs/known-issues.md`：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。
 
 ## [0.3.0] - 2026-07-16
 
