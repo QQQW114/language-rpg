@@ -183,6 +183,20 @@ body::before {
   letter-spacing: 0.06em;
 }
 
+/*
+ * 已落盘的正文不再播放入场动画。
+ *
+ * `.prose-story p` 的 fade-in 是给"正文逐段出现"用的；但回合结束时流式内容会换成
+ * 最终消息，只要节点被重挂载，整篇正文就会重新淡入一次——表现为模型输出完成后
+ * 页面文字闪一下。渲染层已经让两条路径共用同一组件来复用节点，这里再兜一层：
+ * 一旦这一轮已经提交，就不再对每个段落重放动画。
+ */
+.prose-story--settled p,
+.prose-story--settled li,
+.prose-story--settled blockquote {
+  animation: none;
+}
+
 .glow-on-hover:hover {
   box-shadow: 0 0 12px rgba(141, 115, 64, 0.25);
 }

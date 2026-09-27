@@ -15,9 +15,14 @@
 
 - **思考强度补上 `low` 档，并支持逐阶段设置**：DeepSeek 官方映射为 `minimal/low → low`、`medium/high/xhigh → high`、`max/ultra → max`，不提供数字型思考预算；原先只暴露 high/max，等于把思考预算锁在最贵两档。现在设置页可对写前规划 / 故事正文 / 写后结算分别选择「跟随全局 / Low / High / Max」，默认只给结算降一档（它的产出结构由模板固定，属机械性任务）。关闭思考时改为显式发送 `thinking: {type:'disabled'}`——官方文档说明思考模式**默认开启**，"什么都不发"会退回默认开启而不是关闭。
 - **状态提交对账统计（`patchStats`）**：每回合记录"模型提交了多少条状态变更、程序接受了多少条、丢弃了多少条、改写了多少处枚举"，其中"结构不全"（模型漏填必填字段）与"字段齐全但被拒"（引用了不存在的 id）分开计数——两者的修法完全不同。数字写进 `TurnRecordV2.patchStats` 并随存档持久化，游戏页「模型活动」面板的写后结算阶段会显示一行对账结果。此前这些丢弃只以警告文本存在，既没有数字也无法累计观察，导致"模型以为记下了、程序其实丢了"这个结构性盲区一直无法度量。这一步是先量后改：只有确认丢弃比例可观，才值得把被拒情况回显给结算模型（见 [`docs/planner-multiround-evaluation.md`](docs/planner-multiround-evaluation.md)）。
+- **侧边栏信息更新的视觉反馈**：侧边栏的块（人物、线程、命运、场景、进展、事实、背包）有更新时，一条与卡片边框同源的金色斜线自左向右扫过，掠过之处伴随几颗同色小星星原地转圈闪烁后淡出；原本不存在的块先用虚线描出轮廓再走同一套效果。判断"什么变了"是纯函数（`src/v2/sidePanelUpdates.ts`，含单测），表现层在 `src/components/ui/UpdateGlow.tsx`，动画与项目其余动效同在 `tailwind.config.js` 维护。覆盖层为 `pointer-events-none` 不吃点击，并尊重 `prefers-reduced-motion`。
+- **未发送输入的草稿保留**：输入框内容按存档存入 `lrpg.draft.<saveId>`，打开设置页、返回主页或刷新后重新进入对话时仍在。刻意不写进 `lrpg.v2`——草稿是易失的界面状态，不该参与存档体积与写入可靠性机制。输入变化 250ms 防抖写入，`pagehide` 时补一次；每个存档只恢复一次，不覆盖玩家后续输入。
+- **发送消息时自动滚动到底部**：文献卡内、输入框之前放零高度锚点，用 `scrollIntoView` 跟随（位置由浏览器按真实布局计算，不需要维护像素常量；锚点在输入框之前，所以滚到底时输入框自然贴住它）。玩家主动往上翻读时不打断，滚回底部或发送新行动后恢复跟随。
+- **常驻 mock 供应商 `scripts/mock-provider.mjs`**：供浏览器手动冒烟用。按轮次稳定改变侧边栏内容（第 1 轮新增人物与线程、第 2 轮改人物状态并推进线程、第 3 轮新增道具与事实），一次点完即可观察四种更新特效。
 
 ### 修复
 
+- **回合完成时正文闪烁重刷**：流式进行中与最终落盘原本是两套不同的元素结构，回合结束时 React 卸载一棵树、挂载另一棵；而 `.prose-story p` 带 `fade-in` 动画，节点一重挂载动画就重放，表现为正文整体重新淡入一次。现在两条路径共用 `StoryArticle` 组件、产出完全同构的 DOM，落盘容器再带 `prose-story--settled` 禁用正文动画。回归测试用 `renderToStaticMarkup` 断言标签骨架一致（`tests/storyArticle.test.ts`）。
 - **提示词结构破坏前缀缓存（命中率上不去的主因）**：供应商的前缀缓存只认"从头开始逐字节相同"的部分，而写后结算的请求把约 1.9KB 的固定输出模板放在了每回合都变的正文**之后**，模板因此永远无法命中；模板里还内嵌了每回合随机生成的 `commitId`，即使位置对了也逐字节不同；`baseRevision` / `turn` 两个递增的值又排在模板开头，把后面整段字段说明的复用性再次截断。现在三个阶段统一为「固定指令与输出模板 → 可变材料」，`commitId` 移出模板（改由 `【TURN_ID】` 行给出，提交时仍由程序覆盖），注入值挪到模板末尾，权威状态 JSON 也改为稳定字段在前、`scene/summary/progress/turn/revision/recent` 在后。实测可复用前缀：结算阶段 34.2% → 67.0%，三个阶段合计约 25% → 56.9%（最小存档下；真实存档比例更高）。
 - **`cache_read_input_tokens` / `cache_creation_input_tokens` / DeepSeek 原生缓存字段读不到**：缓存字段此前只在 `cache` 嵌套对象里查找，而 DeepSeek 把 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 放在 `usage` 顶层，Anthropic 把 `cache_read_input_tokens` 放在顶层——两者都读不到，直连时缓存命中永远显示 0。
 - **`input_tokens` 与 `prompt_tokens` 口径混用导致输入量少算**：OpenAI 风格的 `prompt_tokens` 已是完整输入量，而 Anthropic / DeepSeek 风格的 `input_tokens` 只表示未命中部分，完整量需加上缓存读写（与 DSH 的 `totalTokens = input + output + cacheRead + cacheWrite` 一致）。现在按字段组合判别口径，而不是按字段名猜。

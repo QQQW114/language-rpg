@@ -5,11 +5,14 @@ import remarkGfm from 'remark-gfm';
 import { AlertCircle, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, Circle, Clock3, Compass, Download, Loader2, Package, Pencil, RotateCcw, ScrollText, Settings, Sparkles, Users, Wrench, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { confirmDialog } from '@/components/ui/ConfirmDialog';
+import { readDraft, writeDraft } from './draft';
+import { diffSidePanelChanges, toChangeMap, type SidePanelChangeKind } from './sidePanelUpdates';
+import { UpdateGlow } from '@/components/ui/UpdateGlow';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, GameStateV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
 import { formatCacheHitRate } from '@/lib/llmUsage';
 
@@ -356,31 +359,79 @@ function RelationshipRow({ saveId, relationship, canEdit, nameById }: { saveId: 
   );
 }
 
+/**
+ * 故事正文的渲染：流式进行中与最终落盘**共用同一个组件**。
+ *
+ * 这一点是刻意的：两者此前是两套不同的元素结构（落盘版是 article > div + div > Markdown，
+ * 流式版是 article > div + Markdown），回合结束时 React 会卸载一棵树、挂载另一棵树。
+ * 而 `index.css` 里 `.prose-story p` 带 `animation: fade-in`，节点一重挂载动画就重放，
+ * 表现为"模型输出完成后正文整体重新淡入一次"的闪烁。
+ *
+ * 共用组件后同一段正文的节点会被复用，动画不会重放；`settled` 再兜一层：
+ * 落盘后的重渲染直接禁用正文动画（流式期间逐段淡入仍然保留）。
+ */
+export function StoryArticle({ turn, content, writing = false, settled = false }: {
+  turn: number;
+  content: string;
+  writing?: boolean;
+  settled?: boolean;
+}) {
+  return <article className="prose-story my-8">
+    <div className="mb-3 flex items-center gap-2 text-[10px] tracking-[.3em] text-parchment-200/35">
+      <span className="h-px flex-1 bg-gold-line opacity-50" />
+      <span className={writing ? 'text-gold/70 animate-pulse-soft' : undefined}>
+        {writing ? '故事之笔正在书写…' : `第 ${turn + 1} 回合`}
+      </span>
+      <span className="h-px flex-1 bg-gold-line opacity-50" />
+    </div>
+    <div className={settled ? 'prose-story--settled' : undefined}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  </article>;
+}
+
 function SidePanel({ save, canEdit }: { save: NonNullable<ReturnType<typeof useActiveSaveV2>>; canEdit: boolean }) {
   const [tab, setTab] = useState<'people' | 'world' | 'items' | 'threads'>('people');
   const [factsOpen, setFactsOpen] = useState(false);
   const tabs = [{ id: 'people' as const, label: '人物', icon: <Users size={14} /> }, { id: 'world' as const, label: '世界', icon: <Compass size={14} /> }, { id: 'items' as const, label: '背包', icon: <Package size={14} /> }, { id: 'threads' as const, label: '故事', icon: <ScrollText size={14} /> }];
+
+  // 本回合哪些块发生了变化（含"新出现的块"）。用 ref 保存上一帧状态做对比：
+  // 对比本身是纯函数（sidePanelUpdates.ts），这里只负责驱动特效播放。
+  const [changes, setChanges] = useState<Map<string, SidePanelChangeKind>>(() => new Map());
+  const previousStateRef = useRef<GameStateV2>();
+  useEffect(() => {
+    const previous = previousStateRef.current;
+    previousStateRef.current = save.state;
+    if (!previous) return;
+    setChanges(toChangeMap(diffSidePanelChanges(previous, save.state)));
+  }, [save.state]);
+  // 特效只播一次：变化列表消费掉之后清空，避免块在后续重渲染里反复重播。
+  useEffect(() => {
+    if (changes.size === 0) return;
+    const timer = window.setTimeout(() => setChanges(new Map()), 1600);
+    return () => window.clearTimeout(timer);
+  }, [changes]);
   const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;
   return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
-    <DestinyCard destiny={save.state.destiny} showDetails={canEdit} />
+    <UpdateGlow blockId="destiny" change={changes.get('destiny')}><DestinyCard destiny={save.state.destiny} showDetails={canEdit} /></UpdateGlow>
     <section className="overflow-hidden rounded-xl border border-parchment-600/25 bg-parchment-900/35">
       <div className="flex border-b border-parchment-600/20">{tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex flex-1 items-center justify-center gap-1 py-3 text-xs transition ${tab === item.id ? 'border-b-2 border-gold text-gold-light' : 'text-parchment-200/55 hover:text-parchment-100'}`}>{item.icon}{item.label}</button>)}</div>
       <div className="p-3 text-sm">
         {tab === 'people' && <div className="space-y-3">
-          {save.state.characters.length ? save.state.characters.map((c) => <CharacterCard key={c.id} saveId={save.id} character={c} canEdit={canEdit} />) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
-          {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <RelationshipRow key={rel.id} saveId={save.id} relationship={rel} canEdit={canEdit} nameById={characterName} />)}</div></div>}
+          {save.state.characters.length ? save.state.characters.map((c) => <UpdateGlow key={c.id} blockId={`character:${c.id}`} change={changes.get(`character:${c.id}`)}><CharacterCard saveId={save.id} character={c} canEdit={canEdit} /></UpdateGlow>) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
+          {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <UpdateGlow key={rel.id} blockId={`relationship:${rel.id}`} change={changes.get(`relationship:${rel.id}`)}><RelationshipRow saveId={save.id} relationship={rel} canEdit={canEdit} nameById={characterName} /></UpdateGlow>)}</div></div>}
         </div>}
-        {tab === 'world' && <div className="space-y-3">{save.state.currentScene && <div><div className="text-xs text-parchment-200/45">当前场景</div><div className="mt-1 text-gold-light">{save.state.currentScene.name}</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/65">{save.state.currentScene.description}</p><div className="mt-2 text-[11px] text-parchment-200/45">{[save.state.currentScene.time, save.state.currentScene.weather].filter(Boolean).join(' · ')}</div></div>}<div className="border-t border-parchment-600/15 pt-3"><div className="text-xs text-parchment-200/45">最新进展</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/70">{save.state.latestProgress || save.state.summary || '故事刚刚开始。'}</p></div>{save.state.facts.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><button type="button" onClick={() => setFactsOpen((v) => !v)} className="flex w-full items-center justify-between text-xs text-parchment-200/45 hover:text-parchment-100"><span>正史事实（{save.state.facts.length}）</span>{factsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{factsOpen && <div className="mt-2 space-y-1.5">{save.state.facts.map((fact) => <div key={fact.id} className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-parchment-200/70"><span className="text-parchment-100">{fact.subjectId}</span><span className="mx-1 text-parchment-200/40">·</span>{fact.predicate}<span className="mx-1 text-parchment-200/40">=</span>{fact.value}</div>)}</div>}</div>}</div>}
-        {tab === 'items' && <div className="space-y-2">{save.state.inventory.length ? save.state.inventory.map((item) => <div key={item.id} className="flex items-start justify-between rounded-lg border border-parchment-600/20 p-2.5"><div><div className="flex items-center gap-2"><span className="text-parchment-100">{item.name}</span>{item.consumable && <span className="rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/75">消耗品</span>}</div><div className="text-[11px] text-parchment-200/50">{item.description || item.kind}</div></div><span className="text-gold-light">×{item.quantity}</span></div>) : <p className="text-xs text-parchment-200/45">暂无物品。</p>}</div>}
-        {tab === 'threads' && <div className="space-y-2">{save.state.storyThreads.length ? save.state.storyThreads.map((thread) => <div key={thread.id} className="rounded-lg border border-parchment-600/20 p-2.5"><div className="flex justify-between gap-2"><span className="text-parchment-100">{thread.title}</span><span className="text-[10px] text-gold/70">{THREAD_STATUS[thread.status] ?? thread.status}</span></div>{thread.currentStep && <p className="mt-1 text-xs text-parchment-200/60">{thread.currentStep}</p>}{thread.progress !== undefined && <div className="mt-2 flex items-center gap-2"><div className="h-1 flex-1 overflow-hidden rounded-full bg-ink/60"><div className="h-full rounded-full bg-gold/60" style={{ width: `${Math.max(0, Math.min(100, thread.progress))}%` }} /></div><span className="text-[10px] tabular-nums text-parchment-200/45">{Math.max(0, Math.min(100, Math.round(thread.progress)))}%</span></div>}</div>) : <p className="text-xs text-parchment-200/45">故事线索将在推进后出现。</p>}</div>}
+        {tab === 'world' && <div className="space-y-3">{save.state.currentScene && <UpdateGlow blockId="scene"><div><div className="text-xs text-parchment-200/45">当前场景</div><div className="mt-1 text-gold-light">{save.state.currentScene.name}</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/65">{save.state.currentScene.description}</p><div className="mt-2 text-[11px] text-parchment-200/45">{[save.state.currentScene.time, save.state.currentScene.weather].filter(Boolean).join(' · ')}</div></div></UpdateGlow>}<UpdateGlow blockId="progress" className="border-t border-parchment-600/15 pt-3"><div><div className="text-xs text-parchment-200/45">最新进展</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/70">{save.state.latestProgress || save.state.summary || '故事刚刚开始。'}</p></div></UpdateGlow>{save.state.facts.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><button type="button" onClick={() => setFactsOpen((v) => !v)} className="flex w-full items-center justify-between text-xs text-parchment-200/45 hover:text-parchment-100"><span>正史事实（{save.state.facts.length}）</span>{factsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{factsOpen && <div className="mt-2 space-y-1.5">{save.state.facts.map((fact) => <UpdateGlow key={fact.id} blockId={`fact:${fact.id}`}><div className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-parchment-200/70"><span className="text-parchment-100">{fact.subjectId}</span><span className="mx-1 text-parchment-200/40">·</span>{fact.predicate}<span className="mx-1 text-parchment-200/40">=</span>{fact.value}</div></UpdateGlow>)}</div>}</div>}</div>}
+        {tab === 'items' && <div className="space-y-2">{save.state.inventory.length ? save.state.inventory.map((item) => <UpdateGlow key={item.id} blockId={`item:${item.id}`}><div className="flex items-start justify-between rounded-lg border border-parchment-600/20 p-2.5"><div><div className="flex items-center gap-2"><span className="text-parchment-100">{item.name}</span>{item.consumable && <span className="rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/75">消耗品</span>}</div><div className="text-[11px] text-parchment-200/50">{item.description || item.kind}</div></div><span className="text-gold-light">×{item.quantity}</span></div></UpdateGlow>) : <p className="text-xs text-parchment-200/45">暂无物品。</p>}</div>}
+        {tab === 'threads' && <div className="space-y-2">{save.state.storyThreads.length ? save.state.storyThreads.map((thread) => <UpdateGlow key={thread.id} blockId={`thread:${thread.id}`}><div className="rounded-lg border border-parchment-600/20 p-2.5"><div className="flex justify-between gap-2"><span className="text-parchment-100">{thread.title}</span><span className="text-[10px] text-gold/70">{THREAD_STATUS[thread.status] ?? thread.status}</span></div>{thread.currentStep && <p className="mt-1 text-xs text-parchment-200/60">{thread.currentStep}</p>}{thread.progress !== undefined && <div className="mt-2 flex items-center gap-2"><div className="h-1 flex-1 overflow-hidden rounded-full bg-ink/60"><div className="h-full rounded-full bg-gold/60" style={{ width: `${Math.max(0, Math.min(100, thread.progress))}%` }} /></div><span className="text-[10px] tabular-nums text-parchment-200/45">{Math.max(0, Math.min(100, Math.round(thread.progress)))}%</span></div>}</div></UpdateGlow>) : <p className="text-xs text-parchment-200/45">故事线索将在推进后出现。</p>}</div>}
       </div>
     </section>
-    <div className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
+    <UpdateGlow blockId="randomEvent" className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
       <div>故事脉动：{save.state.randomEvent.enabled === false ? '随机事件已关闭' : save.state.randomEvent.pending ? '新的事件正在靠近' : '命运沿当前路径流动'}</div>
       {save.state.randomEvent.lastPlan && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件安排：</span>{save.state.randomEvent.lastPlan}</div>}
       {/* note 现在在任何回合都会记录（审计文本），因此只在事件真的触发过之后才显示为"结果"。 */}
       {save.state.randomEvent.lastNote && save.state.randomEvent.lastTriggeredTurn !== undefined && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件结果：</span>{save.state.randomEvent.lastNote}</div>}
-    </div>
+    </UpdateGlow>
   </aside>;
 }
 
@@ -452,8 +503,83 @@ export default function GamePageV2() {
   const lastEnqueueRef = useRef<{ text: string; at: number }>();
   const runIdRef = useRef(0);
   const streamBufferRef = useRef('');
+  const storyEndRef = useRef<HTMLDivElement>(null);
+  /** 玩家是否主动往上翻读（此时不要自动滚动打断）。 */
+  const userScrolledUpRef = useRef(false);
+  /** 首次到达用 auto（瞬时），之后的增量用 smooth，避免开局就平滑滚动一大段。 */
+  const scrollBehaviorRef = useRef<ScrollBehavior>('auto');
+  /** 已从 localStorage 恢复过草稿的存档 id（每个存档只恢复一次）。 */
+  const draftRestoredRef = useRef<string>();
+  /** 供 pagehide 落盘使用的输入快照（避免把 effect 依赖到每次按键）。 */
+  const inputRef = useRef('');
+  // 每次渲染都同步一次最新输入：pagehide 是同步事件，拿不到最新的 React state。
+  inputRef.current = input;
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // ---------------------------------------------------------------------------
+  // 自动滚动到底部
+  //
+  // 规则：新内容到达时滚到底，但**用户主动往上翻读时不打断**——只有当视口已经在
+  // 底部附近（或本轮刚由玩家发起）时才自动跟随。否则一边看历史一边被拽回底部。
+  // 用 scrollIntoView 而不是 scrollTop：锚点就在文档流里，浏览器自己处理间距与
+  // 平滑滚动，也不需要维护"底部还差多少像素"这种容易失效的常量。
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const anchor = storyEndRef.current;
+    if (!anchor) return;
+    if (userScrolledUpRef.current) return;
+    const behavior: ScrollBehavior = scrollBehaviorRef.current;
+    scrollBehaviorRef.current = 'smooth';
+    anchor.scrollIntoView({ block: 'end', behavior });
+  }, [save?.state.history.length, stream, activeTurn, busy, queue.length]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const doc = document.documentElement;
+      const remaining = doc.scrollHeight - window.scrollY - window.innerHeight;
+      // 120px 是"贴底"的宽容区间：留一点余量，避免因取整误差误判为用户上翻。
+      userScrolledUpRef.current = remaining > 120;
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // 草稿保留
+  //
+  // 输入框内容按存档分别存入 localStorage，这样打开设置页、返回主页、或刷新后
+  // 重新进入对话时输入都还在。恢复时机放在存档可用之后（首帧 save 可能还是
+  // undefined），且每个存档只恢复一次，避免覆盖玩家后续的输入。
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const saveId = save?.id;
+    if (!saveId || draftRestoredRef.current === saveId) return;
+    draftRestoredRef.current = saveId;
+    const stored = readDraft(saveId);
+    if (stored) setInput((current) => (current ? current : stored));
+  }, [save?.id]);
+
+  useEffect(() => {
+    const saveId = save?.id;
+    if (!saveId) return;
+    // 输入变化频繁，轻量防抖即可：写入本身是同步的，但没必要每个字符都写。
+    const timer = window.setTimeout(() => writeDraft(saveId, input), 250);
+    return () => window.clearTimeout(timer);
+  }, [input, save?.id]);
+
+  // 关闭/刷新页面前把当前草稿落盘，避免防抖窗口内的内容丢失。
+  useEffect(() => {
+    const saveId = save?.id;
+    if (!saveId) return;
+    const flush = () => writeDraft(saveId, inputRef.current);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, [save?.id]);
   useEffect(() => {
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!processingRef.current && queue.length === 0) return;
@@ -575,6 +701,10 @@ export default function GamePageV2() {
     lastEnqueueRef.current = { text: trimmed, at: now };
     setQueue((current) => [...current, { id: createQueueId(), input: trimmed, pace: selectedPace, createdAt: Date.now() }]);
     setInput('');
+    // 发送后立刻跟到底部，让玩家看到自己刚发出的行动与开始生成的正文。
+    userScrolledUpRef.current = false;
+    scrollBehaviorRef.current = 'smooth';
+    storyEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
   };
   const enqueue = (value: string) => enqueueWithPace(value, pace);
   const cancelQueued = (id: string) => {
@@ -648,11 +778,16 @@ export default function GamePageV2() {
       <section className="min-w-0">
         <div className="rounded-xl border border-parchment-600/25 bg-ink/20 px-4 py-5 shadow-[0_12px_35px_rgba(0,0,0,.2)] sm:px-7">
           {save.state.history.length === 0 && <div className="py-20 text-center text-sm text-parchment-200/45">故事将从你的第一个行动开始。</div>}
-          {save.state.history.map((message, index) => <article key={message.id} className={message.role === 'user' ? 'my-6 border-l-2 border-gold/55 pl-4' : 'prose-story my-8'}>{message.role === 'user' ? <><div className="mb-1 text-[10px] tracking-[.28em] text-gold/65">你的行动 · 第 {message.turn + 1} 回合</div><div className="whitespace-pre-wrap font-serif text-[15px] italic leading-8 text-parchment-200/90">{message.content}</div></> : <><div className="mb-3 flex items-center gap-2 text-[10px] tracking-[.3em] text-parchment-200/35"><span className="h-px flex-1 bg-gold-line opacity-50" /><span>第 {message.turn + 1} 回合</span><span className="h-px flex-1 bg-gold-line opacity-50" /></div><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></>}</article>)}
+          {save.state.history.map((message) => message.role === 'user'
+            ? <article key={message.id} className="my-6 border-l-2 border-gold/55 pl-4"><div className="mb-1 text-[10px] tracking-[.28em] text-gold/65">你的行动 · 第 {message.turn + 1} 回合</div><div className="whitespace-pre-wrap font-serif text-[15px] italic leading-8 text-parchment-200/90">{message.content}</div></article>
+            : <StoryArticle key={message.id} turn={message.turn} content={message.content} settled />)}
           {busy && activeItem && <article className="my-6 border-l-2 border-gold/55 pl-4"><div className="mb-1 flex items-center gap-2 text-[10px] tracking-[.28em] text-gold/65"><span>正在处理 · 第 {save.state.turn + 1} 回合</span><span className="rounded bg-gold/10 px-1.5 py-0.5 tracking-normal text-gold/70">{PACE_OPTIONS.find((option) => option.id === activeItem.pace)?.label}</span><button type="button" onClick={stopCurrentTurn} className="ml-auto rounded border border-blood/40 px-2 py-1 tracking-normal text-blood hover:bg-blood/10"><X size={11} className="mr-1 inline" />终止本轮</button></div><div className="whitespace-pre-wrap font-serif text-[15px] italic leading-8 text-parchment-200/90">{activeItem.input}</div></article>}
           <ModelActivityPanel activities={activities} thinking={thinking} busy={busy} patchStats={save.state.turnRecords?.[save.state.turnRecords.length - 1]?.patchStats} />
-          {stream && <article className="prose-story my-8"><div className="mb-3 text-[10px] tracking-[.3em] text-gold/70">故事之笔正在书写…</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{stream}</ReactMarkdown></article>}
-          {!busy && failedDraft && <article className="prose-story my-8 rounded-lg border border-blood/30 bg-blood/5 p-4"><div className="mb-3 text-[10px] tracking-[.22em] text-blood">未提交的故事草稿 · 重试后将被替换</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{failedDraft}</ReactMarkdown></article>}
+          {stream && <StoryArticle turn={save.state.turn} content={stream} writing />}
+          {!busy && failedDraft && <article className="prose-story prose-story--settled my-8 rounded-lg border border-blood/30 bg-blood/5 p-4"><div className="mb-3 text-[10px] tracking-[.22em] text-blood">未提交的故事草稿 · 重试后将被替换</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{failedDraft}</ReactMarkdown></article>}
+          {/* 滚动锚点：发送后滚到这里即"到底"。放在文献卡内部、输入框之前，
+              所以滚到底时底部输入框自然贴住它，不会盖住正文末尾。 */}
+          <div ref={storyEndRef} className="h-px w-full" aria-hidden />
         </div>
         {save.lastTurnCheckpoint && <div className="mt-3 flex flex-wrap justify-end gap-2"><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={retryLastTurn}><RotateCcw size={13} />重新生成最近回合</Button><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={editLastTurn}><Pencil size={13} />修改最近输入</Button></div>}
         {error && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-blood/50 bg-blood/10 px-4 py-3 text-sm text-blood"><span className="whitespace-pre-wrap">{error}</span>{queuePaused && queue.length > 0 && <Button size="xs" variant="outline" onClick={retryQueue}><RotateCcw size={13} />重试模型请求</Button>}</div>}

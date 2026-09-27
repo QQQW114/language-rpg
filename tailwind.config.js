@@ -130,6 +130,28 @@ export default {
           '60%': { opacity: '0.85', filter: 'blur(1px)' },
           '100%': { opacity: '1', filter: 'blur(0)', transform: 'translateY(0)' },
         },
+        // 侧边栏更新特效：金色斜线自左向右扫过，掠过之处浮现新内容。
+        // 与既有的 line-draw-in 同属"金线"语言，只是方向改为斜向位移。
+        'update-sweep': {
+          '0%': { transform: 'translateX(-115%) skewX(-16deg)', opacity: '0' },
+          '12%': { opacity: '0.9' },
+          '88%': { opacity: '0.9' },
+          '100%': { transform: 'translateX(115%) skewX(-16deg)', opacity: '0' },
+        },
+        // 原本不存在的块：先用淡金线描出轮廓，再淡出。
+        'update-outline': {
+          '0%': { opacity: '0' },
+          '18%': { opacity: '0.85' },
+          '70%': { opacity: '0.45' },
+          '100%': { opacity: '0' },
+        },
+        // 小星星：原地转圈、闪烁，随后慢慢淡去。
+        sparkle: {
+          '0%': { opacity: '0', transform: 'scale(0.45) rotate(0deg)' },
+          '30%': { opacity: '0.95', transform: 'scale(1) rotate(140deg)' },
+          '62%': { opacity: '0.7', transform: 'scale(0.9) rotate(250deg)' },
+          '100%': { opacity: '0', transform: 'scale(0.5) rotate(360deg)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.4s ease-out both',
@@ -145,6 +167,9 @@ export default {
         'wax-press': 'wax-press 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both',
         'dialog-in': 'dialog-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both',
         'ink-bloom': 'ink-bloom 0.7s cubic-bezier(0.16, 1, 0.3, 1) both',
+        'update-sweep': 'update-sweep 1.05s cubic-bezier(0.16, 1, 0.3, 1) both',
+        'update-outline': 'update-outline 1.35s ease-out both',
+        sparkle: 'sparkle 1.25s ease-out both',
       },
       backgroundImage: {
         'parchment-grain':

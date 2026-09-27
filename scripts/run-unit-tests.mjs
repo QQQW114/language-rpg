@@ -74,6 +74,21 @@ async function bundle(testFiles) {
     format: 'esm',
     target: 'node20',
     alias: { '@': path.join(rootDir, 'src') },
+    // Node 内置模块保持外部引用；并用 createRequire 补齐 CJS 互操作层：
+    // `react-dom/server`（渲染结构回归测试用）走的是 CJS 分支、内部 require('stream')，
+    // 而 esbuild 的 ESM 产物里默认没有 require，会以
+    // "Dynamic require of \"stream\" is not supported" 在运行期炸掉。
+    external: [
+      'node:*',
+      'stream', 'util', 'events', 'buffer', 'string_decoder', 'async_hooks',
+      'fs', 'path', 'os', 'crypto', 'url', 'zlib', 'net', 'tls', 'http', 'https',
+    ],
+    banner: {
+      js: [
+        "import { createRequire as __createRequire } from 'node:module';",
+        'const require = __createRequire(import.meta.url);',
+      ].join('\n'),
+    },
     logLevel: 'silent',
   });
 }
