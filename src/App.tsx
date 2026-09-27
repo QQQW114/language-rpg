@@ -12,6 +12,7 @@ export default function App() {
     <Route path="/game" element={<GamePage />} />
     <Route path="/workshop" element={<WorkshopPage />} />
     <Route path="/library" element={<Navigate to="/workshop" replace />} />
+    {/* 旧版「书库」已并入命运工坊；保留重定向以兼容旧书签与旧文档链接。 */}
     <Route path="/settings" element={<SettingsPage />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>;

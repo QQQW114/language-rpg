@@ -1,4 +1,14 @@
-import type { LlmUsage } from '@/types/llm';
-export type AgentPromptTraceMessage={role:string;content:string};
-export interface AgentPromptTrace{system?:string;user?:string;messages?:AgentPromptTraceMessage[];inputSummary?:string}
-export interface AgentCallRecord{id:string;saveId:string;round:number;kind:string;label:string;input?:AgentPromptTrace;thinking?:string;output?:string;usage?:LlmUsage;cacheHit?:boolean;createdAt:number}
+// 每回合模型调用的提示词留档类型。
+// 该留档随存档保存（GameStateV2.turnRecords[].calls[].input），用于“导出全部信息”。
+
+export interface AgentPromptTraceMessage {
+  role: string;
+  content: string;
+}
+
+export interface AgentPromptTrace {
+  system?: string;
+  user?: string;
+  messages?: AgentPromptTraceMessage[];
+  inputSummary?: string;
+}

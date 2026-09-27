@@ -19,6 +19,8 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/main.tsx", "src/App.tsx", "src/v2", "src/pages/SettingsPage.tsx"],
+  // 整个 src/ 都在类型检查范围内：新增文件不需要再单独登记到 include。
+  // 注意：不要收窄 include，否则被排除的文件会在无类型保护的情况下静默腐坏。
+  "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

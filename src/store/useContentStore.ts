@@ -7,9 +7,7 @@ import type {
   ContentMutationResult,
   ContentValidationIssue,
   ImportBundle,
-  RandomEvent,
   StoryOutline,
-  WorkspaceTemplate,
   WorldBook,
   WorldBookEntry,
 } from '@/types/content';
@@ -22,8 +20,6 @@ import {
 import { PRESET_OUTLINES } from '@/presets/outlines';
 import { PRESET_BACKGROUNDS } from '@/presets/backgrounds';
 import { PRESET_WORLDBOOKS } from '@/presets/worldbooks';
-import { PRESET_EVENTS } from '@/presets/events';
-import { PRESET_WORKSPACE_TEMPLATES } from '@/presets/workspaceTemplates';
 
 export interface ContentImportOptions {
   /** 仅允许覆盖同 id 的自定义内容；内置预设在任何情况下都不会被覆盖。 */
@@ -34,26 +30,18 @@ export interface ContentState {
   customOutlines: StoryOutline[];
   customBackgrounds: Background[];
   customWorldBooks: WorldBook[];
-  customEvents: RandomEvent[];
-  customWorkspaceTemplates: WorkspaceTemplate[];
 
   importBundle: (bundle: unknown, options?: ContentImportOptions) => ContentImportResult;
   exportBundle: () => ContentExportPackage;
   addOutline: (outline: StoryOutline) => ContentMutationResult;
   addBackground: (background: Background) => ContentMutationResult;
   addWorldBook: (worldBook: WorldBook) => ContentMutationResult;
-  addEvent: (event: RandomEvent) => ContentMutationResult;
-  addWorkspaceTemplate: (template: WorkspaceTemplate) => ContentMutationResult;
   updateOutline: (outline: StoryOutline) => ContentMutationResult;
   updateBackground: (background: Background) => ContentMutationResult;
   updateWorldBook: (worldBook: WorldBook) => ContentMutationResult;
-  updateEvent: (event: RandomEvent) => ContentMutationResult;
-  updateWorkspaceTemplate: (template: WorkspaceTemplate) => ContentMutationResult;
   removeOutline: (id: string) => void;
   removeBackground: (id: string) => void;
   removeWorldBook: (id: string) => void;
-  removeEvent: (id: string) => void;
-  removeWorkspaceTemplate: (id: string) => void;
   clearCustom: () => void;
 }
 
@@ -61,12 +49,9 @@ const presetIds = {
   outlines: new Set(PRESET_OUTLINES.map((item) => item.id)),
   backgrounds: new Set(PRESET_BACKGROUNDS.map((item) => item.id)),
   worldBooks: new Set(PRESET_WORLDBOOKS.map((item) => item.id)),
-  events: new Set(PRESET_EVENTS.map((item) => item.id)),
-  workspaceTemplates: new Set(PRESET_WORKSPACE_TEMPLATES.map((item) => item.id)),
 };
 
-type CustomArrayKey = keyof Pick<ContentState,
-  'customOutlines' | 'customBackgrounds' | 'customWorldBooks' | 'customEvents' | 'customWorkspaceTemplates'>;
+type CustomArrayKey = keyof Pick<ContentState, 'customOutlines' | 'customBackgrounds' | 'customWorldBooks'>;
 
 const mutationIssue = (
   kind: ContentValidationIssue['kind'],
@@ -80,8 +65,6 @@ function cloneBundleFromState(state: ContentState): ImportBundle {
     outlines: state.customOutlines,
     backgrounds: state.customBackgrounds,
     worldBooks: state.customWorldBooks,
-    events: state.customEvents,
-    workspaceTemplates: state.customWorkspaceTemplates,
   });
 }
 
@@ -91,8 +74,6 @@ export const useContentStore = create<ContentState>()(
       customOutlines: [],
       customBackgrounds: [],
       customWorldBooks: [],
-      customEvents: [],
-      customWorkspaceTemplates: [],
 
       importBundle: (input, options) => {
         const validation = validateImportBundle(input);
@@ -108,8 +89,6 @@ export const useContentStore = create<ContentState>()(
             customOutlines: [...state.customOutlines],
             customBackgrounds: [...state.customBackgrounds],
             customWorldBooks: [...state.customWorldBooks],
-            customEvents: [...state.customEvents],
-            customWorkspaceTemplates: [...state.customWorkspaceTemplates],
           };
 
           const merge = <T extends { id: string }>(
@@ -153,8 +132,6 @@ export const useContentStore = create<ContentState>()(
           merge(normalized.outlines, 'customOutlines', presetIds.outlines, 'outline');
           merge(normalized.backgrounds, 'customBackgrounds', presetIds.backgrounds, 'background');
           merge(normalized.worldBooks, 'customWorldBooks', presetIds.worldBooks, 'worldBook');
-          merge(normalized.events, 'customEvents', presetIds.events, 'event');
-          merge(normalized.workspaceTemplates, 'customWorkspaceTemplates', presetIds.workspaceTemplates, 'workspaceTemplate');
           return next;
         });
         return result;
@@ -177,8 +154,6 @@ export const useContentStore = create<ContentState>()(
         kind: 'worldBook',
       }),
       addBackground: (background) => addBundleResource(set, get, 'backgrounds', 'customBackgrounds', background, presetIds.backgrounds, 'background', false),
-      addEvent: (event) => addBundleResource(set, get, 'events', 'customEvents', event, presetIds.events, 'event', false),
-      addWorkspaceTemplate: (template) => addBundleResource(set, get, 'workspaceTemplates', 'customWorkspaceTemplates', template, presetIds.workspaceTemplates, 'workspaceTemplate', false),
 
       updateOutline: (outline) => addValidated(set, get, {
         value: outline,
@@ -197,31 +172,24 @@ export const useContentStore = create<ContentState>()(
         replace: true,
       }),
       updateBackground: (background) => addBundleResource(set, get, 'backgrounds', 'customBackgrounds', background, presetIds.backgrounds, 'background', true),
-      updateEvent: (event) => addBundleResource(set, get, 'events', 'customEvents', event, presetIds.events, 'event', true),
-      updateWorkspaceTemplate: (template) => addBundleResource(set, get, 'workspaceTemplates', 'customWorkspaceTemplates', template, presetIds.workspaceTemplates, 'workspaceTemplate', true),
 
       removeOutline: (id) => set((state) => ({ customOutlines: state.customOutlines.filter((item) => item.id !== id) })),
       removeBackground: (id) => set((state) => ({ customBackgrounds: state.customBackgrounds.filter((item) => item.id !== id) })),
       removeWorldBook: (id) => set((state) => ({ customWorldBooks: state.customWorldBooks.filter((item) => item.id !== id) })),
-      removeEvent: (id) => set((state) => ({ customEvents: state.customEvents.filter((item) => item.id !== id) })),
-      removeWorkspaceTemplate: (id) => set((state) => ({ customWorkspaceTemplates: state.customWorkspaceTemplates.filter((item) => item.id !== id) })),
       clearCustom: () => set({
         customOutlines: [],
         customBackgrounds: [],
         customWorldBooks: [],
-        customEvents: [],
-        customWorkspaceTemplates: [],
       }),
     }),
     {
       name: 'lrpg.content',
-      version: 2,
+      // v3：移除已废弃的事件库与司书库模板集合。旧存档由 sanitize 静默丢弃多余字段。
+      version: 3,
       partialize: (state) => ({
         customOutlines: state.customOutlines,
         customBackgrounds: state.customBackgrounds,
         customWorldBooks: state.customWorldBooks,
-        customEvents: state.customEvents,
-        customWorkspaceTemplates: state.customWorkspaceTemplates,
       }) as ContentState,
       migrate: (persisted) => sanitizePersistedContent(persisted),
       merge: (persisted, current) => ({ ...current, ...sanitizePersistedContent(persisted) }),
@@ -289,22 +257,18 @@ function addBundleResource<T extends { id: string }>(
 }
 
 function sanitizePersistedContent(input: unknown): Pick<ContentState,
-  'customOutlines' | 'customBackgrounds' | 'customWorldBooks' | 'customEvents' | 'customWorkspaceTemplates'> {
+  'customOutlines' | 'customBackgrounds' | 'customWorldBooks'> {
   const record = typeof input === 'object' && input !== null ? input as Record<string, unknown> : {};
   const validation = validateImportBundle({
     outlines: record.customOutlines,
     backgrounds: record.customBackgrounds,
     worldBooks: record.customWorldBooks,
-    events: record.customEvents,
-    workspaceTemplates: record.customWorkspaceTemplates,
   });
   const value = validation.value ?? {};
   return {
     customOutlines: (value.outlines ?? []).filter((item) => !presetIds.outlines.has(item.id)),
     customBackgrounds: (value.backgrounds ?? []).filter((item) => !presetIds.backgrounds.has(item.id)),
     customWorldBooks: (value.worldBooks ?? []).filter((item) => !presetIds.worldBooks.has(item.id)),
-    customEvents: (value.events ?? []).filter((item) => !presetIds.events.has(item.id)),
-    customWorkspaceTemplates: (value.workspaceTemplates ?? []).filter((item) => !presetIds.workspaceTemplates.has(item.id)),
   };
 }
 
@@ -322,12 +286,6 @@ export function selectAllBackgrounds(state: ContentState): Background[] {
 }
 export function selectAllWorldBooks(state: ContentState): WorldBook[] {
   return mergePresetAndCustom(PRESET_WORLDBOOKS, state.customWorldBooks);
-}
-export function selectAllEvents(state: ContentState): RandomEvent[] {
-  return mergePresetAndCustom(PRESET_EVENTS, state.customEvents);
-}
-export function selectAllWorkspaceTemplates(state: ContentState): WorkspaceTemplate[] {
-  return mergePresetAndCustom(PRESET_WORKSPACE_TEMPLATES, state.customWorkspaceTemplates);
 }
 
 export function flattenWorldBookEntries(books: WorldBook[], ids: string[]): WorldBookEntry[] {

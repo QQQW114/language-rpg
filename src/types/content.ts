@@ -1,6 +1,7 @@
-// 可导入/导出的内容资源类型：世界书、大纲、出身、随机事件
-
-import type { WorkspaceDocumentKind } from './workspace';
+// 可导入/导出的内容资源类型：故事大纲、世界书、出身
+//
+// 随机事件不再有内容库：V2 由 engine.ts 在到期回合注入轻量随机事件指令，
+// 由 patch.ts 负责调度，不依赖事件条目。
 
 export interface WorldBookEntry {
   id: string;
@@ -53,47 +54,11 @@ export interface Background {
   coverEmoji?: string;
 }
 
-export interface RandomEvent {
-  id: string;
-  name: string;
-  directive: string;          // 注入到故事 prompt 的指令
-  probability: number;        // 0..1
-  minRound?: number;
-  cooldown?: number;          // 冷却轮数
-  once?: boolean;             // 只触发一次
-  tags?: string[];
-}
-
-export interface WorkspaceTemplateDocument {
-  path: string;
-  title?: string;
-  kind?: WorkspaceDocumentKind;
-  summary?: string;
-  tags?: string[];
-  content: string;
-  archived?: boolean;
-  stale?: boolean;
-}
-
-export interface WorkspaceTemplate {
-  id: string;
-  name: string;
-  description?: string;
-  // 可选匹配条件：启程页会据此标记“推荐”，玩家仍可手动勾选/取消。
-  outlineIds?: string[];
-  backgroundIds?: string[];
-  worldBookIds?: string[];
-  tags?: string[];
-  docs: WorkspaceTemplateDocument[];
-}
-
 // 导入包：用户一次性粘贴多种资源
 export interface ImportBundle {
   worldBooks?: WorldBook[];
   outlines?: StoryOutline[];
   backgrounds?: Background[];
-  events?: RandomEvent[];
-  workspaceTemplates?: WorkspaceTemplate[];
 }
 
 /** 浏览器书库导出的稳定 JSON 包格式。 */
@@ -104,13 +69,7 @@ export interface ContentExportPackage {
   content: ImportBundle;
 }
 
-export type ContentResourceKind =
-  | 'outline'
-  | 'background'
-  | 'worldBook'
-  | 'event'
-  | 'workspaceTemplate'
-  | 'bundle';
+export type ContentResourceKind = 'outline' | 'background' | 'worldBook' | 'bundle';
 
 export interface ContentValidationIssue {
   kind: ContentResourceKind;

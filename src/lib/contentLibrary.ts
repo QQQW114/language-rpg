@@ -5,11 +5,9 @@ import type {
   ContentValidationIssue,
   ContentValidationResult,
   ImportBundle,
-  RandomEvent,
   StoryAct,
   StoryBeat,
   StoryOutline,
-  WorkspaceTemplate,
   WorldBook,
   WorldBookEntry,
 } from '@/types/content';
@@ -163,18 +161,6 @@ export function validateWorldBook(input: unknown): ContentValidationResult<World
   };
 }
 
-export function normalizeStoryOutline(input: StoryOutline): StoryOutline {
-  const result = validateStoryOutline(input);
-  if (!result.value) throw new Error(result.issues.map((x) => x.message).join('\n'));
-  return result.value;
-}
-
-export function normalizeWorldBook(input: WorldBook): WorldBook {
-  const result = validateWorldBook(input);
-  if (!result.value) throw new Error(result.issues.map((x) => x.message).join('\n'));
-  return result.value;
-}
-
 function normalizeBackground(input: unknown): ContentValidationResult<Background> {
   if (!isRecord(input)) return { ok: false, issues: [issue('background', '$', 'invalid_type', '出身必须是一个对象。')] };
   const name = cleanText(input.name);
@@ -193,58 +179,6 @@ function normalizeBackground(input: unknown): ContentValidationResult<Background
     startItems: cleanStrings(input.startItems),
     startScene,
     coverEmoji: cleanOptionalText(input.coverEmoji),
-  } };
-}
-
-function normalizeEvent(input: unknown): ContentValidationResult<RandomEvent> {
-  if (!isRecord(input)) return { ok: false, issues: [issue('event', '$', 'invalid_type', '随机事件必须是一个对象。')] };
-  const name = cleanText(input.name);
-  const directive = cleanText(input.directive);
-  const issues: ContentValidationIssue[] = [];
-  if (!name) issues.push(issue('event', 'name', 'required', '随机事件名称不能为空。'));
-  if (!directive) issues.push(issue('event', 'directive', 'required', '随机事件指令不能为空。'));
-  if (issues.length) return { ok: false, issues };
-  const probability = Math.max(0, Math.min(1, finiteNumber(input.probability, 0)));
-  const positiveInt = (value: unknown, allowZero = false): number | undefined => {
-    if (value === undefined || value === null || value === '') return undefined;
-    const n = Math.floor(finiteNumber(value, allowZero ? 0 : 1));
-    return Math.max(allowZero ? 0 : 1, n);
-  };
-  return { ok: true, issues, value: {
-    id: cleanText(input.id) || genId('event'),
-    name,
-    directive,
-    probability,
-    minRound: positiveInt(input.minRound),
-    cooldown: positiveInt(input.cooldown, true),
-    once: input.once === true,
-    tags: cleanStrings(input.tags),
-  } };
-}
-
-function normalizeWorkspaceTemplate(input: unknown): ContentValidationResult<WorkspaceTemplate> {
-  if (!isRecord(input)) return { ok: false, issues: [issue('workspaceTemplate', '$', 'invalid_type', '模板必须是一个对象。')] };
-  const name = cleanText(input.name);
-  if (!name) return { ok: false, issues: [issue('workspaceTemplate', 'name', 'required', '模板名称不能为空。')] };
-  const docs = Array.isArray(input.docs) ? input.docs.filter(isRecord).map((doc) => ({
-    path: cleanText(doc.path),
-    title: cleanOptionalText(doc.title),
-    kind: doc.kind as WorkspaceTemplate['docs'][number]['kind'],
-    summary: cleanOptionalText(doc.summary),
-    tags: cleanStrings(doc.tags),
-    content: cleanText(doc.content),
-    archived: doc.archived === true,
-    stale: doc.stale === true,
-  })).filter((doc) => doc.path && doc.content) : [];
-  return { ok: true, issues: [], value: {
-    id: cleanText(input.id) || genId('wst'),
-    name,
-    description: cleanOptionalText(input.description),
-    outlineIds: cleanStrings(input.outlineIds),
-    backgroundIds: cleanStrings(input.backgroundIds),
-    worldBookIds: cleanStrings(input.worldBookIds),
-    tags: cleanStrings(input.tags),
-    docs,
   } };
 }
 
@@ -269,7 +203,7 @@ export function validateImportBundle(input: unknown): ContentValidationResult<Im
     }
     raw = input.content;
   }
-  const bundle: ImportBundle = { outlines: [], backgrounds: [], worldBooks: [], events: [], workspaceTemplates: [] };
+  const bundle: ImportBundle = { outlines: [], backgrounds: [], worldBooks: [] };
   const issues: ContentValidationIssue[] = [...packageIssues];
 
   const collect = <T>(
@@ -294,8 +228,6 @@ export function validateImportBundle(input: unknown): ContentValidationResult<Im
   collect('outlines', validateStoryOutline);
   collect('backgrounds', normalizeBackground);
   collect('worldBooks', validateWorldBook);
-  collect('events', normalizeEvent);
-  collect('workspaceTemplates', normalizeWorkspaceTemplate);
 
   const hasValues = Object.values(bundle).some((value) => value?.length);
   return { ok: issues.length === 0 && hasValues, value: bundle, issues: hasValues ? issues : [
