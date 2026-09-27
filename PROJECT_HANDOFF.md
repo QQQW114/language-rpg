@@ -1,105 +1,47 @@
 # Language RPG 项目接手记录
 
-接手日期：2026-04-27
+本文件记录**当前**接手状态与验证结论。若与代码冲突，以代码与 `docs/PROJECT_STATUS.md` 为准。
 
-## 当前状态
+## 一、项目概览
 
-- 已初始化 Git 仓库，并创建原始项目快照提交：`23740db chore: initial project snapshot`。
-- 已补充接手约定文件：`AGENTS.md`。
-- 已补充跨平台换行规则：`.gitattributes`。
-- 已执行生产构建验证：`cmd /c npm run build` 通过。
+`language-rpg`（言灵 · Language RPG）v0.3.0：纯前端、双模型驱动的中文互动小说。
 
-## 项目概览
+- 玩家创建旅程后，由**规划模型**（写前规划 + 写后结算）与**故事模型**（正文）协作推进回合。
+- 权威状态（人物、关系、库存、线程、事实、场景、命运、随机事件）由程序侧 `patch.ts` 校验与提交，模型只输出增量。
+- 无后端：数据全部存于浏览器本地存储。
 
-这是一个纯前端中文文字 RPG。玩家创建旅程后，由两个模型协作推进：
+完整结构与约定见 [`../AGENTS.md`](../AGENTS.md)，实现状态见 [`PROJECT_STATUS.md`](PROJECT_STATUS.md)，产品约束见 [`destiny-driven-story-core.md`](destiny-driven-story-core.md)。
 
-1. 故事模型：按当前设定、历史、背包、NPC、场景、随机事件生成剧情。
-2. 决策模型：读取最新剧情，返回下一步选项、道具增减、NPC 关系与可前往场景。
+## 二、接手时发现的问题与处理
 
-应用数据主要保存在浏览器 `localStorage` 中：
+接手时项目存在三类问题，已在本次接手改造中处理：
 
-- `lrpg.settings`：API Base、API Key、模型名、温度、历史压缩参数等。
-- `lrpg.games`：存档与完整游戏状态。
-- `lrpg.content`：用户导入/生成的自定义大纲、出身、世界书、随机事件。
+| 问题 | 具体表现 | 处理 |
+|---|---|---|
+| 文档严重脱节 | `AGENTS.md` 描述的是 V1 结构：`src/store/useGameStore.ts`、`src/services/storyAgent.ts`、`src/prompts/*` 等**文件均不存在**；存储键写成 `lrpg.games` / `lrpg.settings`（实际是 `lrpg.v2` / `lrpg.settings.v2`）；要求跟踪的 `runStory` / `runChoices` / `dispatch` 三个函数也不存在 | 重写 `AGENTS.md` 与本文；`PROJECT_STATUS.md`、`docs/README.md` 同步校正 |
+| 大量 V1 死代码 | 37 个文件零引用（旧组件、`LibraryPage`、`GamePage.tsx.bak`、IndexedDB 司书库、工作区模板链路等），且 `src/types/game.ts` 已被删除却仍被十余个文件 import | 全量删除，并同步裁剪 `contentLibrary` / `useContentStore` / `types/content` / `types/ledger` 的废弃字段 |
+| 类型检查形同虚设 | `tsconfig.json` 的 `include` 只列了 4 个路径，死代码长期不在检查范围内，因此腐坏无人发现 | include 改为 `["src"]`，修复后 `npx tsc --noEmit` 零错误 |
+| 无自动化测试 | 只有两个手写 node 脚本，核心纯函数无回归网 | 建立 esbuild + `node:test` 测试系统，覆盖工具、SSE、Patch、引擎、存档、内容库与工坊校验 |
 
-## 核心运行流
+## 三、本次改造的验证记录
 
-入口链路：
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| 类型检查 | `cmd /c npx tsc --noEmit` | 通过（全 `src/` 零错误） |
+| 生产构建 | `cmd /c npm run build` | 通过 |
+| 单元测试 | `cmd /c npm test` | 通过 |
+| Patch 回归 | `cmd /c npm run test:patch` | 通过 |
+| 故事链路（无 Key） | `cmd /c npm run test:story -- --dry-run` | 通过 |
+| 开发服务器 | `cmd /c npm run dev` | `http://127.0.0.1:5173` 正常响应并转译模块 |
 
-- `index.html`
-- `src/main.tsx`
-- `src/App.tsx`
+清理效果：源文件 74 → 41 个；Tailwind 产物 CSS 58.3 → 45.9 kB（不再扫描死代码）；JS 主包 532 → 524 kB（gzip 178 → 172 kB）。
 
-主要路由：
+## 四、仍需人工完成的事项
 
-- `/`：`HomePage`，列出/进入/删除存档。
-- `/setup`：`SetupPage`，配置新旅程。
-- `/game`：`GamePage`，执行回合循环。
-- `/settings`：`SettingsPage`，配置模型 API。
-- `/library`：`LibraryPage`，管理内容库。
-
-`GamePage.tsx` 的关键流程：
-
-1. `dispatch()` 根据当前 `phase` 分派任务。
-2. `runStory()` 调用 `requestStory()` 流式生成故事，写入 assistant 消息并推进回合。
-3. `runChoices()` 调用 `requestChoices()` 生成选择、道具、NPC、场景。
-4. 回合结束后可能触发：
-   - 随机事件记录。
-   - 手动输入阶段。
-   - 刷新选项次数发放。
-   - 长历史压缩。
-   - 终局评分。
-
-## 重要模块
-
-- `src/services/llmClient.ts`
-  - `chatStream()`：流式调用。
-  - `chatJSON()`：非流式 JSON 调用；Responses 格式下会用流式聚合兜底。
-- `src/lib/sse.ts`
-  - 解析 Chat Completions 与 Responses 两类 SSE delta。
-- `src/services/decisionAgent.ts`
-  - 对模型返回 JSON 做选择、道具、NPC、场景清洗。
-  - 失败时返回兜底选项。
-- `src/store/useGameStore.ts`
-  - 游戏状态的唯一主要写入点。
-  - 兼容老存档字段补齐。
-- `src/services/worldBookMatcher.ts`
-  - 用最近上下文和玩家输入进行关键词匹配。
-- `src/services/randomEventScheduler.ts`
-  - 每回合按概率抽取最多一个随机事件。
-
-## 验证记录
-
-已运行：
-
-```bash
-cmd /c npm run build
-```
-
-结果：
-
-- TypeScript 检查通过。
-- Vite 生产构建通过。
-- 输出产物位于 `dist/`，已被 `.gitignore` 排除。
-
-注意：
-
-- 在 PowerShell 里直接运行 `npm run build` 可能因 `npm.ps1` 执行策略失败；使用 `cmd /c npm run build` 正常。
-- 在受限沙箱中，Vite/esbuild 子进程可能出现 `spawn EPERM`；需要在允许子进程的环境中构建。
-
-## 已发现的后续关注点
-
-- `scripts/test-api.mjs` 已改为读取环境变量：`LRPG_API_BASE` / `OPENAI_BASE_URL`、`LRPG_API_KEY` / `OPENAI_API_KEY`、`LRPG_TEST_MODEL`。
-- 当前没有自动化单元测试；关键纯函数适合补测：
-  - `extractJSON`
-  - `readSSE` 的 frame 解析
-  - `pickRandomEvent`
-  - `matchWorldBook`
-  - `useGameStore` 的道具 pending/commit 流程
-- 模型协议变更风险集中在 prompt 与 sanitizer 不一致；改动时必须成组验证。
-- 生产构建通过，但仍需配置真实/本地模型 API 后做浏览器冒烟测试：
-  1. 保存设置。
-  2. 创建旅程。
-  3. 生成一轮故事。
-  4. 生成选项。
-  5. 测试背包、场景跳转、手动输入和完结评分。
+1. **模型链路冒烟测试**：本机无 API Key，未做真实模型调用。配置 API 后需手动走一遍：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景跳转 / 手动输入 / 完结评分。
+2. **浏览器交互级回归**：本次改造未改动运行时行为（只删除零引用文件与废弃字段），但仍建议人工点一遍 `/`、`/setup`、`/game`、`/workshop`、`/settings` 五条路由。
+3. **遗留资产决策**：
+   - `.legacy-reference/`（V1 提示词与架构草稿，已 gitignore、不参与构建）确认无用后可删除；
+   - `test-saves/`、`test-runs/`（均已 gitignore）为历史测试产物，可按需保留或清理。
+4. **包体积**：主包仍有 500 kB 级 chunk 警告。若需要，可对 `/workshop` 与 `react-markdown` 做动态 import 分包（本次未做，避免影响现有行为）。
+5. **存档兼容**：`useContentStore` 持久化版本已升至 3，旧数据中的 `customEvents` / `customWorkspaceTemplates` 会被静默丢弃；V2 存档本就不兼容 0.3 以下版本。

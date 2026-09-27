@@ -63,7 +63,21 @@ npm run dev
 npm run build
 ```
 
-## 故事链路测试
+## 测试
+
+单元测试（离线运行，模型调用全部 mock）：
+
+```bash
+npm test
+```
+
+Patch / 命运状态回归：
+
+```bash
+npm run test:patch
+```
+
+故事链路脚本测试（未配置 API 时自动进入 dry-run）：
 
 ```bash
 npm run test:story -- --dry-run --mode=author
@@ -81,6 +95,14 @@ npm run test:story -- --mode=author
 ```
 
 可使用 `--inputs=inputs.txt` 提供每行一条玩家输入，测试报告保存到被 Git 忽略的 `test-runs/`。
+
+## 开发文档
+
+- [`AGENTS.md`](AGENTS.md)：接手约定——运行命令、代码结构、路由、浏览器存储键、开发注意事项。
+- [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)：接手记录与仍需人工完成的事项。
+- [`docs/destiny-driven-story-core.md`](docs/destiny-driven-story-core.md)：产品定位与最高设计约束，改提示词前必读。
+- [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)：与代码同步的实现状态（协议字段、状态结构、测试体系）。
+- [`CHANGELOG.md`](CHANGELOG.md)：版本更新记录。
 
 ## 技术栈
 

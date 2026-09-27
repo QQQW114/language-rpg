@@ -31,6 +31,18 @@
 | `src/lib/sse.ts` | SSE 解析、`<think>` 拆分、思考通道 JSON 回退 |
 | `src/pages/SettingsPage.tsx` | 模型、上下文、注入、输入视角、展示详情设置 |
 | `src/store/useSettingsStore.ts` | 设置持久化与 normalize |
+| `src/lib/sse.ts` | SSE 解析、`<think>` 拆分、思考通道 JSON 回退 |
+| `src/lib/contentLibrary.ts` | 故事 / 世界书 / 出身的校验与导入导出包 |
+| `src/store/useContentStore.ts` | 自定义内容库（persist `lrpg.content`，version 3） |
+| `src/v2/workshop/model.ts` | 命运工坊的校验、克隆、规范化 |
+
+### 存储键
+
+| 键 | 写入方 |
+|---|---|
+| `lrpg.v2` | `src/v2/store.ts`（存档与回合状态） |
+| `lrpg.settings.v2` | `src/store/useSettingsStore.ts` |
+| `lrpg.content` | `src/store/useContentStore.ts` |
 
 ## 3. 三模型协议
 
@@ -164,8 +176,35 @@
 - 当前完成度说明（折叠）；
 - 故事节状态（展开；开启 `stateEditingEnabled` 时显示全部故事节与下一里程碑/收敛计划）。
 
-## 9. 已知边界
+## 9. 测试体系
+
+三层，全部可离线运行：
+
+```bash
+cmd /c npm test                              # 单元测试（esbuild 打包 + node:test）
+cmd /c npm run test:patch                    # Patch / 命运状态回归（scripts/test-destiny-patch.mjs）
+cmd /c npm run test:story -- --dry-run       # 故事链路脚本（无 Key 自动 dry-run）
+```
+
+- 单元测试源码位于 `tests/`，由 `scripts/run-unit-tests.mjs` 用 esbuild 以 `@ -> src` 别名打包到被 gitignore 的 `test-runs/unit/` 后再运行，因此测试可以像产品代码一样使用 `@/` 导入。
+- 模型调用一律 mock `globalThis.fetch`，不产生真实网络请求。
+- 覆盖范围：通用工具与 JSON 提取、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支、`runTurnV2` 三阶段端到端与失败路径、`useGameStoreV2` 存档与回合回退、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆。
+
+## 10. 已移除的遗留部分
+
+V1 多 Agent 版本的代码已在接手清理中删除（均为零引用文件），包括：
+
+- 旧页面与组件：`pages/LibraryPage.tsx`、`pages/GamePage.tsx.bak`、`components/StoryView` / `ChoicePanel` / `NpcList` / `CharacterPanel` / `SceneMap` / `SidebarTabs` / `TopBar` / `ReviewPanel` 等 18 个组件；
+- 旧数据层：`storage/ledgerRepository.ts`（IndexedDB 司书库）、`types/workspace.ts`、`types/custom.ts`、`lib/workspaceSeed.ts`、`lib/workspaceTemplates.ts`、`lib/journeyPackage.ts`、`lib/ledgerJourneyPackage.ts`、`lib/strictCustom.ts`、`lib/storage.ts`；
+- 旧提示词与类型：`lib/deepseekV4Prompt.ts`、`lib/items.ts`（依赖已删除的 `types/game.ts`）、`lib/agentTrace.ts`、`lib/animations.ts`；
+- 内容库中的随机事件条目与司书库模板：`RandomEvent` / `WorkspaceTemplate` 类型、`presets/events.ts`、`presets/workspaceTemplates.ts` 及 `contentLibrary` / `useContentStore` 中的对应分支。随机事件现在完全由 `engine.ts` 指令与 `patch.ts` 调度驱动，不再依赖事件库。
+
+`/library` 路由保留为到 `/workshop` 的兼容重定向。
+
+## 11. 已知边界
 
 - V2 旧存档没有显式迁移层，靠运行时默认值兜底；
+- `useContentStore` 持久化版本为 3：旧数据中的 `customEvents` / `customWorkspaceTemplates` 会被 `sanitizePersistedContent` 静默丢弃；
 - 活动面板不展示规划/结算模型原始 JSON 输出；
-- 旧文档已归档至 `docs/archive/`。
+- 主包仍为 500 kB 级单 chunk，`/workshop` 与 `react-markdown` 未做动态分包；
+- 旧文档已归档至 `docs/archive/`；`.legacy-reference/` 为本地 V1 草稿，不参与构建。

@@ -2,6 +2,29 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
+## [未发布]
+
+### 移除
+
+- 清理 V1 遗留代码：删除 37 个零引用文件，包括旧页面（`LibraryPage`、`GamePage.tsx.bak`）、18 个旧组件、IndexedDB 司书库（`storage/ledgerRepository.ts`）、工作区/司书库模板链路、旧执笔链提示词与只服务旧类型的工具模块。
+- 移除内容库中的随机事件条目与司书库模板：`RandomEvent` / `WorkspaceTemplate` 类型、预设事件库、以及 `contentLibrary` / `useContentStore` 中的对应分支。随机事件改由 `engine.ts` 指令与 `patch.ts` 调度独立驱动（行为不变）。
+- 删除误导性的临时重构产物 `.tmp_cn_refs.txt` 与 `.tmp_item_refs.txt`。
+
+### 修复
+
+- `tsconfig.json` 的 `include` 从 4 个路径改为 `["src"]`：此前大量文件不在类型检查范围内，`src/types/game.ts` 被删除后仍被十余个文件 import 而无人发现。
+
+### 文档
+
+- 重写 `AGENTS.md`：原内容描述的是 V1 结构（`useGameStore.ts`、`services/storyAgent.ts`、`src/prompts/*`、`runStory/runChoices/dispatch` 等均不存在），已按 V2 实况重写运行命令、代码结构、路由、存储键与协议改动清单。
+- 重写 `PROJECT_HANDOFF.md`：改为记录本次接手发现的问题、处理方式、验证结果与仍需人工完成的事项。
+- 同步 `docs/PROJECT_STATUS.md`（存储键、测试体系、已移除的遗留部分）与 `docs/README.md`（标注归档文档中的失效路径）。
+- `README.md` 补充测试与开发文档索引。
+
+### 新增
+
+- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`）；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+
 ## [0.3.0] - 2026-07-16
 
 ### 新增
