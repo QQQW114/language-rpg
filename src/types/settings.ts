@@ -47,13 +47,23 @@ export interface AppSettings {
    */
   reasoningEffort: ReasoningEffort;
   /**
-   * 逐阶段的思考强度覆盖。留空表示用 `reasoningEffort`。
+   * 逐阶段的思考强度覆盖。留空表示继续按模型 / 全局解析。
    *
-   * 存在的原因：三个阶段的思考价值不同。写后结算的产出结构由模板完全固定，
-   * 属于机械性任务，可以用更省的档位；规划与正文需要真正的判断。
-   * 默认只给结算降一档，其余跟随全局。
+   * 保留原因：三个阶段的思考价值不同（写后结算的产出结构由模板完全固定，
+   * 属机械性任务）。这是"按阶段"的细粒度覆盖，日常调参请优先用
+   * `reasoningEffortByModel`——思考强度本质上是**模型特性**，跟着模型走才不会
+   * 在换模型时失效。
    */
   reasoningEffortByPhase?: Partial<Record<'planner_pre' | 'story' | 'planner_post', ReasoningEffort>>;
+  /**
+   * 按模型覆盖思考强度（键为模型名，例如 `deepseek-flash`）。
+   *
+   * 这是首选方式：思考行为的差异来自模型本身，按模型配置后，换用哪个模型就自动
+   * 带着它自己的档位，不必因为改了阶段或改了链路而重新调。解析优先级：
+   * 逐阶段覆盖 → 按模型覆盖 → 全局 `reasoningEffort`。
+   * 未列出的模型使用全局档位。
+   */
+  reasoningEffortByModel?: Record<string, ReasoningEffort>;
   roleInjects: RoleInjectSettings;
   /** 执笔模式下，玩家输入作为“玩家行动”还是“导演指令”处理。 */
   inputPerspective: InputPerspective;
@@ -75,9 +85,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   plannerJsonMode: 'auto',
   thinkingMode: 'auto',
   reasoningEffort: 'high',
-  // 结算阶段的产出结构由模板完全固定，属机械性任务；给它一档更省的强度。
-  // 这只是默认值，用户可在设置页把任意阶段改回 high/max 或改为"跟随全局"。
-  reasoningEffortByPhase: { planner_post: 'low' },
+  // 默认没有按模型/按阶段的覆盖：一律使用全局档位。玩家可以在设置页按模型指定
+  // 思考强度（例如给便宜模型用 low、给规划模型用 max）。
+  reasoningEffortByModel: {},
+  reasoningEffortByPhase: {},
   roleInjects: {
     planner: { enabled: false, text: '' },
     story: { enabled: false, text: '' },

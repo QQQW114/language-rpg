@@ -440,21 +440,20 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
       // "turn":2 这类片段，直接在全文里 includes 会假通过（第一版断言就是这样漏掉的）。
       const at = post.indexOf('"schemaVersion"');
       assert.ok(at >= 0, '应包含输出模板');
-      const template = post.slice(at);
-      assert.ok(template.includes('"baseRevision":4'), `模板应含真实 revision：${template.slice(0, 120)}`);
-      assert.ok(template.includes('"turn":2'), `模板应含真实 turn：${template.slice(0, 120)}`);
-      assert.ok(!/"baseRevision"\s*:\s*0/.test(template), '不应残留 baseRevision 0 占位');
-      assert.ok(!/"turn"\s*:\s*0/.test(template), '不应残留 turn 0 占位');
+      const template = post.slice(at, post.indexOf('【TURN_ID】'));
+      // 回归：commitId / baseRevision / turn 都曾内嵌在模板里，而它们每回合都不同，
+      // 导致整段（约 2KB）模板永远无法逐字节复用、前缀缓存失效。现在模板里不得出现
+      // 它们；具体值只出现在可变区的 TURN_ID/baseRevision/turn 行，
+      // 提交时 asPatch 用程序自己的值覆盖模型回显。
+      assert.ok(!template.includes('"commitId"'), '固定模板里不应出现每回合变化的 commitId');
+      assert.ok(!template.includes('"baseRevision"'), '固定模板里不应出现每回合递增的 baseRevision');
+      assert.ok(!template.includes('"turn"'), '固定模板里不应出现每回合递增的 turn');
+      assert.ok(!template.includes('COMMIT_ID'), '模板不应残留 COMMIT_ID 占位符');
+      // 但可变区必须把真实值给模型，否则它只能猜。
+      assert.ok(post.includes('【baseRevision】4'), '可变区应给出真实 baseRevision');
+      assert.ok(post.includes('【turn】2'), '可变区应给出真实 turn');
       const commitId = /【TURN_ID】2:([a-z0-9_]+)/.exec(post)?.[1];
       assert.ok(commitId, 'TURN_ID 应带 commitId');
-      // 回归：commitId 曾内嵌在输出模板里，而它每回合随机生成，导致模板（~2KB）
-      // 永远无法逐字节复用、前缀缓存失效。现在模板里不得出现它，它只出现在可变区的
-      // TURN_ID 行；提交时 asPatch 仍用程序自己的 commitId 覆盖模型输出。
-      assert.ok(
-        !template.includes('"commitId"'),
-        `固定模板里不应出现每回合变化的 commitId：${template.slice(0, 120)}`,
-      );
-      assert.ok(!template.includes('COMMIT_ID'), '模板不应残留 COMMIT_ID 占位符');
     });
   });
 
@@ -817,30 +816,56 @@ describe('engine.runTurnV2 — 思考强度与思考成本', () => {
   // 思考参数只对官方 DeepSeek 端点发送（第三方兼容端点常不认识这些字段）。
   const official = { apiBaseUrl: 'https://api.deepseek.com/v1' };
 
-  it('逐阶段发送思考强度：结算默认 low，规划/正文跟随全局（回归：high 曾是最低档）', async () => {
+  it('按模型解析思考强度：每个模型带自己的档位（回归：原先只有全局一档）', async () => {
     const requests: RecordedRequest[] = [];
     await withFetchMock(phaseHandler(), async (mock) => {
-      await runTurnV2(makeRequest({ settings: { ...official, thinkingMode: 'enabled', reasoningEffort: 'high', reasoningEffortByPhase: { planner_post: 'low' } } }));
+      await runTurnV2(makeRequest({
+        settings: {
+          ...official,
+          thinkingMode: 'enabled',
+          reasoningEffort: 'high',
+          storyModel: 'story-model-x',
+          plannerModel: 'planner-model-y',
+          reasoningEffortByModel: { 'story-model-x': 'low', 'planner-model-y': 'max' },
+        },
+      }));
       requests.push(...mock.requests);
     });
-    const effortOf = (phase: ModelPhaseV2) => {
-      const request = requests.find((r) => phaseOf(r) === phase);
-      return (request?.body as { reasoning_effort?: string })?.reasoning_effort;
-    };
-    assert.equal(effortOf('planner_pre'), 'high');
-    assert.equal(effortOf('story'), 'high');
-    assert.equal(effortOf('planner_post'), 'low', '写后结算应使用覆盖后的 low 档');
+    const effortOf = (phase: ModelPhaseV2) => (requests.find((r) => phaseOf(r) === phase)?.body as { reasoning_effort?: string })?.reasoning_effort;
+    assert.equal(effortOf('story'), 'low', '故事模型应带自己的 low 档');
+    assert.equal(effortOf('planner_pre'), 'max', '规划模型应带自己的 max 档');
+    assert.equal(effortOf('planner_post'), 'max', '结算与写前共用规划模型，档位一致');
   });
 
-  it('逐阶段覆盖可缺席：不设置时三个阶段都用全局强度', async () => {
+  it('未列出的模型走全局档位', async () => {
     const requests: RecordedRequest[] = [];
     await withFetchMock(phaseHandler(), async (mock) => {
-      await runTurnV2(makeRequest({ settings: { ...official, thinkingMode: 'enabled', reasoningEffort: 'max', reasoningEffortByPhase: {} } }));
+      await runTurnV2(makeRequest({ settings: { ...official, thinkingMode: 'enabled', reasoningEffort: 'low', reasoningEffortByModel: { 'some-other-model': 'max' } } }));
       requests.push(...mock.requests);
     });
     for (const request of requests) {
-      assert.equal((request.body as { reasoning_effort?: string })?.reasoning_effort, 'max');
+      assert.equal((request.body as { reasoning_effort?: string })?.reasoning_effort, 'low');
     }
+  });
+
+  it('逐阶段覆盖优先于按模型覆盖', async () => {
+    const requests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({
+        settings: {
+          ...official,
+          thinkingMode: 'enabled',
+          reasoningEffort: 'high',
+          plannerModel: 'planner-model-y',
+          reasoningEffortByModel: { 'planner-model-y': 'max' },
+          reasoningEffortByPhase: { planner_post: 'low' },
+        },
+      }));
+      requests.push(...mock.requests);
+    });
+    const effortOf = (phase: ModelPhaseV2) => (requests.find((r) => phaseOf(r) === phase)?.body as { reasoning_effort?: string })?.reasoning_effort;
+    assert.equal(effortOf('planner_post'), 'low', '逐阶段覆盖优先');
+    assert.equal(effortOf('planner_pre'), 'max', '未覆盖的阶段仍按模型解析');
   });
 
   it('thinkingMode 为 disabled 时显式关闭思考，且不发送思考强度', async () => {
@@ -940,17 +965,17 @@ describe('engine.runTurnV2 — 前缀缓存结构', () => {
     assert.ok(storyA.indexOf('【STOP_BOUNDARY】') < storyA.indexOf('【AUTHORITATIVE_STATE】'));
     assert.ok(storyA.indexOf('【AUTHORITATIVE_STATE】') < storyA.indexOf('【CURRENT_TURN_INPUT】'));
 
-    // 最关键的一条：结算请求的固定模板段（到注入值为止）必须能整段复用
-    const stableTemplate = (text: string) => text.slice(0, text.indexOf('"baseRevision"'));
+    // 最关键的一条：结算请求的整段输出模板必须能逐字节复用。
+    // 模板边界就是【TURN_ID】——它之后才是本回合的可变材料。
+    const stableTemplate = (text: string) => text.slice(0, text.indexOf('【TURN_ID】'));
     const templateA = stableTemplate(postA);
     const templateB = stableTemplate(postB);
     assert.ok(templateA.length > 1500, `可复用的固定模板段应有实际体量，实际 ${templateA.length} 字符`);
-    assert.equal(templateA, templateB, '固定模板段在相邻回合必须逐字节相同');
-    // 每回合必变的 baseRevision / turn 必须排在字段说明之后，否则整段模板都失效。
-    assert.ok(
-      postA.indexOf('"randomEvent"') < postA.indexOf('"baseRevision"'),
-      'baseRevision 必须排在字段说明之后',
-    );
+    assert.equal(templateA, templateB, '整段固定模板在相邻回合必须逐字节相同');
+    // 模板里不得出现任何每回合递增或随机的值，否则它整段失效。
+    for (const marker of ['"turn"', '"baseRevision"', '"commitId"']) {
+      assert.ok(!templateA.includes(marker), `固定模板里不应出现 ${marker}`);
+    }
   });
 
   it('可变材料确实改变了前缀，但只发生在固定模板之后', async () => {

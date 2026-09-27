@@ -121,12 +121,13 @@ const plannerContextTool: ChatTool = {
   },
 };
 
-// 注意两点都与前缀缓存有关：
-//   1. **不放** commitId。它每回合随机生成，一旦内嵌在模板里，模板就永远无法
-//      逐字节复用。它改由消息里的【TURN_ID】行给出，提交时 asPatch 也用程序自己的值
-//      覆盖，因此模型不回显它也不影响提交。
-//   2. `baseRevision` / `turn` 这两个每回合必然变化的值放在**模板末尾**，
-//      让前面的字段说明（约 2KB、逐字节固定）成为可复用的缓存前缀。
+// 注意三点都与前缀缓存有关：
+//   1. **不放** commitId。它每回合随机生成，一旦内嵌在模板里，模板就永远无法逐字节复用。
+//   2. **不放** baseRevision / turn。它们每回合递增，同样会让整段模板每回合都变；
+//      具体值改由消息里的【TURN_ID】行给出。
+//   3. 上面两者都不影响提交：asPatch() 构造补丁时一律用程序自己的 commitId /
+//      baseRevision / turn 覆盖模型回显的值，程序侧还有 baseRevision 守卫兜底。
+// 于是这份模板（约 2KB）成为逐字节稳定的可复用前缀。
 const postShape = `{
   "schemaVersion":2,
   "roundSummary":"仅总结本轮正文",
@@ -139,9 +140,7 @@ const postShape = `{
   "scene":{"id":"stable-scene-id","name":"地点名","description":"","time":"","weather":""},
   "actions":[{"id":"stable-action-id","label":"行动选项","hint":"可选提示"}],
   "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
-  "randomEvent":{"handled":false,"note":""},
-  "baseRevision":0,
-  "turn":0
+  "randomEvent":{"handled":false,"note":""}
 }`;
 
 function relevantFacts(p: TurnRequestV2) {
@@ -685,18 +684,21 @@ export async function runTurnV2(p: TurnRequestV2) {
   try { isOfficialDeepSeek ||= /(^|\.)deepseek\.com$/i.test(new URL(p.settings.apiBaseUrl).hostname); } catch { /* 由LLM客户端负责报告无效URL */ }
   const plannerJsonEnabled = p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek);
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
-  // 逐阶段的思考强度覆盖。写后结算的产出结构由模板完全固定，属于机械性任务，
-  // 因此默认给它一档更省的强度；规划与正文跟随全局设置。
+  // 思考强度按模型解析：思考行为的差异来自模型本身，所以首选"每个模型一个档位"，
+  // 换模型时自动带上它自己的设置。解析优先级：逐阶段覆盖 → 按模型覆盖 → 全局档位。
   // 关闭思考时显式发送 `thinking: {type:'disabled'}`——官方文档说明思考模式
   // **默认开启**，所以"什么都不发"会退回默认开启而不是关闭。
-  const reasoningEffortFor = (phase: 'planner_pre' | 'story' | 'planner_post') => (
-    isOfficialDeepSeek && p.settings.thinkingMode !== 'disabled'
-      ? (p.settings.reasoningEffortByPhase?.[phase] ?? p.settings.reasoningEffort)
-      : undefined
-  );
-  const reasoningEffort = reasoningEffortFor('planner_pre');
-  const storyReasoningEffort = reasoningEffortFor('story');
-  const postReasoningEffort = reasoningEffortFor('planner_post');
+  const reasoningEffortFor = (phase: 'planner_pre' | 'story' | 'planner_post', model: string) => {
+    if (!isOfficialDeepSeek || p.settings.thinkingMode === 'disabled') return undefined;
+    const byPhase = p.settings.reasoningEffortByPhase?.[phase];
+    if (byPhase) return byPhase;
+    const byModel = p.settings.reasoningEffortByModel?.[model.trim()];
+    if (byModel) return byModel;
+    return p.settings.reasoningEffortByModel?.[''] ?? p.settings.reasoningEffort;
+  };
+  const reasoningEffort = reasoningEffortFor('planner_pre', plannerModel);
+  const storyReasoningEffort = reasoningEffortFor('story', storyModel);
+  const postReasoningEffort = reasoningEffortFor('planner_post', plannerModel);
   const roleInjects = p.settings.roleInjects;
   // 收集本回合所有阶段的思维链，导出与展示可共用。
   const turnThinkingParts: string[] = [];
@@ -823,16 +825,13 @@ export async function runTurnV2(p: TurnRequestV2) {
   }
 
   const commitId = genId('commit');
-  // 结构顺序对缓存命中至关重要：固定指令 + 输出模板在前（每回合逐字节相同，
-  // 可长期命中前缀缓存），本回合的可变材料（正文、状态、输入、commitId）全部压到最后。
-  // 修复前有两个问题：模板被放在正文之后（永远进不了缓存），而且模板里内嵌了每回合
-  // 随机的 commitId（即使位置对了，模板本身也逐字节不同）。
-  const postShapeFilled = postShape
-    .replace('"baseRevision":0', `"baseRevision":${p.state.revision}`)
-    .replace('"turn":0', `"turn":${p.state.turn}`);
+  // 模板里不再内嵌 commitId / baseRevision / turn（它们每回合变化，会让整段模板失效）。
+  // 具体值统一在下面这条消息的可变区里给出：TURN_ID 带 turn 与 commitId，
+  // 另外单独给出 baseRevision 与 turn，避免模型只能从模板的占位值里猜。
+  // asPatch() 会用程序自己的值覆盖这三个字段，因此模型照抄占位值也不会出错。
   const postMessages: ChatMessage[] = [
     { role: 'system', content: plannerPostPrompt },
-    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShapeFilled}\n【baseRevision】${p.state.revision}\n【turn】${p.state.turn}\n【TURN_ID】${p.state.turn}:${commitId}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${story.text}` },
+    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${p.state.turn}:${commitId}\n【baseRevision】${p.state.revision}\n【turn】${p.state.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${story.text}` },
   ];
   emitPhase(p, 'planner_post', plannerModel, 'started', undefined, false);
   let post;

@@ -48,6 +48,8 @@ export default function SettingsPage() {
   const navigate = useNavigate();
   const { settings, update } = useSettingsStore();
   const [draft, setDraft] = useState(settings);
+  // 按模型设置思考强度时，用于输入"新模型名"的临时输入框。
+  const [modelEffortDraft, setModelEffortDraft] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [injectOpen, setInjectOpen] = useState(false);
   const [customTokens, setCustomTokens] = useState(String(settings.plannerContextTokens));
@@ -384,25 +386,59 @@ export default function SettingsPage() {
                 </label>
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-parchment-200/45">DeepSeek 官方映射为 minimal/low → low、medium/high/xhigh → high、max/ultra → max，因此只有三档，不提供数字型思考预算；思考 token 按输出计费。JSON 模式只用于规划模型，故事正文保持普通文本。</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                {([['planner_pre', '写前规划'], ['story', '故事正文'], ['planner_post', '写后结算']] as const).map(([phase, label]) => (
-                  <label key={phase} className="text-xs text-parchment-200/65">{label}
-                    <select
-                      disabled={draft.thinkingMode === 'disabled'}
-                      value={draft.reasoningEffortByPhase?.[phase] ?? ''}
-                      onChange={(event) => setDraft({
-                        ...draft,
-                        reasoningEffortByPhase: {
-                          ...draft.reasoningEffortByPhase,
-                          [phase]: event.target.value === '' ? undefined : event.target.value as typeof draft.reasoningEffort,
-                        },
-                      })}
-                      className="mt-1 w-full rounded border border-parchment-600/40 bg-ink/50 px-2 py-2 text-parchment-100 disabled:opacity-40"
-                    >
-                      <option value="">跟随全局</option><option value="low">Low</option><option value="high">High</option><option value="max">Max</option>
-                    </select>
-                  </label>
-                ))}
+              <div className="mt-3 rounded-lg border border-parchment-600/25 bg-ink/20 p-3">
+                <div className="text-xs text-parchment-100">按模型设置思考强度</div>
+                <p className="mt-1 text-[11px] leading-relaxed text-parchment-200/50">思考强度本质上是模型特性，因此按模型配置：换用哪个模型就自动带上它自己的档位，不必因为改了阶段而重调。未列出的模型使用上面的全局档位。</p>
+                <div className="mt-2 space-y-2">
+                  {Object.entries(draft.reasoningEffortByModel ?? {}).map(([model, effort]) => (
+                    <div key={model} className="flex flex-wrap items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-xs text-parchment-200/80" title={model}>{model}</span>
+                      <select
+                        value={effort}
+                        onChange={(event) => setDraft({ ...draft, reasoningEffortByModel: { ...draft.reasoningEffortByModel, [model]: event.target.value as typeof draft.reasoningEffort } })}
+                        className="rounded border border-parchment-600/40 bg-ink/50 px-2 py-1 text-xs text-parchment-100"
+                      >
+                        <option value="low">Low</option><option value="high">High</option><option value="max">Max</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = { ...draft.reasoningEffortByModel };
+                          delete next[model];
+                          setDraft({ ...draft, reasoningEffortByModel: next });
+                        }}
+                        className="rounded border border-parchment-600/40 px-2 py-1 text-xs text-parchment-200/70 hover:border-blood/50 hover:text-blood"
+                      >删除</button>
+                    </div>
+                  ))}
+                  {(draft.reasoningEffortByModel && Object.keys(draft.reasoningEffortByModel).length === 0) && <div className="text-[11px] text-parchment-200/45">尚未按模型设置，全部使用全局档位。</div>}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    value={modelEffortDraft}
+                    onChange={(event) => setModelEffortDraft(event.target.value)}
+                    placeholder="模型名，例如 deepseek-flash"
+                    className="min-w-0 flex-1 rounded border border-parchment-600/40 bg-ink/50 px-2 py-1 text-xs text-parchment-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const model = modelEffortDraft.trim();
+                      if (!model) return;
+                      setDraft({ ...draft, reasoningEffortByModel: { ...draft.reasoningEffortByModel, [model]: 'high' } });
+                      setModelEffortDraft('');
+                    }}
+                    className="rounded border border-gold/40 px-2 py-1 text-xs text-gold hover:bg-gold/10"
+                  >添加模型</button>
+                  {[draft.storyModel, draft.plannerModel].filter((m, i, arr) => m && arr.indexOf(m) === i).map((model) => (
+                    <button
+                      key={model}
+                      type="button"
+                      onClick={() => setDraft({ ...draft, reasoningEffortByModel: { ...draft.reasoningEffortByModel, [model]: 'high' } })}
+                      className="rounded border border-parchment-600/40 px-2 py-1 text-[11px] text-parchment-200/70 hover:border-gold/50 hover:text-gold"
+                    >+ {model}</button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

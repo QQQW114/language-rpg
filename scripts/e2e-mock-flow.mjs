@@ -281,12 +281,13 @@ const postShapeSnippet = (() => {
   return at >= 0 ? text.slice(at, end > at ? end : at + 2600) : '(未找到模板)';
 })();
 report.postShapeSnippet = postShapeSnippet;
-check('planner_post 模板中的 baseRevision 占位已替换为真实值', postShapeSnippet.includes(`"baseRevision":${REVISION_IN}`), postShapeSnippet.slice(-160));
-check('planner_post 模板中的 turn 占位已替换为真实值', postShapeSnippet.includes(`"turn":${TURN_IN}`), postShapeSnippet.slice(-160));
-check('planner_post 模板不再残留 0 占位', !/"baseRevision"\s*:\s*0/.test(postShapeSnippet) && !/"turn"\s*:\s*0/.test(postShapeSnippet), postShapeSnippet.slice(-160));
-// 前缀缓存结构：每回合必变的注入值必须排在字段说明之后，模板里不得含每回合随机的 commitId。
-check('planner_post 模板把可变注入值排在字段说明之后（缓存前缀最大化）', postShapeSnippet.indexOf('"randomEvent"') < postShapeSnippet.indexOf('"baseRevision"') && postShapeSnippet.indexOf('"baseRevision"') >= 0, `randomEvent@${postShapeSnippet.indexOf('"randomEvent"')} baseRevision@${postShapeSnippet.indexOf('"baseRevision"')}`);
+check('planner_post 可变区给出真实 baseRevision', JSON.stringify(requests[3].body.messages).includes(`【baseRevision】${REVISION_IN}`), '未注入 baseRevision');
+check('planner_post 可变区给出真实 turn', JSON.stringify(requests[3].body.messages).includes(`【turn】${TURN_IN}`), '未注入 turn');
+// 模板必须整段逐字节稳定，否则前缀缓存从变化处失效：里面不得出现任何每回合递增/随机的值。
+check('planner_post 模板不含任何每回合变化的值', !/"baseRevision"/.test(postShapeSnippet) && !/"turn"/.test(postShapeSnippet) && !/"commitId"/.test(postShapeSnippet), postShapeSnippet.slice(0, 120));
+// 前缀缓存结构：整段模板必须逐字节稳定。
 check('planner_post 固定模板里不含每回合变化的 commitId', !/"commitId"/.test(postShapeSnippet) && !postShapeSnippet.includes('COMMIT_ID'), postShapeSnippet.slice(0, 80));
+check('planner_post 整段模板体量足够（可复用前缀的主要来源）', postShapeSnippet.length > 1500, `实际 ${postShapeSnippet.length} 字符`);
 check('返回状态 turn 递增、revision 递增、phase 回落 input', result1.state.turn === TURN_IN + 1 && result1.state.revision === REVISION_IN + 1 && result1.state.phase === 'input', JSON.stringify({ turn: result1.state.turn, revision: result1.state.revision, phase: result1.state.phase }));
 check('history 追加 user + assistant 两条', result1.state.history.length === before.history.length + 2, `实际 ${result1.state.history.length}`);
 check('assistant 消息带本轮思维链字段', 'thinking' in result1.state.history[result1.state.history.length - 1], '缺少 thinking');
