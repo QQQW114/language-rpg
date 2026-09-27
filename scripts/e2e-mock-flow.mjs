@@ -284,6 +284,14 @@ check('返回状态 turn 递增、revision 递增、phase 回落 input', result1
 check('history 追加 user + assistant 两条', result1.state.history.length === before.history.length + 2, `实际 ${result1.state.history.length}`);
 check('assistant 消息带本轮思维链字段', 'thinking' in result1.state.history[result1.state.history.length - 1], '缺少 thinking');
 check('turnRecords 记录 3 个阶段调用', (result1.state.turnRecords?.[0]?.calls ?? []).length === 3, JSON.stringify((result1.state.turnRecords?.[0]?.calls ?? []).map((c) => c.phase)));
+// 提交对账统计：让"程序丢了多少条模型输出"变成可长期观察的数字（决定是否要做 id 回显）。
+{
+  const stats = result1.state.turnRecords?.[0]?.patchStats;
+  const totalInput = stats ? Object.values(stats).reduce((sum, v) => sum + (typeof v === 'object' && v ? v.input : 0), 0) : -1;
+  const totalApplied = stats ? Object.values(stats).reduce((sum, v) => sum + (typeof v === 'object' && v ? v.applied : 0), 0) : -1;
+  check('turnRecord 带提交对账统计，且干净补丁零丢弃', !!stats && totalInput > 0 && totalApplied === totalInput && (stats.characters.blocked + stats.relationships.blocked + stats.inventory.blocked + stats.threads.blocked + stats.facts.blocked) === 0 && stats.coercedEnums === 0, JSON.stringify({ stats, totalInput, totalApplied }));
+}
+check('patchStats 随存档持久化（不被 partialize 剔除）', !!result1.state.turnRecords?.[0]?.patchStats, JSON.stringify(Object.keys(result1.state.turnRecords?.[0] ?? {})));
 check('patch 落盘：人物/关系/线程/事实/场景/命运均提交', result1.state.characters.length === 1 && result1.state.relationships.length === 1 && result1.state.storyThreads.length === 1 && result1.state.facts.length === 1 && result1.state.currentScene?.name === '雨夜街口' && result1.state.destiny.beats[0].status === 'active', JSON.stringify({ c: result1.state.characters.length, r: result1.state.relationships.length, t: result1.state.storyThreads.length, f: result1.state.facts.length, scene: result1.state.currentScene?.name, beat: result1.state.destiny.beats[0].status }));
 check('phase 回调按 planner_pre→story→planner_post 各 started/completed', phaseChanges.join(',') === 'planner_pre:started,planner_pre:completed,story:started,story:completed,planner_post:started,planner_post:completed', phaseChanges.join(','));
 check('流式增量拼接等于完整正文', streamed.join('') === STORY_TEXT, JSON.stringify(streamed.join('').slice(0, 40)));

@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { commitTurnPatchV2 } from '@/v2/patch';
+import { commitTurnPatchV2, emptyPatchStatsV2 } from '@/v2/patch';
 import { makePatch, makeState } from './helpers/fixtures';
-import type { GameStateV2, PatchWarningV2, TurnPatchV2 } from '@/v2/types';
+import type { GameStateV2, PatchStatsV2, PatchWarningV2, TurnPatchV2 } from '@/v2/types';
 
 /** 用统一夹具提交一个 Patch；baseRevision/turn 默认对齐 state。 */
 function commit(stateOverrides: Record<string, unknown> = {}, patchOverrides: Record<string, unknown> = {}): GameStateV2 {
@@ -954,6 +954,89 @@ describe('patch — 随机事件', () => {
     assert.equal(next.randomEvent.pending, true, '未 handled 时事件继续 pending');
     assert.equal(next.randomEvent.lastNote, '计划留到下一回合');
     assert.equal(next.randomEvent.nextTriggerTurn, pendingState.turn + 1);
+  });
+});
+
+describe('patch — 提交对账统计（patchStats）', () => {
+  const emptyStats = emptyPatchStatsV2;
+  const run = (patchOverrides: Record<string, unknown>, stateOverrides: Record<string, unknown> = {}) => {
+    const state = makeState(stateOverrides);
+    const warnings: PatchWarningV2[] = [];
+    const stats = emptyStats();
+    const next = commitTurnPatchV2(state, makePatch({ baseRevision: state.revision, turn: state.turn, ...patchOverrides }), warnings, stats);
+    return { next, warnings, stats };
+  };
+
+  it('干净提交：全部落地、零丢弃、不产生汇总警告', () => {
+    const { stats, warnings } = run({
+      characters: [{ op: 'create', id: 'char-new', name: '新人', reason: 'x' }],
+      inventory: [{ op: 'grant', id: 'item-1', quantity: 1, reason: 'x' }],
+      threads: [{ op: 'update', id: 'thread-1', status: 'completed', reason: 'x' }],
+      facts: [{ op: 'create', subjectId: 'char-a', predicate: 'job', value: '医生', stability: 'stable', confidence: 'explicit', evidenceQuote: '正文原句', reason: 'x' }],
+    });
+    assert.equal(stats.characters.input, 1);
+    assert.equal(stats.characters.applied, 1);
+    assert.equal(stats.characters.blocked, 0);
+    assert.equal(stats.facts.input, 1);
+    assert.equal(stats.facts.applied, 1);
+    assert.equal(stats.facts.blocked, 0);
+    assert.equal(stats.inventory.blocked, 0);
+    assert.equal(stats.coercedEnums, 0);
+    assert.deepEqual(warnings, [], '干净提交不应产生任何警告');
+  });
+
+  it('被丢弃的条目会被计数：缺证据的事实、不存在的 id、非法关系', () => {
+    const { stats, warnings } = run({
+      characters: [
+        { op: 'create', id: 'char-ok', name: '有效人物', reason: 'x' },
+        { op: 'create', id: 'char-bad', reason: '缺 name' },
+        { op: 'update', id: 'char-nonexistent', status: 'absent', reason: 'x' },
+      ],
+      relationships: [
+        { fromId: 'player', toId: 'char-a', affinityDelta: 1, reason: 'x' },
+        { fromId: 'player', toId: 'char-ghost', affinityDelta: 1, reason: '目标不存在' },
+        { fromId: 'player', toId: 'char-a', affinityDelta: 1 },
+      ],
+      facts: [
+        { op: 'create', subjectId: 'char-a', predicate: 'ok', value: '有证据', stability: 'stable', confidence: 'explicit', evidenceQuote: '原句', reason: 'x' },
+        { op: 'create', subjectId: 'char-a', predicate: 'noquote', value: '无证据', stability: 'stable', confidence: 'explicit' },
+        { op: 'create', subjectId: 'char-a', predicate: 'inferred', value: '推测', stability: 'stable', confidence: 'inferred', evidenceQuote: '原句' },
+      ],
+    });
+    assert.equal(stats.characters.input, 3);
+    assert.equal(stats.characters.applied, 1, '只有一条新建落地');
+    // 缺 name 属「结构不全」，id 不存在属「字段齐全但被拒」——分开计数，因为修法不同：
+    // 前者要改输出模板与指令，后者要加 id 回显校验。
+    assert.equal(stats.characters.blocked, 2, '缺 name 与 id 不存在都算丢弃');
+    assert.equal(stats.characters.malformed, 1, '只有缺 name 那条算结构不全');
+    assert.equal(stats.relationships.input, 3);
+    assert.equal(stats.relationships.blocked, 2, '目标不存在与缺 reason 各算一条');
+    assert.equal(stats.relationships.malformed, 1, '只有缺 reason 那条算结构不全');
+    assert.equal(stats.facts.input, 3);
+    assert.equal(stats.facts.applied, 1);
+    assert.equal(stats.facts.blocked, 2, '缺证据与 inferred 各算一条');
+    // 有丢弃时必须出现汇总警告，否则这个数字只存在于代码里
+    const summary = warnings.find((w) => w.code === 'patch_items_blocked');
+    assert.ok(summary, '应产生 patch_items_blocked 汇总警告');
+    assert.ok(summary.message.includes('6 条'), `汇总消息应给出总数，实际：${summary.message}`);
+  });
+
+  it('枚举改写会被计数（三类：人物状态、物品类型、线程状态）', () => {
+    const { stats } = run({
+      characters: [{ op: 'update', id: 'char-a', status: '死亡', reason: 'x' }],
+      inventory: [{ op: 'grant', id: 'item-new', name: '玉符', kind: '能力', quantity: 1, reason: 'x' }],
+      threads: [{ op: 'update', id: 'thread-1', status: '已完成', reason: 'x' }],
+    });
+    assert.equal(stats.coercedEnums, 3, '三处非白名单枚举都应被计数');
+  });
+
+  it('不传 stats 时行为完全不变（向后兼容）', () => {
+    const state = makeState();
+    const warnings: PatchWarningV2[] = [];
+    const next = commitTurnPatchV2(state, makePatch({ baseRevision: state.revision, turn: state.turn, characters: [{ op: 'create', id: 'x', reason: '缺 name' }] }), warnings);
+    assert.equal(next.characters.length, state.characters.length);
+    // 没有 stats 时不产生汇总警告（避免给现有调用方增加噪音）
+    assert.equal(warnings.some((w) => w.code === 'patch_items_blocked'), false);
   });
 });
 

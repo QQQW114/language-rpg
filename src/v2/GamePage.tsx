@@ -9,7 +9,7 @@ import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
 
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
@@ -125,7 +125,7 @@ function DestinyCard({ destiny, showDetails }: { destiny: DestinyProgressV2; sho
   );
 }
 
-function ModelActivityPanel({ activities, thinking, busy }: { activities: ModelActivityV2[]; thinking: Record<ModelPhaseV2, string>; busy: boolean }) {
+function ModelActivityPanel({ activities, thinking, busy, patchStats }: { activities: ModelActivityV2[]; thinking: Record<ModelPhaseV2, string>; busy: boolean; patchStats?: PatchStatsV2 }) {
   const [open, setOpen] = useState(true);
   const [phaseOpen, setPhaseOpen] = useState<Record<ModelPhaseV2, boolean>>({ planner_pre: true, story: false, planner_post: false });
   const previousBusy = useRef(false);
@@ -138,6 +138,16 @@ function ModelActivityPanel({ activities, thinking, busy }: { activities: ModelA
     return { phase, latest: events[events.length - 1], tools: phaseTools, warnings: phaseWarnings, usage: usageEvent?.type === 'usage' ? usageEvent.usage : undefined };
   });
   const totalUsage = sumUsage(phases.map(({ usage }) => usage));
+  // 结算对账：模型提交了多少条状态变更、程序接受了多少、丢弃了多少、改写了几处枚举。
+  // 这些数字以前只以警告文本存在，无法累计观察；现在直接显示，便于判断"模型输出被程序
+  // 拒绝"的规模，也是决定是否要做 id 回显的依据。
+  const reconciliation = patchStats ? {
+    applied: patchStats.characters.applied + patchStats.relationships.applied + patchStats.inventory.applied + patchStats.threads.applied + patchStats.facts.applied,
+    input: patchStats.characters.input + patchStats.relationships.input + patchStats.inventory.input + patchStats.threads.input + patchStats.facts.input,
+    blocked: patchStats.characters.blocked + patchStats.relationships.blocked + patchStats.inventory.blocked + patchStats.threads.blocked + patchStats.facts.blocked,
+    malformed: patchStats.characters.malformed + patchStats.relationships.malformed + patchStats.inventory.malformed + patchStats.threads.malformed + patchStats.facts.malformed,
+    coerced: patchStats.coercedEnums,
+  } : undefined;
   const active = phases.find(({ latest }) => latest?.type === 'phase' && latest.status === 'started')?.phase;
   useEffect(() => {
     if (busy && !previousBusy.current) {
@@ -174,6 +184,13 @@ function ModelActivityPanel({ activities, thinking, busy }: { activities: ModelA
             {expanded && <div className="border-t border-parchment-600/15 px-3 pb-3 pt-2">
               {latest?.type === 'phase' && latest.error && <div className="mb-2 whitespace-pre-wrap text-[11px] leading-5 text-blood">{latest.error}</div>}
               {usage && <div className="mb-2"><UsageLine usage={usage} /></div>}
+              {phase === 'planner_post' && reconciliation && reconciliation.input > 0 && <div className={`mb-2 rounded border px-2 py-1.5 text-[10px] leading-4 ${reconciliation.blocked > 0 || reconciliation.coerced > 0 ? 'border-amber-400/25 bg-amber-400/5 text-amber-200/80' : 'border-parchment-600/20 bg-ink/20 text-parchment-200/55'}`}>
+                <span className="text-parchment-100/80">状态提交对账：</span>
+                接受 {reconciliation.applied}/{reconciliation.input} 条
+                {reconciliation.blocked > 0 && <> · 丢弃 {reconciliation.blocked} 条（其中结构不全 {reconciliation.malformed} 条）</>}
+                {reconciliation.coerced > 0 && <> · 改写枚举 {reconciliation.coerced} 处</>}
+                {reconciliation.blocked === 0 && reconciliation.coerced === 0 && ' · 无丢弃、无改写'}
+              </div>}
               {warnings.length > 0 && <div className="mb-2 space-y-1">{warnings.map((warning, warningIndex) => warning.type === 'warning' && <div key={`${warning.code}-${warning.path}-${warningIndex}`} className="flex items-start gap-1.5 rounded border border-amber-400/20 bg-amber-400/5 px-2 py-1.5 text-[10px] leading-4 text-amber-200/75"><AlertCircle size={11} className="mt-0.5 shrink-0" /><span>{warning.message}</span></div>)}</div>}
               <div className="max-h-64 overflow-auto whitespace-pre-wrap text-xs leading-6 text-parchment-200/65">{thinking[phase] || (status === 'started' ? '正在读取上下文并思考…' : status === 'completed' ? '此阶段未返回可显示的思考内容。' : '等待上一阶段完成。')}</div>
               {tools.length > 0 && <div className="mt-3 space-y-2 border-l border-parchment-600/25 pl-3">{tools.map((tool, toolIndex) => tool.type === 'tool' && <div key={`${tool.callId}-${tool.status}-${toolIndex}`} className="text-[11px] text-parchment-200/55"><div className="flex items-center gap-1.5 text-parchment-100/70"><Wrench size={11} /><span>{tool.status === 'call' ? '调用' : '返回'} · {tool.toolName}</span></div>{tool.argumentsText && <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-ink/30 p-2 text-[10px]">{tool.argumentsText}</pre>}{tool.resultText && <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-ink/30 p-2 text-[10px]">{tool.resultText}</pre>}</div>)}</div>}
@@ -620,7 +637,7 @@ export default function GamePageV2() {
           {save.state.history.length === 0 && <div className="py-20 text-center text-sm text-parchment-200/45">故事将从你的第一个行动开始。</div>}
           {save.state.history.map((message, index) => <article key={message.id} className={message.role === 'user' ? 'my-6 border-l-2 border-gold/55 pl-4' : 'prose-story my-8'}>{message.role === 'user' ? <><div className="mb-1 text-[10px] tracking-[.28em] text-gold/65">你的行动 · 第 {message.turn + 1} 回合</div><div className="whitespace-pre-wrap font-serif text-[15px] italic leading-8 text-parchment-200/90">{message.content}</div></> : <><div className="mb-3 flex items-center gap-2 text-[10px] tracking-[.3em] text-parchment-200/35"><span className="h-px flex-1 bg-gold-line opacity-50" /><span>第 {message.turn + 1} 回合</span><span className="h-px flex-1 bg-gold-line opacity-50" /></div><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></>}</article>)}
           {busy && activeItem && <article className="my-6 border-l-2 border-gold/55 pl-4"><div className="mb-1 flex items-center gap-2 text-[10px] tracking-[.28em] text-gold/65"><span>正在处理 · 第 {save.state.turn + 1} 回合</span><span className="rounded bg-gold/10 px-1.5 py-0.5 tracking-normal text-gold/70">{PACE_OPTIONS.find((option) => option.id === activeItem.pace)?.label}</span><button type="button" onClick={stopCurrentTurn} className="ml-auto rounded border border-blood/40 px-2 py-1 tracking-normal text-blood hover:bg-blood/10"><X size={11} className="mr-1 inline" />终止本轮</button></div><div className="whitespace-pre-wrap font-serif text-[15px] italic leading-8 text-parchment-200/90">{activeItem.input}</div></article>}
-          <ModelActivityPanel activities={activities} thinking={thinking} busy={busy} />
+          <ModelActivityPanel activities={activities} thinking={thinking} busy={busy} patchStats={save.state.turnRecords?.[save.state.turnRecords.length - 1]?.patchStats} />
           {stream && <article className="prose-story my-8"><div className="mb-3 text-[10px] tracking-[.3em] text-gold/70">故事之笔正在书写…</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{stream}</ReactMarkdown></article>}
           {!busy && failedDraft && <article className="prose-story my-8 rounded-lg border border-blood/30 bg-blood/5 p-4"><div className="mb-3 text-[10px] tracking-[.22em] text-blood">未提交的故事草稿 · 重试后将被替换</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{failedDraft}</ReactMarkdown></article>}
         </div>

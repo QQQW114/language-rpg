@@ -1,6 +1,6 @@
 import { normalizeChoices } from '@/lib/actions';
 import { clamp, genId, textOrPrevious } from '@/lib/utils';
-import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchWarningV2, RandomEventIntensityV2, RelationshipV2, StoryThreadV2, TurnPatchV2 } from './types';
+import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchCategoryStatsV2, PatchStatsV2, PatchWarningV2, RandomEventIntensityV2, RelationshipV2, StoryThreadV2, TurnPatchV2 } from './types';
 
 const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -14,15 +14,17 @@ const cleanList = (raw: unknown, max: number, limit: number): string[] => Array.
 /**
  * 枚举字段的白名单取值；表外取值会被静默改写，因此这里同时记录一条警告，
  * 让"模型写了中文枚举/自造同义词"这类问题在活动流里可见，而不是悄悄变成默认值。
+ * `onCoerce` 用于把改写次数计入对账统计。
  */
 function oneOfChecked<T extends string>(
   raw: unknown,
   values: readonly T[],
   fallback: T,
-  ctx: { warnings: PatchWarningV2[]; path: string; label: string },
+  ctx: { warnings: PatchWarningV2[]; path: string; label: string; onCoerce?: () => void },
 ): T {
   if (raw === undefined || raw === null || raw === '') return fallback;
   if (values.includes(raw as T)) return raw as T;
+  ctx.onCoerce?.();
   ctx.warnings.push({
     code: 'enum_value_coerced',
     path: ctx.path,
@@ -42,15 +44,61 @@ const MAX_CANONICAL_FACTS_PER_TURN = 10;
  *   有效替代者时降级为 reframed）会被追加到这里，供活动流与排障使用。
  *   不传时行为与之前完全一致（只返回新状态）。
  */
-export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnings: PatchWarningV2[] = []): GameStateV2 {
+/** 把补丁里的数组字段安全地转成对象数组（非对象元素直接排除）。 */
+function rowsOf(value: unknown): Array<Record<string, unknown>> {
+  return (Array.isArray(value) ? value : []).filter(record);
+}
+
+/**
+ * 按逐条判定函数对账一个类别。
+ *
+ * `landed` 回答的是"这一条提交有没有真的落到权威状态上"，判定必须对应各类别的
+ * 实际落地条件：更新到已有条目算落地，关系/库存按既有条目合并也算落地，
+ * 只有"整条被丢弃"（缺必填字段、引用不存在、重复新建被并掉等）才计入 blocked。
+ *
+ * 这里刻意不做"算差值"这种取巧统计：差分会把"更新已有条目"误判成丢弃。
+ */
+function countCategory(
+  rows: Array<Record<string, unknown>>,
+  isValid: (row: Record<string, unknown>) => boolean,
+  landed: (row: Record<string, unknown>) => boolean,
+): PatchCategoryStatsV2 {
+  const valid = rows.filter(isValid);
+  const applied = valid.filter(landed).length;
+  const malformed = rows.length - valid.length;
+  return { input: rows.length, applied, blocked: rows.length - applied, malformed };
+}
+
+/** 空的对账统计；调用方传入它来开启统计收集（默认不收集，避免给现有调用方增加噪音）。 */
+export function emptyPatchStatsV2(): PatchStatsV2 {
+  const empty = (): PatchCategoryStatsV2 => ({ input: 0, applied: 0, blocked: 0, malformed: 0 });
+  return { characters: empty(), relationships: empty(), inventory: empty(), threads: empty(), facts: empty(), coercedEnums: 0 };
+}
+
+export function commitTurnPatchV2(
+  state: GameStateV2,
+  patch: TurnPatchV2,
+  warnings: PatchWarningV2[] = [],
+  stats?: PatchStatsV2,
+): GameStateV2 {
   if (patch.schemaVersion !== 2) throw new Error('不支持的状态 Patch 版本');
   if (patch.baseRevision !== state.revision) throw new Error('状态已变化，请重新结算');
   if (patch.turn !== state.turn) throw new Error('Patch 回合不匹配');
   if (patch.commitId && patch.commitId === state.lastCommitId) return state;
 
-
+  // 原始条数与落地条数的对账。计数不参与任何校验决策，只用于观察"模型提交了多少、
+  // 程序接受了多少"；因此即使统计有偏差也不会影响状态正确性。
+  const rawRows = {
+    characters: rowsOf(patch.characters),
+    relationships: rowsOf(patch.relationships),
+    inventory: rowsOf(patch.inventory),
+    threads: rowsOf(patch.threads),
+    facts: rowsOf(patch.facts),
+  };
+  let coercedEnums = 0;
 
   const characterStatuses = ['active', 'absent', 'missing', 'dead', 'unknown'] as const;
+  const beforeCharacterIds = new Set(state.characters.map((item) => item.id));
   const characters = state.characters.map((x) => ({ ...x, aliases: [...x.aliases], knownFacts: [...x.knownFacts] }));
   for (const rawRow of Array.isArray(patch.characters) ? patch.characters : []) {
     if (!record(rawRow)) continue;
@@ -80,7 +128,7 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
         aliases: cleanList(row.aliases, 30, 8),
         role: text(row.role, 40) || undefined,
         description: text(row.description, 240) || undefined,
-        status: oneOfChecked(row.status, characterStatuses, 'active', { warnings, path: `characters[${id}].status`, label: `人物 ${name} 的 status` }),
+        status: oneOfChecked(row.status, characterStatuses, 'active', { warnings, path: `characters[${id}].status`, label: `人物 ${name} 的 status`, onCoerce: () => { coercedEnums += 1; } }),
         knownFacts: cleanList(row.addFacts, 100, 12),
         firstSeenTurn: state.turn,
         lastSeenTurn: state.turn,
@@ -94,13 +142,14 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
       if (row.role !== undefined) target.role = text(row.role, 40) || undefined;
       if (row.description !== undefined) target.description = text(row.description, 240) || undefined;
       if (row.status) {
-        target.status = oneOfChecked(row.status, characterStatuses, target.status, { warnings, path: `characters[${target.id}].status`, label: `人物 ${target.name} 的 status` });
+        target.status = oneOfChecked(row.status, characterStatuses, target.status, { warnings, path: `characters[${target.id}].status`, label: `人物 ${target.name} 的 status`, onCoerce: () => { coercedEnums += 1; } });
       }
       target.knownFacts = Array.from(new Set([...target.knownFacts, ...cleanList(row.addFacts, 100, 20)])).slice(-20);
       target.lastSeenTurn = state.turn;
     }
   }
 
+  const beforeRelationshipIds = new Set(state.relationships.map((item) => item.id));
   const relationships: RelationshipV2[] = state.relationships.map((x) => ({ ...x }));
   for (const rawRow of Array.isArray(patch.relationships) ? patch.relationships : []) {
     if (!record(rawRow)) continue;
@@ -118,6 +167,7 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
   }
 
   const inventoryKinds = ['item', 'ability', 'quest_item'] as const;
+  const beforeInventoryIds = new Set(state.inventory.map((item) => item.id));
   const inventory: InventoryEntryV2[] = state.inventory.map((x) => ({ ...x }));
   for (const rawRow of Array.isArray(patch.inventory) ? patch.inventory : []) {
     if (!record(rawRow)) continue;
@@ -136,7 +186,7 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
         inventory.push({
           id: text(row.id, 80) || genId('item'),
           name: text(row.name, 40),
-          kind: oneOfChecked(row.kind, inventoryKinds, 'item', { warnings, path: `inventory[${text(row.id, 80) || text(row.name, 40)}].kind`, label: `物品「${text(row.name, 40)}」的 kind` }),
+          kind: oneOfChecked(row.kind, inventoryKinds, 'item', { warnings, path: `inventory[${text(row.id, 80) || text(row.name, 40)}].kind`, label: `物品「${text(row.name, 40)}」的 kind`, onCoerce: () => { coercedEnums += 1; } }),
           description: text(row.description, 240),
           quantity: requestedQuantity,
           consumable: !!row.consumable,
@@ -150,7 +200,7 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
     else if (item && row.op === 'remove') item.quantity = 0;
     else if (item && row.op === 'update') {
       if (row.description !== undefined) item.description = text(row.description, 240);
-      if (row.kind) item.kind = oneOfChecked(row.kind, inventoryKinds, item.kind, { warnings, path: `inventory[${item.id}].kind`, label: `物品「${item.name}」的 kind` });
+      if (row.kind) item.kind = oneOfChecked(row.kind, inventoryKinds, item.kind, { warnings, path: `inventory[${item.id}].kind`, label: `物品「${item.name}」的 kind`, onCoerce: () => { coercedEnums += 1; } });
       if (row.consumable !== undefined) item.consumable = !!row.consumable;
     }
     if (item) item.updatedAtTurn = state.turn;
@@ -158,6 +208,7 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
 
   const threadKinds = ['main', 'relationship', 'quest', 'hook'] as const;
   const threadStatuses = ['candidate', 'active', 'completed', 'failed', 'cancelled'] as const;
+  const beforeThreadIds = new Set(state.storyThreads.map((item) => item.id));
   const threads: StoryThreadV2[] = state.storyThreads.map((x) => ({ ...x, involvedCharacterIds: [...x.involvedCharacterIds] }));
   for (const rawRow of Array.isArray(patch.threads) ? patch.threads : []) {
     if (!record(rawRow)) continue;
@@ -176,16 +227,16 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
       const id = text(row.id, 80) || genId('thread');
       const duplicate = threads.find((x) => x.id === id || x.title === text(row.title, 80));
       if (duplicate) { duplicate.updatedAtTurn = state.turn; continue; }
-      threads.push({ id, title: text(row.title, 80), kind: oneOfChecked(row.kind, threadKinds, 'hook', { warnings, path: `threads[${id}].kind`, label: `线程「${text(row.title, 80)}」的 kind` }), status: oneOfChecked(row.status, threadStatuses, 'candidate', { warnings, path: `threads[${id}].status`, label: `线程「${text(row.title, 80)}」的 status` }), progress: row.progress === undefined ? undefined : clamp(Number(row.progress) || 0, 0, 100), currentStep: text(row.currentStep, 160) || undefined, involvedCharacterIds: cleanList(row.involvedCharacterIds, 80, 50), note: text(row.note, 200) || undefined, updatedAtTurn: state.turn });
+      threads.push({ id, title: text(row.title, 80), kind: oneOfChecked(row.kind, threadKinds, 'hook', { warnings, path: `threads[${id}].kind`, label: `线程「${text(row.title, 80)}」的 kind`, onCoerce: () => { coercedEnums += 1; } }), status: oneOfChecked(row.status, threadStatuses, 'candidate', { warnings, path: `threads[${id}].status`, label: `线程「${text(row.title, 80)}」的 status`, onCoerce: () => { coercedEnums += 1; } }), progress: row.progress === undefined ? undefined : clamp(Number(row.progress) || 0, 0, 100), currentStep: text(row.currentStep, 160) || undefined, involvedCharacterIds: cleanList(row.involvedCharacterIds, 80, 50), note: text(row.note, 200) || undefined, updatedAtTurn: state.turn });
     }
     else {
       const target = threads.find((x) => x.id === row.id);
       if (!target) continue;
-      if (row.kind) target.kind = oneOfChecked(row.kind, threadKinds, target.kind, { warnings, path: `threads[${target.id}].kind`, label: `线程「${target.title}」的 kind` });
+      if (row.kind) target.kind = oneOfChecked(row.kind, threadKinds, target.kind, { warnings, path: `threads[${target.id}].kind`, label: `线程「${target.title}」的 kind`, onCoerce: () => { coercedEnums += 1; } });
       if (Array.isArray(row.involvedCharacterIds)) {
         target.involvedCharacterIds = cleanList(row.involvedCharacterIds, 80, 50);
       }
-      if (row.status) target.status = oneOfChecked(row.status, threadStatuses, target.status, { warnings, path: `threads[${target.id}].status`, label: `线程「${target.title}」的 status` });
+      if (row.status) target.status = oneOfChecked(row.status, threadStatuses, target.status, { warnings, path: `threads[${target.id}].status`, label: `线程「${target.title}」的 status`, onCoerce: () => { coercedEnums += 1; } });
       if (row.progress !== undefined) target.progress = clamp(Number(row.progress) || 0, 0, 100);
       if (row.currentStep !== undefined) target.currentStep = text(row.currentStep, 160) || undefined;
       if (row.note !== undefined) target.note = text(row.note, 200) || undefined;
@@ -288,6 +339,61 @@ export function commitTurnPatchV2(state: GameStateV2, patch: TurnPatchV2, warnin
       destiny.endingReachedAtTurn = state.turn;
     }
     destiny.updatedAtTurn = state.turn;
+  }
+
+  // ---- 对账统计：模型提交了多少条、真正落地多少条、被整条丢弃多少条 ----
+  // 只做观察，不参与任何准入判断。目的是让"程序静默丢弃/改写模型输出"这件事可度量，
+  // 从而判断是否值得把被拒情况回显给模型（见 docs/planner-multiround-evaluation.md）。
+  if (stats) {
+    const nameOf = (row: Record<string, unknown>) => text(row.name, 30);
+    const characterById = (id: unknown) => characters.find((item) => item.id === text(id, 80));
+    stats.characters = countCategory(
+      rawRows.characters,
+      // 结构完整性：模型是否把必填字段写全了（create 需要 name、update 需要 id）。
+      (row) => row.op === 'create' ? !!nameOf(row) : !!text(row.id, 80),
+      // 落地：create 真正新建了人物（撞名被合并算未落地，等于模型这次没生效）；
+      //       update 必须找到目标才算落地（id 不存在就是被丢弃）。
+      (row) => row.op === 'create'
+        ? characters.some((item) => item.id === text(row.id, 80) && !beforeCharacterIds.has(item.id))
+        : !!characterById(row.id),
+    );
+    stats.relationships = countCategory(
+      rawRows.relationships,
+      // 结构完整性：fromId / toId / reason 三个必填字段。
+      (row) => !!text(row.fromId, 80) && !!text(row.toId, 80) && !!text(row.reason, 200),
+      // 落地：自环、目标人物不存在、fromId 既不是 player 也不存在 —— 都会被丢弃。
+      (row) => text(row.fromId, 80) !== text(row.toId, 80)
+        && characters.some((item) => item.id === row.toId)
+        && (row.fromId === 'player' || characters.some((item) => item.id === row.fromId)),
+    );
+    stats.inventory = countCategory(
+      rawRows.inventory,
+      (row) => !!text(row.reason, 200),
+      // 落到某个物品上即算落地；其中"扣减到 0 被过滤掉"也算落地（变更确实生效了）。
+      (row) => [inventory, inventory.filter((item) => item.quantity > 0)]
+        .some((list) => list.some((item) => (row.id ? item.id === row.id : item.name === text(row.name, 40)))),
+    );
+    stats.threads = countCategory(
+      rawRows.threads,
+      (row) => row.op === 'create' ? !!text(row.title, 80) : !!text(row.id, 80),
+      (row) => row.op === 'create'
+        ? threads.some((item) => item.id === text(row.id, 80) && !beforeThreadIds.has(item.id))
+        : !!threads.find((item) => item.id === text(row.id, 80)),
+    );
+    // 事实：新建使数组增长即落地；同 subject+predicate 的 replace 也算落地。
+    const addedFacts = Math.max(0, facts.length - state.facts.length);
+    const replacedFacts = rawRows.facts.filter((row) => row.op === 'replace' && !!text(row.reason, 200)).length;
+    stats.facts = { input: rawRows.facts.length, applied: addedFacts + replacedFacts, blocked: 0, malformed: 0 };
+    stats.facts.blocked = Math.max(0, stats.facts.input - stats.facts.applied);
+    stats.coercedEnums = coercedEnums;
+    const blockedTotal = stats.characters.blocked + stats.relationships.blocked + stats.inventory.blocked + stats.threads.blocked + stats.facts.blocked;
+    if (blockedTotal > 0) {
+      warnings.push({
+        code: 'patch_items_blocked',
+        path: '$',
+        message: `本回合有 ${blockedTotal} 条状态变更未通过程序校验被丢弃（人物 ${stats.characters.blocked} · 关系 ${stats.relationships.blocked} · 库存 ${stats.inventory.blocked} · 线程 ${stats.threads.blocked} · 事实 ${stats.facts.blocked}），另有 ${coercedEnums} 处枚举被改写。`,
+      });
+    }
   }
 
   const randomEventEnabled = state.randomEvent.enabled !== false;

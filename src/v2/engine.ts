@@ -12,7 +12,7 @@ import { extractJSON, genId } from '@/lib/utils';
 import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
-import { commitTurnPatchV2 } from './patch';
+import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
 import type { ChoiceV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnModelCallV2, TurnPatchV2, TurnRecordV2, TurnRequestV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
@@ -830,14 +830,15 @@ export async function runTurnV2(p: TurnRequestV2) {
   // 提交阶段也可能修正模型输出（例如 superseded 缺少有效替代者时降级为 reframed），
   // 这些说明同样要进入活动流，否则玩家与排障者只看到状态被改却找不到原因。
   const commitWarnings: PatchWarningV2[] = [];
-  const next = commitTurnPatchV2(p.state, patch, commitWarnings);
+  const patchStats = emptyPatchStatsV2();
+  const next = commitTurnPatchV2(p.state, patch, commitWarnings, patchStats);
   emitPatchWarnings(p, plannerModel, commitWarnings);
   const now = Date.now();
   next.history = [...p.state.history,
     { id: genId('msg'), role: 'user', content: p.input, turn: p.state.turn, createdAt: now },
     { id: genId('msg'), role: 'assistant', content: story.text, turn: p.state.turn, createdAt: now, thinking: joinThinking(...turnThinkingParts) },
   ];
-  const turnRecord: TurnRecordV2 = { turn: p.state.turn, input: p.input, story: story.text, calls: turnCalls };
+  const turnRecord: TurnRecordV2 = { turn: p.state.turn, input: p.input, story: story.text, calls: turnCalls, patchStats };
   next.turnRecords = [...(p.state.turnRecords ?? []), turnRecord].slice(-100);
   next.turn = p.state.turn + 1;
   next.phase = 'input';

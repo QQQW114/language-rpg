@@ -11,6 +11,10 @@
 - 移除内容库中的随机事件条目与司书库模板：`RandomEvent` / `WorkspaceTemplate` 类型、预设事件库、以及 `contentLibrary` / `useContentStore` 中的对应分支。随机事件改由 `engine.ts` 指令与 `patch.ts` 调度独立驱动（行为不变）。
 - 删除误导性的临时重构产物 `.tmp_cn_refs.txt` 与 `.tmp_item_refs.txt`。
 
+### 新增
+
+- **状态提交对账统计（`patchStats`）**：每回合记录"模型提交了多少条状态变更、程序接受了多少条、丢弃了多少条、改写了多少处枚举"，其中"结构不全"（模型漏填必填字段）与"字段齐全但被拒"（引用了不存在的 id）分开计数——两者的修法完全不同。数字写进 `TurnRecordV2.patchStats` 并随存档持久化，游戏页「模型活动」面板的写后结算阶段会显示一行对账结果。此前这些丢弃只以警告文本存在，既没有数字也无法累计观察，导致"模型以为记下了、程序其实丢了"这个结构性盲区一直无法度量。这一步是先量后改：只有确认丢弃比例可观，才值得把被拒情况回显给结算模型（见 [`docs/planner-multiround-evaluation.md`](docs/planner-multiround-evaluation.md)）。
+
 ### 修复
 
 - **`superseded` 缺少有效替代者时虚增结局完成度**：`replacementBeatId` 只校验非空、不校验存在性，指向不存在的故事节时状态仍被置为 `superseded`，而结局判定把所有 `superseded` 视为已完成 → 可能提前触发结局。现在必须指向真实存在的故事节，否则降级为 `reframed` 并发警告；已落库的历史坏数据会在下次提交时回收。不会卡住流程：`endingReached` 只记录状态、不终止游戏。

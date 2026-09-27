@@ -69,6 +69,40 @@ export interface PatchWarningV2 {
   message: string;
 }
 
+/**
+ * 单个类别（人物 / 关系 / 库存 / 线程 / 事实）在提交时的对账结果。
+ *
+ * 存在的意义：程序会静默丢弃或改写模型提交的条目（缺证据、白名单外枚举、id 不存在…）。
+ * 在此之前这些丢弃只以 warning 文本的形式存在，既没有数字也无法长期统计，于是
+ * "模型以为记下了、程序其实丢了"这个结构性盲区一直无法度量。有了这份计数就能回答
+ * "每轮到底被丢了多少条"，再决定是否值得把被拒情况回显给模型。
+ */
+export interface PatchCategoryStatsV2 {
+  /** 模型提交的原始条数（过滤掉非对象元素之后）。 */
+  input: number;
+  /** 真正落地到权威状态的条数（合并进已有条目也算落地）。 */
+  applied: number;
+  /** 被整条丢弃的条数（缺必填字段、id 不存在、非白名单枚举、缺证据等）。 */
+  blocked: number;
+  /**
+   * 其中"结构不全"的条数：模型漏填了必填字段（例：update 没有 id、create 没有 name）。
+   *
+   * 与 `blocked - malformed`（字段齐全但被拒，例如引用了不存在的 id）分开统计，
+   * 因为两者的修法完全不同：前者要改输出模板与指令，后者要加 id 回显校验。
+   */
+  malformed: number;
+}
+
+export interface PatchStatsV2 {
+  characters: PatchCategoryStatsV2;
+  relationships: PatchCategoryStatsV2;
+  inventory: PatchCategoryStatsV2;
+  threads: PatchCategoryStatsV2;
+  facts: PatchCategoryStatsV2;
+  /** 因为枚举不在白名单而被改写的字段个数。 */
+  coercedEnums: number;
+}
+
 export type StoryBeatStatusV2 = 'pending' | 'available' | 'active' | 'satisfied' | 'weakened' | 'reframed' | 'superseded';
 export interface StoryBeatRuntimeV2 {
   beatId: string;
@@ -184,6 +218,12 @@ export interface TurnRecordV2 {
   input: string;
   story: string;
   calls: TurnModelCallV2[];
+  /**
+   * 本轮状态提交的对账结果：模型提交了多少条、程序接受了多少条、丢弃了多少条、
+   * 改写了多少处枚举。用于长期观察"模型的输出有多少被程序拒绝"，是决定是否
+   * 把被拒情况回显给模型的数据来源。
+   */
+  patchStats?: PatchStatsV2;
 }
 
 export interface MessageV2 {
