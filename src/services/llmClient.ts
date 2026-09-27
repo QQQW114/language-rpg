@@ -257,6 +257,21 @@ function stringifyToolResult(value: unknown): string {
   }
 }
 
+/**
+ * 末轮回退到前一轮文本时，把这段文本补给最终一轮的 onDelta 消费者。
+ * 前几轮的增量已经被缓存并整体透出过，这里只补发"最终结果"这一份，
+ * 避免调用方（例如活动面板）只看到空输出。
+ */
+function safelyEmitRecoveredText(p: ChatStreamParams, roundDeltas: string[], recovered: string) {
+  const alreadyEmitted = roundDeltas.join('');
+  if (alreadyEmitted) return;
+  try {
+    p.onDelta(recovered);
+  } catch {
+    /* 展示层回调不能影响返回值。 */
+  }
+}
+
 function addUsage(a: LlmUsage | undefined, b: LlmUsage | undefined): LlmUsage | undefined {
   if (!a) return b;
   if (!b) return a;
@@ -360,6 +375,10 @@ export async function chatStreamDetailed(
     let usage: LlmUsage | undefined;
     const thinkingParts: string[] = [];
     let hadToolRound = false;
+    // 模型经常在"发工具调用的同一轮"里已经把最终 JSON 写完，末轮却只回一个空的 stop。
+    // 只认最后一轮的文本会把这轮已经生成好的结果整段丢掉，进而让整回合以"空内容"失败。
+    let lastNonEmptyText = '';
+    let lastNonEmptyFinish: string | undefined;
 
     for (let round = 0; round <= maxToolRounds; round += 1) {
       const textDeltas: string[] = [];
@@ -367,10 +386,14 @@ export async function chatStreamDetailed(
       // 第一轮可能同时吐出解释文字和 tool_calls，先缓存，避免把中间说明当成最终 JSON/正文。
       // 已完成至少一轮工具后，下一轮大概率是在整理最终输出，实时透出可避免"思考完卡住"的观感。
       const emitTextLive = hadToolRound;
+      // 最后一轮不再声明工具：模型物理上无法继续请求工具，从而把机会用在输出最终结果上。
+      // 这比事后抛"超过上限"更符合意图——工具用量上限是软约束，不该打掉整个回合。
+      const isFinalRound = round >= maxToolRounds;
       const result = await requestStreamOnce(
         {
           ...p,
           messages,
+          ...(isFinalRound ? { toolChoice: 'none' as const } : {}),
           onDelta: (t) => {
             textDeltas.push(t);
             if (emitTextLive) p.onDelta(t);
@@ -385,11 +408,31 @@ export async function chatStreamDetailed(
       );
       usage = addUsage(usage, result.usage);
       if (result.thinking?.trim()) thinkingParts.push(result.thinking.trim());
+      if (result.text.trim()) {
+        lastNonEmptyText = result.text;
+        lastNonEmptyFinish = result.finishReason;
+      }
 
       const toolCalls = result.toolCalls ?? [];
       if (toolCalls.length) {
-        if (round >= maxToolRounds) {
-          throw new Error(`模型连续请求工具超过上限（${maxToolRounds} 轮），已停止。`);
+        // 末轮已用 toolChoice:'none' 明确不给工具；模型仍然请求工具时不再抛错打掉整回合，
+        // 也绝不再发起新请求（否则 round 会越过上限、把模型调用变成无界循环）。
+        // 直接用已经拿到的文本收尾：工具预算是软约束，而这一轮可能已经写出可用内容。
+        if (isFinalRound) {
+          const finalText = result.text.trim() ? result.text : lastNonEmptyText;
+          if (!finalText.trim()) {
+            throw new Error(`模型连续请求工具超过上限（${maxToolRounds} 轮），且未给出可用内容，已停止。`);
+          }
+          if (!result.text.trim()) safelyEmitRecoveredText(p, textDeltas, finalText);
+          return {
+            text: finalText,
+            thinking: joinThinking(...thinkingParts),
+            reasoningContent: result.reasoningContent,
+            finishReason: result.finishReason ?? lastNonEmptyFinish,
+            usage,
+            trace: buildPromptTrace(messages),
+            conversation: [...messages, { role: 'assistant', content: finalText }],
+          };
         }
         messages.push({
           role: 'assistant',
@@ -431,14 +474,20 @@ export async function chatStreamDetailed(
       if (!emitTextLive) {
         for (const t of textDeltas) p.onDelta(t);
       }
+      // 末轮为空时回退到之前某一轮已经写好的完整文本（常见于"发工具调用的同一轮里
+      // 就把最终 JSON 写完"的模型行为），避免把它丢掉导致整回合以空内容失败。
+      const finalText = result.text.trim() ? result.text : lastNonEmptyText;
+      if (!result.text.trim() && finalText) {
+        safelyEmitRecoveredText(p, textDeltas, finalText);
+      }
       return {
-        text: result.text,
+        text: finalText,
         thinking: joinThinking(...thinkingParts),
         reasoningContent: result.reasoningContent,
-        finishReason: result.finishReason,
+        finishReason: result.finishReason ?? lastNonEmptyFinish,
         usage,
         trace: buildPromptTrace(messages),
-        conversation: [...messages, { role: 'assistant', content: result.text || '' }],
+        conversation: [...messages, { role: 'assistant', content: finalText }],
       };
     }
   }

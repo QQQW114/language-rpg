@@ -60,7 +60,10 @@ characters、relationships、inventory、threads、facts全部是增量Patch，�
 必须复用权威状态中已有ID。新对象ID使用稳定、简短、语义化的小写ASCII ID；同一对象后续永远复用该ID。
 relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityDelta每回合范围-20到20；只有正文出现实际关系变化才提交。
 facts只保存正文新确认、且需要跨回合保持一致的长期硬事实（例如稳定身份、持续关系属性、固定地点/安排、能力边界或已确立的长期设定）。不保存氛围、临时动作、一次性场景细节、短期计划、想法、摘要、推测或已有worldFacts；这类内容即使出现在正文，也不要提交canonical fact。不要把stability写成temporary来绕过筛选，临时事实不进入持久状态。通常每轮只需0到3条，确有多个独立长期设定时才增加；没有新的长期硬事实必须输出空数组。每条必须使用结构化字段；禁止字符串facts，禁止kind/content格式，禁止推测事实。
-fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。`;
+fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。
+枚举字段只能使用输出模板中列出的英文取值，不得翻译、不得自造同义词：status、kind、scope、stability、confidence、threads.status、beatChanges.status都是如此。程序按白名单解析，写到表外的值（例如把status写成"死亡"或"deceased"）会被静默改写或整条丢弃，状态就与你看到的正文不一致。
+故事节的superseded必须同时给出evidenceQuote与replacementBeatId（且该id必须是已存在的故事节），否则整条变更被丢弃。
+endingReached只在完成度达到100且全部故事节都已satisfied或superseded时才会真正生效；只是接近结尾时保持false，并在completionReason里说明还缺什么。`;
 }
 
 /** 高优先级注入放在系统提示词最前方。 */
@@ -122,13 +125,13 @@ const postShape = `{
   "turn":0,
   "roundSummary":"仅总结本轮正文",
   "latestProgress":"正文结束时的真实位置和状态",
-  "characters":[{"op":"create|update","id":"stable-id","name":"仅create必填","aliases":[],"role":"","description":"","status":"active","addFacts":[],"reason":"正文证据"}],
+  "characters":[{"op":"create|update","id":"stable-id","name":"仅create必填","aliases":[],"role":"","description":"","status":"active|absent|missing|dead|unknown","addFacts":[],"reason":"正文证据"}],
   "relationships":[{"fromId":"player","toId":"stable-id","affinityDelta":0,"label":"","note":"","reason":"正文证据"}],
-  "inventory":[{"op":"grant|consume|update|remove","id":"existing-or-stable-id","name":"create时使用","kind":"item","quantity":1,"description":"","consumable":false,"reason":"正文证据"}],
+  "inventory":[{"op":"grant|consume|update|remove","id":"existing-or-stable-id","name":"create时使用","kind":"item|ability|quest_item","quantity":1,"description":"","consumable":false,"reason":"正文证据"}],
   "threads":[{"op":"create|update","id":"stable-id","title":"create时使用","kind":"main|relationship|quest|hook","status":"candidate|active|completed|failed|cancelled","progress":0,"currentStep":"","involvedCharacterIds":[],"note":"","reason":"正文证据"}],
   "facts":[{"op":"create|replace","subjectId":"stable-subject-id","predicate":"stable-predicate","value":"跨回合长期明确值","scope":"character|relationship|location|world|schedule|identity|custom","stability":"core|stable","confidence":"explicit","keywords":[],"evidenceQuote":"正文原句","reason":"replace时必填"}],
-  "scene":null,
-  "actions":[],
+  "scene":{"id":"stable-scene-id","name":"地点名","description":"","time":"","weather":""},
+  "actions":[{"id":"stable-action-id","label":"行动选项","hint":"可选提示"}],
   "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
   "randomEvent":{"handled":false,"note":""}
 }`;
@@ -386,8 +389,49 @@ function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) 
   });
 }
 
-function stableStoryContext(p: TurnRequestV2) {
-  return JSON.stringify({ outline: p.outline, background: p.background, worldFacts: (p.worldFacts ?? []).slice(0, 20) });
+const STABLE_WORLD_FACT_LIMIT = 20;
+/** 关键词命中判定使用的近期上下文条数（与规划模型近期窗口同源）。 */
+const WORLD_FACT_MATCH_HISTORY = 6;
+
+/**
+ * 按世界书的既有约定挑选本回合注入的长期设定：
+ *   1. alwaysActive 条目每轮必进；
+ *   2. 其余条目只有关键词命中当前输入或近期正文时才进（否则未命中的设定会每回合
+ *      无条件注入，既浪费预算，也会把仍未发生的伏笔直接摊给模型）；
+ *   3. 按 priority 降序、同级保持原顺序，最后按上限截断。
+ *
+ * 这里只负责"稳定上下文"这一份注入；被截断的内容仍可通过规划模型的
+ * search_story_context 工具按需检索，因此不会真正丢失。
+ */
+function selectWorldFacts(p: TurnRequestV2) {
+  const facts = p.worldFacts ?? [];
+  if (facts.length <= STABLE_WORLD_FACT_LIMIT && facts.every((fact) => fact.alwaysActive)) {
+    return { facts, truncated: false };
+  }
+  const haystack = `${p.input}\n${p.state.history.slice(-WORLD_FACT_MATCH_HISTORY).map((message) => message.content).join('\n')}`.toLowerCase();
+  const matched = facts.filter((fact) => {
+    if (fact.alwaysActive) return true;
+    const keywords = Array.isArray(fact.keywords) ? fact.keywords : [];
+    if (!keywords.length) return false;
+    return keywords.some((keyword) => {
+      const needle = String(keyword ?? '').trim().toLowerCase();
+      return !!needle && haystack.includes(needle);
+    });
+  });
+  const ordered = matched
+    .map((fact, index) => ({ fact, index }))
+    .sort((a, b) => (b.fact.priority ?? 0) - (a.fact.priority ?? 0) || a.index - b.index)
+    .map((item) => item.fact);
+  return {
+    facts: ordered.slice(0, STABLE_WORLD_FACT_LIMIT),
+    truncated: ordered.length > STABLE_WORLD_FACT_LIMIT,
+    matchedCount: matched.length,
+    totalCount: facts.length,
+  };
+}
+
+function stableStoryContext(p: TurnRequestV2, selection: ReturnType<typeof selectWorldFacts>) {
+  return JSON.stringify({ outline: p.outline, background: p.background, worldFacts: selection.facts });
 }
 
 function paceInstruction(p: TurnRequestV2) {
@@ -641,7 +685,19 @@ export async function runTurnV2(p: TurnRequestV2) {
   const plannerAuthorityBeforeTurn = snapshot(p);
   // 故事模型保持原有、稳定的最近四回合窗口，不跟随规划上下文设置缩放。
   const storyAuthority = snapshot(p, p.state.history.slice(-STORY_RECENT_MESSAGE_COUNT));
-  const stableContext = stableStoryContext(p);
+  // 世界书按 alwaysActive + 关键词命中筛选后再注入；被截断时明确告知，避免静默丢失。
+  const worldFactSelection = selectWorldFacts(p);
+  if (worldFactSelection.truncated) {
+    emitActivity(p, {
+      type: 'warning',
+      phase: 'planner_pre',
+      model: plannerModel,
+      code: 'world_facts_truncated',
+      path: 'worldFacts',
+      message: `本回合命中 ${worldFactSelection.matchedCount} 条长期设定，只注入优先级最高的 ${STABLE_WORLD_FACT_LIMIT} 条（共 ${worldFactSelection.totalCount} 条）；其余可由 search_story_context 检索。`,
+    });
+  }
+  const stableContext = stableStoryContext(p, worldFactSelection);
   const preMessages: ChatMessage[] = [
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },

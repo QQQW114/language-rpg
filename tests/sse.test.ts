@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';import assert from 'node:assert/strict';
 import { readSSE, readSSEDetailed } from '@/lib/sse';
 import {
   DONE_FRAME,
@@ -98,6 +97,38 @@ describe('sse.readSSEDetailed — <think> 拆分', () => {
     assert.equal(result.text, '正文尾部');
     assert.equal(result.thinking, '内部');
     assert.equal(deltas.join(''), '正文尾部');
+  });
+
+  it('带空格或大小写变体的闭标签仍能被识别（回归：曾把正文全吞进思考）', async () => {
+    for (const closeTag of ['</think >', '</ think>', '</THINK>', '</Think >']) {
+      const result = await readSSEDetailed(
+        chatSSE([contentFrame(`<think>思考${closeTag}正文`), DONE_FRAME]),
+        { onDelta: () => {} },
+      );
+      assert.equal(result.text, '正文', `闭标签 ${JSON.stringify(closeTag)} 应被识别`);
+      assert.equal(result.thinking, '思考', `闭标签 ${JSON.stringify(closeTag)} 应归入思考`);
+    }
+  });
+
+  it('带空格的开标签变体不会被写进正文', async () => {
+    for (const openTag of ['<think >', '< think>', '<THINK>', '< Think >']) {
+      const result = await readSSEDetailed(
+        chatSSE([contentFrame(`${openTag}思考</think>正文`), DONE_FRAME]),
+        { onDelta: () => {} },
+      );
+      assert.equal(result.text, '正文', `开标签 ${JSON.stringify(openTag)} 不应污染正文`);
+      assert.equal(result.thinking, '思考');
+    }
+  });
+
+  it('闭标签始终缺失时，内容回退为正文而不是空正文（安全网）', async () => {
+    const result = await readSSEDetailed(
+      chatSSE([contentFrame('<think>模型忘了收尾的正文内容'), DONE_FRAME]),
+      { onDelta: () => {} },
+    );
+    // 没有规范的 <think> 块可归入思考时，宁可按正文返回，也不能让回合以"空内容"失败。
+    assert.equal(result.text, '模型忘了收尾的正文内容');
+    assert.equal(result.thinking, undefined);
   });
 });
 

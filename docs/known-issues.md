@@ -30,6 +30,55 @@
 
 ## P2 · 记录待观察（无已知实际影响）
 
+### 15. 存档体积与写入可靠性 ✅ 已修复（见文末）
+
+### 16. `lrpg.v2` 没有 sanitize/merge —— 缺字段的旧存档会在 3 次模型调用后才崩
+
+- 位置：`src/v2/store.ts` 的 persist 配置（对比 `useContentStore` 有 `sanitizePersistedContent` 与 `version`）
+- 现象：手工改过或截断过的存档若缺 `facts[].keywords`、`storyThreads`、`destiny.beats`、`inventory` 等字段，会在 `snapshot()`/`buildPlannerPreSystem` 阶段抛 `TypeError`。因为抛点在 planner 之后，**已经烧掉的模型调用全部作废**。
+- 触发面：正常升级不会缺字段（键与字段同批引入），因此属于"坏档/未来加字段漏兼容"风险。
+- 建议：加 `version: 2` + `migrate` 链，并补一个 `normalizeGameStateV2` 把缺省字段补齐；`persisted.version > CURRENT` 时进入只读提示而不是硬解读。
+- 测试：`tests/store.test.ts` 目前不覆盖缺字段 hydrate。
+
+### 17. `apiFormat` 在界面上没有任何入口
+
+- 位置：`AppSettings.apiFormat` 仅被 `engine.ts` 与 `llmClient.ts` 读取；`SettingsPage.tsx` 没有对应控件
+- 影响：Responses 链路（`buildResponsesBody`、`detectFinishReason` 的 responses 分支、相关测试）对用户是**死代码**；且该格式下 `thinkingMode` / `reasoningEffort` / `plannerJsonMode` / 工具开关全部静默失效，界面无任何提示。
+- 建议：要么在设置页补一个格式选择器（并标注各格式下哪些选项不生效），要么明确声明只支持 Chat Completions。
+- 测试：`tests/llmClient.test.ts` / E2E 已覆盖两种格式的请求形状，可作为补 UI 后的验收依据。
+
+### 18. 检索证据按前 900 字截断，但命中判定用全文
+
+- 位置：`src/v2/engine.ts` 的 `clipContextEvidence` 与 `searchStoryContext` 的评分
+- 现象：命中发生在长文本后段时，返回给模型的"证据"里可能**不含查询词**。
+- 建议：按命中位置做窗口切片（前后各 300 字），而不是只取开头。
+
+### 19. `contextSearchTerms` 丢弃 CJK 单字
+
+- 位置：`src/v2/engine.ts`
+- 现象：`"晴 在哪里"` 因为 `晴` 长度 < 2 被丢弃，检索返回 0 条；单字中文人名会检索失败。
+- 建议：CJK 单字保留，或对 CJK 做 bigram 展开。
+
+### 20. 检索评分里的 magic 加权可能压过最相关的正文证据
+
+- 位置：`src/v2/engine.ts` 的 `searchStoryContext` 排序（`facts` +4、非 history +2）
+- 现象：内容恰好等于查询词的正文消息会排在结构化 facts 之后。
+- 建议：加权降级为次级排序键，先按命中密度归一。
+
+### 21. `stream_options` 重试的触发条件过宽，且重试后 usage 丢失
+
+- 位置：`src/services/llmClient.ts` 的 `shouldRetryWithoutStreamOptions`
+- 现象：`unknown parameter` / `unrecognized request argument` 这类文案也被当作 `stream_options` 不支持，于是去掉 `stream_options` 重发；若真实原因是 `thinking` / `reasoning_effort` / `response_format` 被拒，重发仍会失败。仅在非 2xx 时触发，**不存在重复计费**。成功重试后该阶段 usage 为空（Token 面板留白）。
+- 测试：`tests/llmClient.test.ts` 尚未覆盖该分支。
+
+### 22. tool_call 缺少 `index` 时多个调用会被合并串位
+
+- 位置：`src/lib/sse.ts` 的工具调用聚合
+- 现象：供应商不回 `index` 时按帧内下标兜底，两帧各一个调用会被合成一个，`arguments` 被拼接成非法 JSON。
+- 建议：无 `index` 且已存在同名/同 id 调用时按 `id` 归并，而不是按下标。
+
+## P3 · 观察项（非 bug）
+
 ### 3. 空串语义在 destiny 字段间不对称
 
 - 位置：`src/v2/patch.ts:133-138`
@@ -107,12 +156,21 @@
 
 ## 已在本次接手改造中修复
 
+### ✅ 存档体积撞上 localStorage 配额，且写入失败完全不可见
+
+- 现象（30 回合实测）：`lrpg.v2` 达 **6.21 MB**，其中 `turnRecords[].calls[].input`（三阶段完整提示词留档）占 **6.08 MB = 97.8%**；每回合增长 212 KB，其中留档 208 KB、正文与状态仅 4.5 KB。约第 26 回合就会超出浏览器常见的 5 MB 上限。
+- 更严重的是失败方式：写入被拒后 zustand 的内存状态**已经前进**，磁盘却停在旧值——玩家以为在玩，刷新即丢档。
+- 修复：
+  1. `partialize` 持久化时剔除 `calls[].input`（出参、思维链、usage 全部保留）。实测 30 回合从 6212 KB 降到 **420 KB**，距配额从约 26 回合提升到 **约 337 回合**。
+  2. 自定义 `StateStorage` 包住 `localStorage`：失败时写入 `persistError`（含 `quotaExceeded` 标记与可操作建议）**并把异常继续抛出**（保留原有可见性），成功后自动清空。`GamePage` 渲染持久化告警横幅。
+- 回归测试与证据：`scripts/e2e-storage-growth.mjs`（`npm run test:storage`）实测增长率、可达回合数，并注入 `QuotaExceededError` 验证"异常上抛 + 标志位设置 + 恢复后清空"。
+- 仍未处理的取舍：刷新后**历史回合**的提示词明细不再可导出（当次会话内仍完整），已写入 README 级说明。
+
 ### ✅ Patch 缺 `latestProgress` 时清空进度
 
 见上文第 2 条（曾判定为"链路不可达"，复核时用真实 `runTurnV2` 证明是在线可达的数据丢失）。
 
 ### ✅ `extractJSONText` 贪婪匹配导致解析失败
-
 - 位置：`src/lib/utils.ts`
 - 原实现 `cand.match(/\{[\s\S]*\}/)` 贪婪匹配到最后一个 `}`：模型在 JSON 之后继续输出说明文字、或一次返回多个对象时，整体不是合法 JSON，直接返回 `null`，进而让 `runTurnV2` 的 `requireJSONObject` 抛错、整回合失败。
 - 修复：改为逐个 `{` 做括号平衡扫描，跳过字符串字面量内部的括号与转义引号，返回**首个可解析**的对象。
@@ -124,3 +182,36 @@
 - 原实现顶层用 `??`（缺失保留），cache 却用对象展开：`normalizeLlmUsage` 产出的 cache 必带三个键（值可能为 `undefined`），展开后会把上一帧已拿到的 `hitTokens` 覆盖成 `undefined`。两处语义自相矛盾且丢失已知真实数据。
 - 修复：cache 逐字段 `??` 合并，并只写入真正有值的字段（与 `normalizeLlmUsage` 的稀疏写法一致）。
 - 回归测试：`tests/llmUsage.test.ts`（跨两帧保留命中、三轮合并、无 cache 时不产出空对象）。
+
+### ✅ `<think>` 标签的空白/大小写变体会吞掉整回合正文
+
+- 位置：`src/lib/sse.ts` 的 think 拆分器
+- 现象：只认逐字符相等的 `</think>`。模型写出 `</think >`、`</ think>`、`</THINK>` 时闭标签匹配不上，**其后所有正文都被当作思考内容**，`text` 为空 → 引擎抛"模型返回了空内容"，整回合作废，而模型其实写完了。
+- 修复：标签归一化后再拆分（`<\s*/?\s*think\s*>` → 规范形式，原地替换保持偏移）；并加安全网——正文为空但"思考"里没有规范 `<think>` 块时，把内容按正文返回，绝不因收尾不规范就丢掉整段正文。
+- 回归测试：`tests/sse.test.ts`（四种闭标签变体、四种开标签变体、闭标签始终缺失的兜底）。
+
+### ✅ 工具循环只取末轮文本，丢掉第 0 轮已写好的 JSON
+
+- 位置：`src/services/llmClient.ts` 的工具循环
+- 现象：模型常在"发起工具调用的同一轮"里就把最终 JSON 写完，末轮只回一个空的 `stop`。原实现只返回末轮 `text`，于是返回空串 → 引擎抛"模型返回了空内容"，整回合失败。
+- 修复：循环内记住最后一个非空文本，末轮为空时回退到它，并把该文本补给 `onDelta` 消费者；`finishReason` 同步回退。
+
+### ✅ 工具轮次用尽直接抛错，且末轮仍向模型声明工具
+
+- 位置：`src/services/llmClient.ts`
+- 现象：模型用满轮次后再请求一次工具就抛错打掉整回合；而 `engine` 侧的工具 handler 本意是优雅降级（返回"已达到上限，请基于现有证据完成"），两者语义矛盾。
+- 修复：末轮改用 `toolChoice:'none'`（不再声明 tools），物理上阻止继续调用；末轮仍请求工具时直接用已生成内容收尾，**不再发起新请求**（否则 `round` 会越过上限变成无界调用循环——这个次生缺陷是被新增测试抓出来的）；只有在从未产出任何可用文本时才抛错，保留失败可见性。
+- 回归测试：`tests/llmClient.test.ts`（新增文件，此前 `llmClient` 零覆盖）。
+
+### ✅ 世界书的 `alwaysActive` / `keywords` / `priority` 完全失效
+
+- 位置：`src/v2/engine.ts` 的稳定上下文注入
+- 现象：原实现只做 `slice(0, 20)`，**未命中的关键词条目每回合都被无条件注入**——工坊界面明确承诺"常驻条目每轮提供；关键词条目仅在最近上下文相关时加入"，实际等于把尚未发生的伏笔提前摊给模型；`priority` 也完全不起作用，第 21 条起永久丢弃且无任何提示。
+- 修复：按 `alwaysActive` + 关键词命中（当前输入 + 最近 6 条历史）筛选，再按 `priority` 降序排序后截断；命中数超过上限时发 `world_facts_truncated` 警告进入活动流。被截断内容仍可由 `search_story_context` 按需检索，因此不会真正丢失。
+- 回归测试：`tests/engine.test.ts`（未命中不注入、命中注入 planner 与 story、优先级排序与 20 条上限）。
+
+### ✅ 人物 `status` / 道具 `kind` 的枚举没写进提示词
+
+- 位置：`src/v2/engine.ts` 的 `postShape`
+- 现象：模板只给 `"status":"active"` 与 `"kind":"item"`，模型无从得知还有 `absent|missing|dead|unknown` 与 `ability|quest_item`。中文提示词下模型输出中文枚举（如 `"死亡"`、`"能力"`）时，`patch.ts` 的白名单会**静默强转**为 `active`/`item`——人物死亡被记成活跃，任务道具降级成普通物品，且没有任何警告。UI 里那套"死亡/失踪"标签因此永远显示不出来。
+- 修复：模板改为写全枚举（与 `oneOf` 白名单逐字一致），并补三条规则文字：枚举不得翻译或自造同义词、`superseded` 必须给出 `replacementBeatId`、`endingReached` 的联合门槛。同时修掉模板里 `scene`/`actions` 只给 `null`/`[]` 的问题（代码实际要读五个 scene 子字段与 action 的 id/label/hint）。

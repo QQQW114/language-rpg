@@ -403,6 +403,7 @@ export default function GamePageV2() {
   const navigate = useNavigate();
   const save = useActiveSaveV2();
   const settings = useSettingsStore((state) => state.settings);
+  const persistError = useGameStoreV2((state) => state.persistError);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [stream, setStream] = useState('');
@@ -624,6 +625,18 @@ export default function GamePageV2() {
         </div>
         {save.lastTurnCheckpoint && <div className="mt-3 flex flex-wrap justify-end gap-2"><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={retryLastTurn}><RotateCcw size={13} />重新生成最近回合</Button><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={editLastTurn}><Pencil size={13} />修改最近输入</Button></div>}
         {error && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-blood/50 bg-blood/10 px-4 py-3 text-sm text-blood"><span className="whitespace-pre-wrap">{error}</span>{queuePaused && queue.length > 0 && <Button size="xs" variant="outline" onClick={retryQueue}><RotateCcw size={13} />重试模型请求</Button>}</div>}
+        {persistError && <div className="mt-4 rounded-lg border border-amber-400/45 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <div className="flex items-start gap-2">
+            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+            <div className="min-w-0">
+              <div className="tracking-[.12em]">进度未能写入本地存储</div>
+              <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-amber-100/80">{persistError.message}</p>
+              <p className="mt-2 text-[11px] leading-relaxed text-amber-100/60">
+                内存中的故事仍在继续，但刷新页面后会回到最后一次成功写入的进度。建议先用右上角「导出」保存正文，再回到主页删除不再需要的旅程。
+              </p>
+            </div>
+          </div>
+        </div>}
         {save.state.mode === 'adventure' && save.state.availableActions.length > 0 && <div className="mt-4 rounded-xl border border-gold/20 bg-parchment-900/35 p-4"><div className="mb-3 flex items-center gap-2 text-xs tracking-[.2em] text-gold/75"><BookOpen size={14} />可选行动</div><div className="grid gap-2 sm:grid-cols-2">{save.state.availableActions.map((action) => <button type="button" key={action.id} onClick={() => enqueue(action.label)} className="rounded-lg border border-parchment-600/35 bg-ink/25 px-3 py-2 text-left text-sm text-parchment-100 transition hover:border-gold/60 hover:bg-gold/5"><span>{action.label}</span>{action.hint && <span className="mt-1 block text-xs text-parchment-200/50">{action.hint}</span>}</button>)}</div></div>}
         <div className="sticky bottom-0 z-10 mt-5 overflow-hidden rounded-xl border border-parchment-600/30 bg-parchment-800/95 shadow-[0_-10px_30px_rgba(0,0,0,.35)] backdrop-blur-md">
           {queue.length > 0 && <div className="border-b border-parchment-600/25 bg-ink/20 px-3 py-2.5 sm:px-4"><div className="mb-2 flex items-center justify-between"><div className="flex items-center gap-2 text-[11px] tracking-[.16em] text-parchment-200/65"><Clock3 size={13} />发送队列 · {queue.length} 项</div>{queuePaused && <span className="text-[11px] text-blood">发生错误，队列已暂停</span>}</div><div className="max-h-36 space-y-1.5 overflow-y-auto pr-1">{queue.map((item, index) => { const active = item.id === activeQueueId; const itemPace = PACE_OPTIONS.find((option) => option.id === item.pace)?.label; return <div key={item.id} className={`group flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs ${active ? 'border-gold/35 bg-gold/8' : 'border-parchment-600/20 bg-ink/20'}`}><span className={`shrink-0 ${active ? 'text-gold-light' : 'text-parchment-200/40'}`}>{active ? '生成中' : `等待 ${index + 1}`}</span><span className="min-w-0 flex-1 truncate text-parchment-100" title={item.input}>{item.input}</span><span className="shrink-0 text-[10px] text-parchment-200/40">{itemPace}</span><button type="button" onClick={() => cancelQueued(item.id)} className="rounded p-1 text-parchment-200/35 transition hover:bg-blood/15 hover:text-blood" title={active ? '取消当前生成' : '从队列移除'}><X size={13} /></button></div>; })}</div></div>}

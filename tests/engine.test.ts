@@ -160,6 +160,16 @@ function lastUserPromptOf(request: RecordedRequest): string {
   return '';
 }
 
+/** 把一条请求里的所有消息文本拼起来：STABLE_STORY_CONTEXT 在第一条 user 消息，
+ *  而 lastUserPromptOf 只取最后一条，检查注入内容时不能只用它。 */
+function allPromptTextOf(request: RecordedRequest): string {
+  const messages = request.body?.messages;
+  if (Array.isArray(messages)) return messages.map((m: any) => String(m?.content ?? '')).join('\n');
+  const input = request.body?.input;
+  if (Array.isArray(input)) return input.map((m: any) => String(m?.content ?? '')).join('\n');
+  return '';
+}
+
 const phaseOf = (request: RecordedRequest): ModelPhaseV2 => {
   const system = systemPromptOf(request);
   if (system.includes('写前规划 Agent')) return 'planner_pre';
@@ -410,6 +420,85 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
         assert.equal(mock.requests.length, 3);
       },
     );
+  });
+
+  it('planner_post 的输出模板占位被替换为真实 revision/turn（回归：曾静默失败）', async () => {
+    // makeRequest 默认 revision=4、turn=2。template 里写的是 `"baseRevision": 0`（冒号后有空格），
+    // 而替换曾用字符串字面量 '"baseRevision":0' 精确匹配 → 永远替换不上 → 模型看到
+    // baseRevision:0 并抄回 patch，commitTurnPatchV2 的 baseRevision 守卫会拒绝整轮提交。
+    // 用非零 revision/turn 才能区分"替换成功"与"没替换"。
+    const request = makeRequest();
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      const post = lastUserPromptOf(mock.requests[2]);
+      // 只看"输出模板"那一段：整条 user 消息里前面的 AUTHORITATIVE_STATE 也含
+      // "turn":2 这类片段，直接在全文里 includes 会假通过（第一版断言就是这样漏掉的）。
+      const at = post.indexOf('"schemaVersion"');
+      assert.ok(at >= 0, '应包含输出模板');
+      const template = post.slice(at);
+      assert.ok(template.includes('"baseRevision":4'), `模板应含真实 revision：${template.slice(0, 120)}`);
+      assert.ok(template.includes('"turn":2'), `模板应含真实 turn：${template.slice(0, 120)}`);
+      assert.ok(!/"baseRevision"\s*:\s*0/.test(template), '不应残留 baseRevision 0 占位');
+      assert.ok(!/"turn"\s*:\s*0/.test(template), '不应残留 turn 0 占位');
+      const commitId = /【TURN_ID】2:([a-z0-9_]+)/.exec(post)?.[1];
+      assert.ok(commitId, 'TURN_ID 应带 commitId');
+      assert.ok(template.includes(`"commitId":"${commitId}"`), 'commitId 占位应被替换为 TURN_ID 中的同一个值');
+    });
+  });
+
+  it('世界书条目按 alwaysActive + 关键词命中筛选，并按优先级排序（回归：关键词门控曾完全失效）', async () => {
+    const worldFacts = [
+      { id: 'wf-always', name: '世界基调', keywords: [], content: '常年阴雨。', alwaysActive: true, priority: 10 },
+      { id: 'wf-hit', name: '门廊线索', keywords: ['门廊'], content: '门廊下有个修表铺。', alwaysActive: false, priority: 5 },
+      { id: 'wf-miss', name: '尚未发生的伏笔', keywords: ['终局'], content: '第三幕才揭示的真相。', alwaysActive: false, priority: 99 },
+    ];
+    const request = makeRequest({ hooks: { worldFacts } });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      // 注意：STABLE_STORY_CONTEXT 在 planner 的第一条 user 消息里，lastUserPromptOf 取的是最后一条。
+      const planner = allPromptTextOf(mock.requests[0]);
+      const story = allPromptTextOf(mock.requests[1]);
+      assert.ok(planner.includes('常年阴雨'), 'alwaysActive 条目必须注入');
+      for (const [label, prompt] of [['planner', planner], ['story', story]] as const) {
+        assert.ok(!prompt.includes('第三幕才揭示的真相'), `${label}：未命中的关键词条目不应注入（否则等于提前摊开伏笔）`);
+        assert.ok(!prompt.includes('门廊下有个修表铺'), `${label}：未命中的关键词条目不应注入`);
+      }
+    });
+  });
+
+  it('关键词命中当前输入时，该世界书条目会被注入', async () => {
+    const worldFacts = [
+      { id: 'wf-hit', name: '门廊线索', keywords: ['门廊'], content: '门廊下有个修表铺。', alwaysActive: false, priority: 5 },
+    ];
+    const request = makeRequest({ input: '我走到门廊下面躲雨，顺便看看有没有人。', hooks: { worldFacts } });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      assert.ok(allPromptTextOf(mock.requests[0]).includes('门廊下有个修表铺'), '命中的关键词条目应注入 planner');
+      assert.ok(allPromptTextOf(mock.requests[1]).includes('门廊下有个修表铺'), '命中的关键词条目应注入 story');
+    });
+  });
+
+  it('世界书命中条目按 priority 降序排列；超过上限时只保留前 20 条', async () => {
+    const worldFacts = Array.from({ length: 25 }, (_, index) => ({
+      id: `wf-${index}`,
+      name: `设定${index}`,
+      keywords: [],
+      content: `设定正文${index}`,
+      alwaysActive: true,
+      priority: index,
+    }));
+    const request = makeRequest({ hooks: { worldFacts } });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      const planner = allPromptTextOf(mock.requests[0]);
+      const start = planner.indexOf('【STABLE_STORY_CONTEXT】');
+      const context = planner.slice(start, start + 6000);
+      // priority 最大的 5 条（20..24）应进入，priority 最小的 5 条（0..4）应被截断
+      assert.ok(context.includes('设定正文24'), '最高优先级条目应注入');
+      assert.ok(!context.includes('设定正文0'), '最低优先级条目应被上限截断');
+      const kept = context.match(/设定正文(\d+)/g) ?? [];
+      assert.equal(new Set(kept).size, 20, `应恰好保留 20 条，实际 ${new Set(kept).size}`);
+    });
   });
 
   it('author / adventure 模式的 planner_post 提示词不同', async () => {

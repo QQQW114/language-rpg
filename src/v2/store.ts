@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { genId } from '@/lib/utils';
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
 import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2 } from './types';
@@ -26,6 +26,14 @@ export interface CommitSuccessfulTurnV2 {
 interface StoreV2 {
   saves: Record<string, SaveV2>;
   activeId?: string;
+  /**
+   * 最近一次写入 localStorage 的失败原因（成功时清空）。
+   *
+   * 必须让失败可见：zustand persist 对同步 storage 的异常不会抛回调用方，
+   * 一旦 localStorage 写满（长线存档可达 5MB 上限），内存里的故事会继续推进，
+   * 磁盘上却停在旧状态——玩家以为在玩，刷新后全部丢失。
+   */
+  persistError?: { message: string; quotaExceeded: boolean; at: number };
   create: (p: {
     name: string;
     mode: JourneyModeV2;
@@ -51,8 +59,76 @@ const cloneCheckpoint = (checkpoint: LastTurnCheckpointV2): LastTurnCheckpointV2
   stateBeforeTurn: cloneState(checkpoint.stateBeforeTurn),
 });
 
-export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({
-  saves: {},
+function isQuotaError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = String((error as { name?: string }).name ?? '');
+  const message = String((error as { message?: string }).message ?? '');
+  return name === 'QuotaExceededError'
+    || name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || /quota/i.test(name)
+    || /quota|exceeded the quota|storage is full/i.test(message);
+}
+
+/**
+ * 记录写入失败。store 在自己的构造过程中就会读一次 storage，
+ * 而 useGameStoreV2 尚未赋值，因此这里必须容忍"还没实例化"的情况。
+ */
+function reportPersistFailure(error: unknown) {
+  if (!useGameStoreV2) return;
+  const quotaExceeded = isQuotaError(error);
+  useGameStoreV2.setState({
+    persistError: {
+      message: quotaExceeded
+        ? '浏览器本地存储已满，最新进度无法写入磁盘。请先导出备份，再删除部分旧存档或清理回合留档。'
+        : `本地存储写入失败：${error instanceof Error ? error.message : String(error)}`,
+      quotaExceeded,
+      at: Date.now(),
+    },
+  });
+}
+
+function clearPersistFailure() {
+  if (useGameStoreV2?.getState().persistError) useGameStoreV2.setState({ persistError: undefined });
+}
+
+/**
+ * 包一层 StateStorage，把写入失败同时变成两种可见信号：
+ *   1. store 上的 persistError（供 UI 渲染横幅，附带可操作的建议）；
+ *   2. 原样抛出的异常。
+ *
+ * 必须继续抛出：zustand 走的是 newImpl + createJSONStorage 路径，同步 storage 的
+ * setItem 异常会传播回调用方，`GamePage` 的 catch 已经会把它显示成错误并暂停队列。
+ * 若在这里吞掉异常，就等于把"用户能看到的失败"变成"只有一个没人渲染的标志位"，
+ * 反而更糟。注意内存状态在写盘之前就已经前进（zustand 先改 state 再写 storage），
+ * 所以无论如何都存在"内存已推进、磁盘未写入"的窗口，UI 提示是唯一的补救信号。
+ */
+const reportingStorage = createJSONStorage(() => ({
+  getItem: (name: string) => {
+    try {
+      return globalThis.localStorage?.getItem(name) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name: string, value: string) => {
+    try {
+      globalThis.localStorage?.setItem(name, value);
+      clearPersistFailure();
+    } catch (error) {
+      reportPersistFailure(error);
+      throw error;
+    }
+  },
+  removeItem: (name: string) => {
+    try {
+      globalThis.localStorage?.removeItem(name);
+    } catch {
+      /* 删除失败无需打断游玩。 */
+    }
+  },
+}));
+
+export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
   create: (p) => {
     const id = genId('save');
     const now = Date.now();
@@ -193,12 +269,26 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({
   }),
 }), {
   name: 'lrpg.v2',
-  // 最近一回合快照只服务当前页面会话的重试，避免把完整历史复制一份写入 localStorage。
+  storage: reportingStorage,
+  // 持久化时剔除两类"可重建或可丢弃"的数据：
+  //   1. lastTurnCheckpoint：只服务当前页面会话的重试，避免把完整历史复制一份写入。
+  //   2. turnRecords[].calls[].input：三阶段完整提示词留档，实测每回合约 208 KB，
+  //      占整包 97%（30 回合 6.2 MB），会让存档在第 26 回合撞上 localStorage 5MB 上限。
+  //      出参与思维链仍然保留，够复盘；刷新后历史回合的提示词明细不再可导出。
   partialize: (state) => ({
     ...state,
     saves: Object.fromEntries(Object.entries(state.saves).map(([id, save]) => {
       const { lastTurnCheckpoint: _checkpoint, ...persistedSave } = save;
-      return [id, persistedSave];
+      const { turnRecords, ...persistedState } = persistedSave.state;
+      return [id, {
+        ...persistedSave,
+        state: {
+          ...persistedState,
+          ...(turnRecords?.length
+            ? { turnRecords: turnRecords.map(({ calls, ...record }) => ({ ...record, calls: calls.map(({ input: _input, ...call }) => call) })) }
+            : {}),
+        },
+      }];
     })),
   }),
 }));

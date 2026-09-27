@@ -12,6 +12,14 @@
 
 ### 修复
 
+- **存档会撞上 localStorage 配额，且写入失败完全不可见**：每回合把三阶段完整提示词留档写进 `lrpg.v2`，实测 30 回合达 6.21 MB（其中留档占 97.8% 的字节），约第 26 回合即超限；超限后内存状态继续前进而磁盘停在旧值，刷新丢档。现在持久化时剔除 `calls[].input`（30 回合 6212 KB → 420 KB，距配额约 337 回合），并用自定义 `StateStorage` 把写入失败提升为可渲染的 `persistError`（异常照旧上抛），游戏页渲染持久化告警横幅。
+- **`<think>` 标签变体会吞掉整回合正文**：只认逐字符相等的 `</think>`，模型写出 `</think >`、`</THINK>` 时其后正文全部被判为思考内容，回合以"空内容"失败。现在归一化标签再拆分，并加"无规范标签时按正文返回"的安全网。
+- **工具循环丢掉已生成的最终 JSON**：模型在同一轮里既给出完整 JSON 又发起工具调用、末轮只回空内容时，原实现只取末轮文本导致整回合失败。现在回退到最后一个非空文本。
+- **工具轮次用尽直接抛错**：末轮改用 `toolChoice:'none'` 阻止继续调用，仍请求工具时用已有内容收尾而非打掉整回合（并顺带修掉由此暴露的潜在无界调用）；仅当从未产出可用文本时才抛错。
+- **世界书的 `alwaysActive` / `keywords` / `priority` 完全失效**：关键词门控从未生效，未命中的条目（含尚未发生的伏笔）每回合都被注入，`priority` 不起作用且第 21 条起静默丢弃。现在按常驻 + 关键词命中筛选、按优先级排序，截断时发活动流警告。
+- **枚举未写进提示词导致静默强转**：`postShape` 只给 `"status":"active"` / `"kind":"item"`，模型输出中文枚举时被白名单静默改写（人物死亡记为活跃）。现在写全枚举并补充"不得翻译枚举""superseded 需 replacementBeatId""endingReached 的联合门槛"三条规则；同时补全 `scene` / `actions` 的字段结构（原先只给 `null` / `[]`）。
+- 设置页"写前规划和写后结算分别计算工具次数"的文案与实现矛盾（结算阶段从不挂载工具），已更正。
+- 删除零引用的 `src/lib/toast.ts`（其渲染组件早已随 V1 清理删除）。
 - `tsconfig.json` 的 `include` 从 4 个路径改为 `["src"]`：此前大量文件不在类型检查范围内，`src/types/game.ts` 被删除后仍被十余个文件 import 而无人发现。
 - `extractJSONText` 贪婪匹配导致解析失败：模型在 JSON 之后继续输出文字、或一次返回多个对象时整体不是合法 JSON，直接返回 `null`，使整回合失败。改为逐个 `{` 做括号平衡扫描（跳过字符串字面量与转义引号），返回首个可解析对象；并修复了两个由复核发现的衍生问题——截断输入会退而返回内层对象（现在返回 `null`）、逐候选扫描在病态输入上退化成 O(n²)（200 KB 未闭合括号需 124 秒，现在 200 万个耗时 2 ms）；合法 JSON 在非法 fence 之前时不再被整体丢弃。
 - `mergeLlmUsage` 用 `undefined` 覆盖已知缓存统计：`normalizeLlmUsage` 产出的 cache 必带三个键（值可能为 `undefined`），对象展开会把上一帧已拿到的 `hitTokens` 覆盖掉。改为逐字段 `??` 合并，且只写入真正有值的字段。
@@ -26,7 +34,10 @@
 
 ### 新增
 
-- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 242 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 252 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+- 端到端 mock 链路测试：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，44 条断言覆盖 chat/Responses 两种格式、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）与 store 落盘。
+- 存档体积与写入可靠性实测：`npm run test:storage` 测量每回合字节增长、距 localStorage 配额的剩余回合数，并注入 `QuotaExceededError` 验证失败可见性。
+- `tests/llmClient.test.ts`：补齐此前零覆盖的模型客户端（工具循环两个 HARD 缺陷的回归测试）。
 - 新增 `docs/known-issues.md`：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。
 
 ## [0.3.0] - 2026-07-16

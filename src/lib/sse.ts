@@ -128,6 +128,15 @@ function trailingPrefixLength(text: string, tag: string): number {
   return 0;
 }
 
+// 模型偶尔会写 `</think >`、`</ think>`、`</THINK>`、`< think >` 这类变体。
+// 只认逐字符相等的 `</think>` 时，闭标签匹配不上 → 后面所有正文都被当成思考内容，
+// 于是正文为空、回合以"模型返回了空内容"失败，而模型其实写完了。
+// 这里把标签归一成规范小写形式，同时保持字符偏移不变（长度相同的原地替换）。
+const THINK_TAG_PATTERN = /<\s*(\/?)\s*think\s*>/gi;
+function normalizeThinkTags(chunk: string): string {
+  return chunk.replace(THINK_TAG_PATTERN, (_match, slash: string) => slash ? '</think>' : '<think>');
+}
+
 function createThinkTagSplitter(onText: (text: string) => void, onThinking: (text: string) => void) {
   let inThink = false;
   let pending = '';
@@ -148,7 +157,7 @@ function createThinkTagSplitter(onText: (text: string) => void, onThinking: (tex
   };
 
   const feed = (chunk: string, flush = false) => {
-    let rest = pending + chunk;
+    let rest = normalizeThinkTags(pending + chunk);
     pending = '';
     while (rest) {
       const lower = rest.toLowerCase();
@@ -180,6 +189,7 @@ function createThinkTagSplitter(onText: (text: string) => void, onThinking: (tex
         continue;
       }
       if (!flush) {
+        // 跨帧切分的开标签：`<thi` + `nk>`、`< thin` + `k >` 都要能续上。
         const keep = trailingPrefixLength(rest, openTag);
         if (keep > 0) {
           emitText(rest.slice(0, -keep));
@@ -194,10 +204,14 @@ function createThinkTagSplitter(onText: (text: string) => void, onThinking: (tex
 
   const finish = () => {
     if (pending) feed('', true);
-    return {
-      text: text.trim(),
-      thinking: thinking.trim() || undefined,
-    };
+    const trimmedText = text.trim();
+    const trimmedThinking = thinking.trim() || undefined;
+    // 安全网：没有显式 <think> 块，却有"思考"内容，说明闭标签从未被识别。
+    // 那些内容其实是正文，不能当成思维链丢掉。
+    if (!trimmedText && trimmedThinking && !/<think>/i.test(trimmedThinking)) {
+      return { text: trimmedThinking, thinking: undefined };
+    }
+    return { text: trimmedText, thinking: trimmedThinking };
   };
 
   return { feed, finish };

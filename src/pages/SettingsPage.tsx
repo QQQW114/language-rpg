@@ -359,7 +359,7 @@ export default function SettingsPage() {
                 step={1}
                 value={draft.plannerToolMaxCalls}
                 onChange={(event) => setDraft({ ...draft, plannerToolMaxCalls: Math.max(1, Math.min(6, Number(event.target.value) || 1)) })}
-                hint="写前规划和写后结算分别计算；建议2次，最高6次。达到上限后继续调用会返回上限提示。"
+                hint="仅写前规划阶段会调用工具；写后结算阶段不挂载工具。二者上限由程序强制执行。建议2次，最高6次。"
               />
             </div>}
 
