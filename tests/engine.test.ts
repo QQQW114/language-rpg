@@ -10,8 +10,6 @@ import {
   contentFrame,
   finishFrame,
   reasoningFrame,
-  responsesSSE,
-  responsesTextFrame,
   toolCallFrame,
   usageFrame,
   withFetchMock,
@@ -74,10 +72,6 @@ function jsonStream(value: unknown): Response {
   return chatSSE([contentFrame(text.slice(0, middle)), contentFrame(text.slice(middle)), DONE_FRAME]);
 }
 
-function responsesJsonStream(value: unknown): Response {
-  return responsesSSE([responsesTextFrame(JSON.stringify(value)), DONE_FRAME]);
-}
-
 function storyStream(options: { thinking?: string; finishReason?: string; usage?: unknown; text?: string } = {}): Response {
   const text = options.text ?? STORY_TEXT;
   const middle = Math.max(1, Math.floor(text.length / 2));
@@ -123,13 +117,9 @@ function phaseHandler(options: {
   brief?: () => Response;
   story?: () => Response;
   post?: () => Response;
-  format?: 'chat' | 'responses';
 } = {}) {
-  const format = options.format ?? 'chat';
-  const json = format === 'responses' ? responsesJsonStream : jsonStream;
-  const story = format === 'responses'
-    ? () => responsesSSE([responsesTextFrame(STORY_TEXT), DONE_FRAME])
-    : () => storyStream();
+  const json = jsonStream;
+  const story = () => storyStream();
   return (request: RecordedRequest): Response => {
     const system = systemPromptOf(request);
     if (system.includes('写前规划 Agent')) return (options.brief ?? (() => json(BRIEF)))();
@@ -522,11 +512,12 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
     });
   });
 
-  it('plannerToolsEnabled + chat 时 planner_pre 请求带 tools；responses 格式不带', async () => {
-    const chatRequest = makeRequest({ settings: { plannerToolsEnabled: true, apiFormat: 'chat', plannerToolMaxCalls: 3 } });
+  it('plannerToolsEnabled 时只有 planner_pre 带 tools，故事与结算阶段不带', async () => {
+    const request = makeRequest({ settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 3 } });
     await withFetchMock(phaseHandler(), async (mock) => {
-      await runTurnV2(chatRequest);
+      await runTurnV2(request);
       const pre = mock.requests[0];
+      assert.equal(pre.url, 'https://api.test.invalid/v1/chat/completions');
       assert.equal(Array.isArray(pre.body.tools), true, '应带 tools');
       assert.equal(pre.body.tools[0].function.name, 'search_story_context');
       assert.equal(pre.body.tool_choice, 'auto');
@@ -535,19 +526,6 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
       assert.equal(mock.requests[1].body.tools, undefined);
       assert.equal(mock.requests[2].body.tools, undefined);
       assert.ok(!lastUserPromptOf(mock.requests[2]).includes('search_story_context'));
-    });
-
-    const responsesRequest = makeRequest({
-      settings: { plannerToolsEnabled: true, apiFormat: 'responses', plannerToolMaxCalls: 3 },
-    });
-    await withFetchMock(phaseHandler({ format: 'responses' }), async (mock) => {
-      await runTurnV2(responsesRequest);
-      assert.equal(mock.requests.length, 3);
-      for (const call of mock.requests) {
-        assert.equal(call.url, 'https://api.test.invalid/v1/responses');
-        assert.equal(call.body.tools, undefined, 'responses 格式不应声明工具');
-      }
-      assert.ok(!systemPromptOf(mock.requests[0]).includes('上下文查询工具纪律'));
     });
   });
 
@@ -658,7 +636,7 @@ describe('engine.runTurnV2 — 规划上下文工具循环', () => {
   it('模型请求 search_story_context 后：工具结果注入下一轮、回合照常提交', async () => {
     const activity: ModelActivityV2[] = [];
     const request = makeRequest({
-      settings: { plannerToolsEnabled: true, apiFormat: 'chat', plannerToolMaxCalls: 2 },
+      settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 2 },
       hooks: { onModelActivity: (item) => activity.push(item) },
     });
 
@@ -711,7 +689,7 @@ describe('engine.runTurnV2 — 规划上下文工具循环', () => {
   it('工具名为未知工具、超出调用上限、连续请求工具都会产生可观察结果', async () => {
     const activity: ModelActivityV2[] = [];
     const request = makeRequest({
-      settings: { plannerToolsEnabled: true, apiFormat: 'chat', plannerToolMaxCalls: 2 },
+      settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 2 },
       hooks: { onModelActivity: (item) => activity.push(item) },
     });
 

@@ -10,7 +10,7 @@ import {
   withFetchMock,
 } from './helpers/streamFixtures';
 
-const CFG = { baseUrl: 'https://api.test.invalid/v1', apiKey: 'test-key', format: 'chat' as const };
+const CFG = { baseUrl: 'https://api.test.invalid/v1', apiKey: 'test-key' };
 
 /**
  * 这些用例专门覆盖工具循环里"模型一次给出多种输出"的真实行为，

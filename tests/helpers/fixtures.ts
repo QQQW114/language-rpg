@@ -145,7 +145,6 @@ export function makeSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     ...DEFAULT_SETTINGS,
     apiBaseUrl: 'https://api.test.invalid/v1',
     apiKey: 'test-key',
-    apiFormat: 'chat',
     storyModel: 'test-story-model',
     plannerModel: 'test-planner-model',
     ...overrides,

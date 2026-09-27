@@ -212,7 +212,7 @@ describe('workshop.model — normalizeForSave', () => {
     assert.equal(normalized.acts[0].beats[0].purpose, '作用');
   });
 
-  it('normalizeWorldBookForSave 去空白、关键词去重、priority 夹到 [0,100]', () => {
+  it('normalizeWorldBookForSave 去空白、关键词去重、priority 与内容库同区间夹取', () => {
     const normalized = normalizeWorldBookForSave({
       id: 'wb-x',
       name: '  世界书  ',
@@ -231,9 +231,9 @@ describe('workshop.model — normalizeForSave', () => {
     assert.equal(normalized.entries[0].name, 'E1');
     assert.equal(normalized.entries[0].content, 'C1');
     assert.deepEqual(normalized.entries[0].keywords, ['k']);
-    // discovered issue：内容库校验允许 priority ∈ [-10000, 10000]，
-    // 但工坊保存路径只允许 [0, 100]，负数会被抬到 0。
-    assert.deepEqual(normalized.entries.map((entry) => entry.priority), [100, 0, 42, undefined, undefined]);
+    // 回归：工坊曾把 priority 夹到 [0,100]，而内容库校验允许 [-10000,10000]，
+    // 于是"工坊保存 → 导出 → 再导入"会把负数与 >100 的值静默改写。两处现已同区间。
+    assert.deepEqual(normalized.entries.map((entry) => entry.priority), [10000, -5, 42, undefined, undefined]);
   });
 });
 

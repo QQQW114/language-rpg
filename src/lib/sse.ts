@@ -1,7 +1,4 @@
-// OpenAI 兼容 SSE 解析
-// 支持两种格式：
-//  1) chat: data: {"choices":[{"delta":{"content":"..."}}]}
-//  2) responses: 事件 response.output_text.delta → {"delta":"..."}
+// 底层只做帧解析，不关心供应商风格；usage 的字段别名归一化见 lib/llmUsage.ts。
 
 import { mergeLlmUsage, normalizeLlmUsage } from '@/lib/llmUsage';
 import { extractJSONText } from '@/lib/utils';
@@ -11,7 +8,8 @@ export interface StreamOptions {
   onDelta: (text: string) => void;
   onThinkingDelta?: (text: string) => void;
   signal?: AbortSignal;
-  format?: 'chat' | 'responses';
+  /** 供应商异常帧导致内容被丢弃时的可观察提示（例如缺 function.name 的工具调用）。 */
+  onWarning?: (warning: { code: string; message: string }) => void;
   /**
    * 'json'：兼容“自适应思考”模型。部分模型在不产生 <think> 块时，会把真正的
    * 正文（通常是 JSON）放进 reasoning/thinking 通道，而 content 为空。
@@ -85,39 +83,6 @@ function extractChatToolCallDeltas(frame: RawFrame): Array<{
     name: typeof call?.function?.name === 'string' ? call.function.name : undefined,
     arguments: typeof call?.function?.arguments === 'string' ? call.function.arguments : undefined,
   }));
-}
-
-function extractResponsesDelta(frame: RawFrame): string | undefined {
-  const type = (frame as any).type;
-  // 只对正文 delta 感兴趣；跳过 reasoning / annotations / audio 等
-  if (type === 'response.output_text.delta') {
-    const delta = (frame as any).delta;
-    return typeof delta === 'string' ? delta : undefined;
-  }
-  if (type === 'error' || type === 'response.failed') {
-    const msg = (frame as any).error?.message ?? (frame as any).response?.error?.message ?? '模型返回错误';
-    throw new Error(String(msg));
-  }
-  return undefined;
-}
-
-function extractResponsesThinkingDelta(frame: RawFrame): string | undefined {
-  const anyFrame = frame as any;
-  const type = anyFrame.type;
-  if (
-    type === 'response.reasoning_summary_text.delta'
-    || type === 'response.reasoning_text.delta'
-    || type === 'response.thinking.delta'
-  ) {
-    const delta = anyFrame.delta ?? anyFrame.text;
-    return typeof delta === 'string' ? delta : undefined;
-  }
-  const content =
-    anyFrame.reasoning_content ??
-    anyFrame.reasoning ??
-    anyFrame.thinking ??
-    anyFrame.thoughts;
-  return typeof content === 'string' ? content : undefined;
 }
 
 function trailingPrefixLength(text: string, tag: string): number {
@@ -227,21 +192,7 @@ function detectFinishReason(frame: RawFrame): string | undefined {
     if (typeof reason === 'string' && reason) return reason;
   }
 
-  // Responses API / 常见代理：达到 max_output_tokens 会以 incomplete 结束。
-  const response = anyFrame.response;
-  const incompleteReason =
-    anyFrame.incomplete_details?.reason ??
-    anyFrame.incomplete_details?.code ??
-    response?.incomplete_details?.reason ??
-    response?.incomplete_details?.code;
-  if (typeof incompleteReason === 'string' && incompleteReason) {
-    return incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason;
-  }
-
-  if (anyFrame.type === 'response.incomplete' || response?.status === 'incomplete') {
-    return 'length';
-  }
-
+  // 有些代理把 finish_reason 放在帧顶层，而不是 choices 里。
   const directReason = anyFrame.finish_reason ?? anyFrame.finishReason;
   if (typeof directReason === 'string' && directReason) return directReason;
 
@@ -266,8 +217,6 @@ export async function readSSEDetailed(
   let usage: LlmUsage | undefined;
   const partialToolCalls = new Map<number, PartialToolCall>();
 
-  const extractor = opts.format === 'responses' ? extractResponsesDelta : extractChatDelta;
-  const thinkingExtractor = opts.format === 'responses' ? extractResponsesThinkingDelta : extractChatThinkingDelta;
   const splitter = createThinkTagSplitter(opts.onDelta, (t) => opts.onThinkingDelta?.(t));
   const finish = (): StreamResult => {
     const result = splitter.finish();
@@ -296,7 +245,7 @@ export async function readSSEDetailed(
       .filter(Boolean)
       .join('\n\n')
       || undefined;
-    const toolCalls = Array.from(partialToolCalls.entries())
+    const candidates = Array.from(partialToolCalls.entries())
       .sort((a, b) => a[0] - b[0])
       .map(([index, call]) => ({
         id: call.id || `tool_call_${index}`,
@@ -305,8 +254,14 @@ export async function readSSEDetailed(
           name: call.name || '',
           arguments: call.arguments || '',
         },
-      }))
-      .filter((call) => call.function.name);
+      }));
+    // 供应商异常帧可能只回 arguments 而没有 function.name。丢弃是唯一可行的处理
+    // （没有名字就无法调用任何工具），但必须留下痕迹，否则表现为"模型查了资料却没结果"。
+    const droppedToolCalls = candidates.filter((call) => !call.function.name).length;
+    if (droppedToolCalls > 0) {
+      opts.onWarning?.({ code: 'tool_call_without_name', message: `收到 ${droppedToolCalls} 个缺少 function.name 的工具调用帧，已忽略。` });
+    }
+    const toolCalls = candidates.filter((call) => call.function.name);
     return {
       ...result,
       text,
@@ -348,24 +303,22 @@ export async function readSSEDetailed(
 
         finishReason = detectFinishReason(frame) ?? finishReason;
         usage = mergeLlmUsage(usage, extractUsage(frame));
-        if (opts.format !== 'responses') {
-          for (const delta of extractChatToolCallDeltas(frame)) {
-            const existing = partialToolCalls.get(delta.index) ?? { arguments: '' };
-            partialToolCalls.set(delta.index, {
-              id: delta.id ?? existing.id,
-              type: delta.type ?? existing.type ?? 'function',
-              name: delta.name ?? existing.name,
-              arguments: existing.arguments + (delta.arguments ?? ''),
-            });
-          }
+        for (const delta of extractChatToolCallDeltas(frame)) {
+          const existing = partialToolCalls.get(delta.index) ?? { arguments: '' };
+          partialToolCalls.set(delta.index, {
+            id: delta.id ?? existing.id,
+            type: delta.type ?? existing.type ?? 'function',
+            name: delta.name ?? existing.name,
+            arguments: existing.arguments + (delta.arguments ?? ''),
+          });
         }
-        const thinkingDelta = thinkingExtractor(frame);
+        const thinkingDelta = extractChatThinkingDelta(frame);
         if (thinkingDelta) {
           nativeThinking += thinkingDelta;
           opts.onThinkingDelta?.(thinkingDelta);
         }
 
-        const delta = extractor(frame);
+        const delta = extractChatDelta(frame);
         if (delta) {
           splitter.feed(delta);
         }

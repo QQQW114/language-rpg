@@ -1,7 +1,6 @@
-// OpenAI 兼容的 LLM 客户端：支持 Chat Completions 与 Responses 两种请求格式
+// OpenAI 兼容的 LLM 客户端（只支持 Chat Completions 协议）
 
 import { readSSEDetailed, type StreamResult } from '@/lib/sse';
-import type { ApiFormat } from '@/types/settings';
 import { joinThinking, splitThinkingFromText } from '@/lib/thinking';
 import { normalizeLlmUsage } from '@/lib/llmUsage';
 import type { LlmUsage } from '@/types/llm';
@@ -59,7 +58,6 @@ export interface ChatToolActivity {
 export interface ChatClientConfig {
   baseUrl: string;
   apiKey: string;
-  format: ApiFormat;
 }
 
 export interface ChatParams {
@@ -73,6 +71,8 @@ export interface ChatParams {
   maxToolRounds?: number;
   onToolCall?: (call: ChatToolInvocation) => Promise<unknown>;
   onToolActivity?: (activity: ChatToolActivity) => void;
+  /** SSE 层因供应商异常帧丢弃内容时的可观察提示。 */
+  onStreamWarning?: (warning: { code: string; message: string }) => void;
   responseFormat?: 'json_object';
   thinking?: 'enabled' | 'disabled';
   reasoningEffort?: 'high' | 'max';
@@ -127,7 +127,7 @@ async function readErrorBody(res: Response): Promise<string> {
   }
 }
 
-// ---- Chat Completions 格式 ----
+// ---- 请求构造 ----
 
 function buildChatBody(p: ChatParams, stream: boolean, includeUsage = false): Record<string, unknown> {
   return {
@@ -142,35 +142,6 @@ function buildChatBody(p: ChatParams, stream: boolean, includeUsage = false): Re
     ...(p.reasoningEffort ? { reasoning_effort: p.reasoningEffort } : {}),
     ...(p.tools?.length && (p.toolChoice ?? 'auto') !== 'none' ? { tools: p.tools, tool_choice: p.toolChoice ?? 'auto' } : {}),
   };
-}
-
-// ---- Responses 格式 ----
-// 将 messages 拆分为 instructions（system 消息合并）+ input（user/assistant）
-
-function buildResponsesBody(p: ChatParams, stream: boolean): Record<string, unknown> {
-  const systems: string[] = [];
-  const input: Array<{ role: string; content: string }> = [];
-  for (const m of p.messages) {
-    if (m.role === 'system') {
-      systems.push(m.content);
-    } else if (m.role === 'user' || m.role === 'assistant') {
-      input.push({ role: m.role, content: typeof m.content === 'string' ? m.content : '' });
-    }
-  }
-  const body: Record<string, unknown> = {
-    model: p.model,
-    input,
-    stream,
-  };
-  if (systems.length) body.instructions = systems.join('\n\n');
-  if (p.temperature !== undefined) body.temperature = p.temperature;
-  if (p.maxTokens) body.max_output_tokens = p.maxTokens;
-  if (p.responseFormat) body.text = { format: { type: p.responseFormat } };
-  return body;
-}
-
-function responsesEndpoint(base: string): string {
-  return joinUrl(base, 'responses');
 }
 
 function chatEndpoint(base: string): string {
@@ -305,14 +276,13 @@ export async function chatStreamDetailed(
   if (!cfg.baseUrl) throw new Error('未配置 API Base URL');
   if (!p.model) throw new Error('未选择模型');
 
-  const url = cfg.format === 'responses' ? responsesEndpoint(cfg.baseUrl) : chatEndpoint(cfg.baseUrl);
+  const url = chatEndpoint(cfg.baseUrl);
 
   const requestStreamOnce = async (
     params: ChatStreamParams,
     includeUsage: boolean,
   ): Promise<StreamResult> => {
-    const buildBody = (useUsage: boolean) =>
-      cfg.format === 'responses' ? buildResponsesBody(params, true) : buildChatBody(params, true, useUsage);
+    const buildBody = (useUsage: boolean) => buildChatBody(params, true, useUsage);
     let body = buildBody(includeUsage);
 
     let res = await fetch(url, {
@@ -328,7 +298,7 @@ export async function chatStreamDetailed(
 
     if (!res.ok) {
       const msg = await readErrorBody(res);
-      if (cfg.format === 'chat' && includeUsage && shouldRetryWithoutStreamOptions(msg)) {
+      if (includeUsage && shouldRetryWithoutStreamOptions(msg)) {
         body = buildBody(false);
         res = await fetch(url, {
           method: 'POST',
@@ -345,8 +315,8 @@ export async function chatStreamDetailed(
             onDelta: params.onDelta,
             onThinkingDelta: params.onThinkingDelta,
             signal: params.signal,
-            format: cfg.format,
             thinkingFallback: params.thinkingFallback,
+            onWarning: params.onStreamWarning,
           });
         }
         const retryMsg = await readErrorBody(res);
@@ -359,14 +329,13 @@ export async function chatStreamDetailed(
       onDelta: params.onDelta,
       onThinkingDelta: params.onThinkingDelta,
       signal: params.signal,
-      format: cfg.format,
       thinkingFallback: params.thinkingFallback,
+      onWarning: params.onStreamWarning,
     });
   };
 
   if (
-    cfg.format === 'chat'
-    && p.tools?.length
+    p.tools?.length
     && p.onToolCall
     && (p.toolChoice ?? 'auto') !== 'none'
   ) {

@@ -1,4 +1,5 @@
-import { describe, it } from 'node:test';import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 import { readSSE, readSSEDetailed } from '@/lib/sse';
 import {
   DONE_FRAME,
@@ -7,9 +8,6 @@ import {
   dataFrame,
   finishFrame,
   reasoningFrame,
-  responsesCompletedFrame,
-  responsesSSE,
-  responsesTextFrame,
   sseResponse,
   toolCallFrame,
   usageFrame,
@@ -221,17 +219,20 @@ describe('sse.readSSEDetailed — tool_calls 聚合', () => {
     assert.equal(calls[1].type, 'function');
   });
 
-  it('responses 格式不聚合 chat 形状的 tool_calls', async () => {
+  it('缺少 function.name 的工具调用被忽略，并产生可观察警告（回归：曾完全静默）', async () => {
+    const warnings: Array<{ code: string; message: string }> = [];
     const result = await readSSEDetailed(
-      responsesSSE([
-        responsesTextFrame('正文'),
-        toolCallFrame([{ index: 0, id: 'call_x', type: 'function', function: { name: 'nope', arguments: '{}' } }]),
-        responsesCompletedFrame(),
+      chatSSE([
+        toolCallFrame([{ index: 0, id: 'call_1', type: 'function', function: { arguments: '{"query":"甲"}' } }]),
+        toolCallFrame([{ index: 1, id: 'call_2', type: 'function', function: { name: 'search_story_context', arguments: '{}' } }]),
+        DONE_FRAME,
       ]),
-      { onDelta: noop, format: 'responses' },
+      { onDelta: noop, onWarning: (warning) => warnings.push(warning) },
     );
-    assert.equal(result.text, '正文');
-    assert.equal(result.toolCalls, undefined);
+    assert.equal(result.toolCalls?.length, 1, '无名调用被忽略');
+    assert.equal(result.toolCalls?.[0].function.name, 'search_story_context');
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].code, 'tool_call_without_name');
   });
 });
 
@@ -264,90 +265,6 @@ describe('sse.readSSEDetailed — usage 与 finish_reason', () => {
     assert.equal(result.usage?.completionTokens, 1);
     assert.equal(result.usage?.totalTokens, undefined);
     assert.equal(result.usage?.cache, undefined);
-  });
-});
-
-describe('sse.readSSEDetailed — responses 格式', () => {
-  it('response.output_text.delta 聚合正文', async () => {
-    const result = await readSSEDetailed(
-      responsesSSE([responsesTextFrame('第一'), responsesTextFrame('段'), DONE_FRAME]),
-      { onDelta: noop, format: 'responses' },
-    );
-    assert.equal(result.text, '第一段');
-  });
-
-  it('从 response.usage 归一化 token 与缓存', async () => {
-    const result = await readSSEDetailed(
-      responsesSSE([
-        responsesTextFrame('文本'),
-        responsesCompletedFrame({
-          usage: { input_tokens: 7, output_tokens: 3, input_tokens_details: { cached_tokens: 2 } },
-        }),
-        DONE_FRAME,
-      ]),
-      { onDelta: noop, format: 'responses' },
-    );
-    assert.equal(result.usage?.promptTokens, 7);
-    assert.equal(result.usage?.completionTokens, 3);
-    assert.equal(result.usage?.cache?.cachedTokens, 2);
-  });
-
-  it('reasoning 通道增量归入 thinking', async () => {
-    const thinkingDeltas: string[] = [];
-    const result = await readSSEDetailed(
-      responsesSSE([
-        { type: 'response.reasoning_summary_text.delta', delta: '推理一' },
-        { type: 'response.reasoning_text.delta', text: '推理二' },
-        responsesTextFrame('正文'),
-        DONE_FRAME,
-      ]),
-      { onDelta: noop, onThinkingDelta: (text) => thinkingDeltas.push(text), format: 'responses' },
-    );
-    assert.equal(result.text, '正文');
-    assert.equal(result.thinking, '推理一推理二');
-    assert.equal(result.reasoningContent, '推理一推理二');
-    assert.deepEqual(thinkingDeltas, ['推理一', '推理二']);
-  });
-
-  it('incomplete / max_output_tokens 都被识别为 length', async () => {
-    const viaIncomplete = await readSSEDetailed(
-      responsesSSE([responsesTextFrame('截断'), { type: 'response.incomplete' }, DONE_FRAME]),
-      { onDelta: noop, format: 'responses' },
-    );
-    assert.equal(viaIncomplete.finishReason, 'length');
-
-    const viaDetails = await readSSEDetailed(
-      responsesSSE([{ incomplete_details: { reason: 'max_output_tokens' } }, DONE_FRAME]),
-      { onDelta: noop, format: 'responses' },
-    );
-    assert.equal(viaDetails.finishReason, 'length');
-
-    const viaResponseStatus = await readSSEDetailed(
-      responsesSSE([{ response: { status: 'incomplete', incomplete_details: { code: 'max_output_tokens' } } }, DONE_FRAME]),
-      { onDelta: noop, format: 'responses' },
-    );
-    assert.equal(viaResponseStatus.finishReason, 'length');
-  });
-
-  it('response.failed 与 error 帧抛出错误', async () => {
-    await assert.rejects(
-      () => readSSEDetailed(
-        responsesSSE([{ type: 'response.failed', response: { error: { message: '服务端失败' } } }]),
-        { onDelta: noop, format: 'responses' },
-      ),
-      /服务端失败/,
-    );
-    await assert.rejects(
-      () => readSSEDetailed(
-        responsesSSE([{ type: 'error', error: { message: '请求被拒绝' } }]),
-        { onDelta: noop, format: 'responses' },
-      ),
-      /请求被拒绝/,
-    );
-    await assert.rejects(
-      () => readSSEDetailed(responsesSSE([{ type: 'error' }]), { onDelta: noop, format: 'responses' }),
-      /模型返回错误/,
-    );
   });
 });
 

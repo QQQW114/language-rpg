@@ -642,16 +642,14 @@ function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishR
 }
 
 export async function runTurnV2(p: TurnRequestV2) {
-  const cfg = { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey, format: p.settings.apiFormat };
+  const cfg = { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey };
   const plannerModel = resolvePlannerModel(p.settings);
   const storyModel = resolveStoryModel(p.settings);
-  // 当前工具循环由 Chat Completions 消息协议承载；Responses 模式保持无工具，
-  // 避免设置开启后向不支持该链路的格式发送虚假工具声明。
-  const plannerToolsEnabled = p.settings.plannerToolsEnabled === true && p.settings.apiFormat === 'chat';
+  const plannerToolsEnabled = p.settings.plannerToolsEnabled === true;
   const plannerToolMaxCalls = Math.max(1, Math.min(6, Math.round(Number(p.settings.plannerToolMaxCalls) || 2)));
   let isOfficialDeepSeek = /api\.deepseek\.com/i.test(p.settings.apiBaseUrl);
   try { isOfficialDeepSeek ||= /(^|\.)deepseek\.com$/i.test(new URL(p.settings.apiBaseUrl).hostname); } catch { /* 由LLM客户端负责报告无效URL */ }
-  const plannerJsonEnabled = p.settings.apiFormat === 'chat' && (p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek));
+  const plannerJsonEnabled = p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek);
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
   const reasoningEffort = isOfficialDeepSeek && p.settings.thinkingMode !== 'disabled' ? p.settings.reasoningEffort : undefined;
   const roleInjects = p.settings.roleInjects;
@@ -723,6 +721,14 @@ export async function runTurnV2(p: TurnRequestV2) {
       } : {}),
       onThinkingDelta: (text) => collectThinking('planner_pre', plannerModel, text),
       onDelta: (text) => emitOutput(p, 'planner_pre', plannerModel, text),
+      onStreamWarning: (warning) => emitActivity(p, {
+        type: 'warning',
+        phase: 'planner_pre',
+        model: plannerModel,
+        code: warning.code,
+        path: 'stream',
+        message: warning.message,
+      }),
     });
     ensureModelResult('planner_pre', pre);
     turnCalls.push({ phase: 'planner_pre', model: plannerModel, input: pre.trace, output: pre.text, thinking: pre.thinking, usage: pre.usage });
@@ -794,7 +800,11 @@ export async function runTurnV2(p: TurnRequestV2) {
   }
   const patch = asPatch(requireJSONObject(post.text, phaseLabels.planner_post), p, commitId, story.text);
   emitPatchWarnings(p, plannerModel, patch.warnings);
-  const next = commitTurnPatchV2(p.state, patch);
+  // 提交阶段也可能修正模型输出（例如 superseded 缺少有效替代者时降级为 reframed），
+  // 这些说明同样要进入活动流，否则玩家与排障者只看到状态被改却找不到原因。
+  const commitWarnings: PatchWarningV2[] = [];
+  const next = commitTurnPatchV2(p.state, patch, commitWarnings);
+  emitPatchWarnings(p, plannerModel, commitWarnings);
   const now = Date.now();
   next.history = [...p.state.history,
     { id: genId('msg'), role: 'user', content: p.input, turn: p.state.turn, createdAt: now },

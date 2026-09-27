@@ -6,12 +6,16 @@
 
 ### 移除
 
+- **整体移除 Responses（`/responses`）链路**：`apiFormat` 在界面上没有任何入口，该格式对用户是死代码，且其下 `thinkingMode` / `reasoningEffort` / `plannerJsonMode` / 工具开关全部静默失效。现在只支持 Chat Completions。usage 的 `input_tokens` / `output_tokens` / `*_tokens_details.cached_tokens` 别名归一化保留（属于通用供应商差异，不是 Responses 专属）。
 - 清理 V1 遗留代码：删除 36 个被 git 跟踪的零引用文件（另有 1 个从未纳入 git 的 `src/pages/GamePage.tsx.bak`，共 37 个），包括旧页面（`LibraryPage`、`GamePage.tsx.bak`）、18 个旧组件、IndexedDB 司书库（`storage/ledgerRepository.ts`）、工作区/司书库模板链路、旧执笔链提示词与只服务旧类型的工具模块。
 - 移除内容库中的随机事件条目与司书库模板：`RandomEvent` / `WorkspaceTemplate` 类型、预设事件库、以及 `contentLibrary` / `useContentStore` 中的对应分支。随机事件改由 `engine.ts` 指令与 `patch.ts` 调度独立驱动（行为不变）。
 - 删除误导性的临时重构产物 `.tmp_cn_refs.txt` 与 `.tmp_item_refs.txt`。
 
 ### 修复
 
+- **`superseded` 缺少有效替代者时虚增结局完成度**：`replacementBeatId` 只校验非空、不校验存在性，指向不存在的故事节时状态仍被置为 `superseded`，而结局判定把所有 `superseded` 视为已完成 → 可能提前触发结局。现在必须指向真实存在的故事节，否则降级为 `reframed` 并发警告；已落库的历史坏数据会在下次提交时回收。不会卡住流程：`endingReached` 只记录状态、不终止游戏。
+- **多处静默丢弃/静默改写改为可观察**：人物 `create` 缺 `name`、线程 `create` 缺 `title`（此前会退化为按 id 覆盖已有线程且不校验 reason）、枚举字段收到表外取值、工具调用帧缺 `function.name`——现在都会产生进入活动流的警告；人物 aliases 与线程 `involvedCharacterIds` 的 create 分支补齐与合并/update 分支一致的去重。
+- **世界书 priority 区间统一**：工坊保存夹 `[0,100]`、内容库校验允许 `[-10000,10000]`，导致"保存 → 导出 → 再导入"静默改写；两处现已同区间。
 - **存档会撞上 localStorage 配额，且写入失败完全不可见**：每回合把三阶段完整提示词留档写进 `lrpg.v2`，实测 30 回合达 6.21 MB（其中留档占 97.8% 的字节），约第 26 回合即超限；超限后内存状态继续前进而磁盘停在旧值，刷新丢档。现在持久化时剔除 `calls[].input`（30 回合 6212 KB → 420 KB，距配额约 337 回合），并用自定义 `StateStorage` 把写入失败提升为可渲染的 `persistError`（异常照旧上抛），游戏页渲染持久化告警横幅。
 - **`<think>` 标签变体会吞掉整回合正文**：只认逐字符相等的 `</think>`，模型写出 `</think >`、`</THINK>` 时其后正文全部被判为思考内容，回合以"空内容"失败。现在归一化标签再拆分，并加"无规范标签时按正文返回"的安全网。
 - **工具循环丢掉已生成的最终 JSON**：模型在同一轮里既给出完整 JSON 又发起工具调用、末轮只回空内容时，原实现只取末轮文本导致整回合失败。现在回退到最后一个非空文本。
@@ -35,7 +39,7 @@
 ### 新增
 
 - 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 252 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
-- 端到端 mock 链路测试：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，44 条断言覆盖 chat/Responses 两种格式、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）与 store 落盘。
+- 端到端 mock 链路测试：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，39 条断言覆盖完整回合、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）与 store 落盘。
 - 存档体积与写入可靠性实测：`npm run test:storage` 测量每回合字节增长、距 localStorage 配额的剩余回合数，并注入 `QuotaExceededError` 验证失败可见性。
 - `tests/llmClient.test.ts`：补齐此前零覆盖的模型客户端（工具循环两个 HARD 缺陷的回归测试）。
 - 新增 `docs/known-issues.md`：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。

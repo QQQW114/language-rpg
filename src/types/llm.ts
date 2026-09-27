@@ -3,7 +3,7 @@ export interface LlmCacheUsage {
   hitTokens?: number;
   /** DeepSeek: prompt_cache_miss_tokens */
   missTokens?: number;
-  /** OpenAI/Responses: *_tokens_details.cached_tokens */
+  /** 部分供应商（含 *_tokens_details.cached_tokens 形式）的缓存命中统计 */
   cachedTokens?: number;
 }
 

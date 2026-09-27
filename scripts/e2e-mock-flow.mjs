@@ -10,8 +10,8 @@
  *   2. 真实 store 落盘：turn/revision/history/checkpoint/v3 存档结构
  *   3. 第二轮（多回合累积）与上下文注入（recent 历史、worldFacts）
  *   4. 失败路径：story 被 max_tokens 截断时必须整回合失败且不提交状态
- *   5. Responses 格式端到端（并记录该格式下哪些设置被静默丢弃）
- *   6. 认证头与请求体字段
+ *   5. 非 2xx 错误透传（429）
+ *   6. storyMaxTokens 传递与认证头字段
  *
  * 用法：node scripts/e2e-mock-flow.mjs [--verbose]
  * 产物：test-runs/e2e-mock-report.json（含全部请求/响应留档）
@@ -67,16 +67,6 @@ function sseChatToolCall(callId, name, argsText) {
   ].join('');
 }
 
-function sseResponses(contentChunks, extra = {}) {
-  const frames = [['response.created', { type: 'response.created' }]];
-  for (const c of contentChunks) frames.push(['response.output_text.delta', { type: 'response.output_text.delta', delta: c }]);
-  // bare：模拟"只推 delta 就断流"的供应商（没有 completed / incomplete_details / status）。
-  if (!extra.bare) {
-    frames.push(['response.completed', { type: 'response.completed', response: { status: 'completed', usage: extra.usage } }]);
-  }
-  return frames.map(([event, body]) => `event: ${event}\ndata: ${JSON.stringify(body)}\n\n`).join('');
-}
-
 function nextScripted() {
   const item = script[cursor];
   cursor += 1;
@@ -89,14 +79,12 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = { __raw: body }; }
-    const isResponses = req.url.includes('/responses');
     const record = {
       method: req.method,
       url: req.url,
       authorization: req.headers.authorization,
       contentType: req.headers['content-type'],
       body: parsed,
-      isResponses,
     };
     requests.push(record);
     if (verbose) console.log(`[mock] ${req.method} ${req.url} model=${parsed.model} stream=${parsed.stream}`);
@@ -110,11 +98,6 @@ const server = http.createServer((req, res) => {
     if (item.kind === 'httpError') {
       res.writeHead(item.status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: item.message } }));
-      return;
-    }
-    if (item.isResponses || isResponses) {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      res.end(sseResponses(item.chunks ?? [], item.extra ?? {}));
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -155,11 +138,10 @@ const BACKGROUND = {
 };
 const WORLD_FACTS = [{ id: 'wf-1', name: '世界基调', keywords: [], content: '常年阴雨。', alwaysActive: true }];
 
-function settingsFor(apiFormat) {
+function settingsFor() {
   return {
     apiBaseUrl: baseUrl,
     apiKey: 'e2e-key',
-    apiFormat,
     storyModel: 'e2e-story',
     plannerModel: 'e2e-planner',
     temperatureStory: 0.7,
@@ -246,7 +228,7 @@ script = [
   { kind: 'text', chunks: [postPatchText()], extra: { usage: { prompt_tokens: 1500, completion_tokens: 300 } } },
 ];
 cursor = 0;
-const settingsChat = { ...settingsFor('chat'), plannerToolsEnabled: true };
+const settingsChat = { ...settingsFor(), plannerToolsEnabled: true };
 const saveId = useGameStoreV2.getState().create({
   name: 'E2E 旅程', mode: 'adventure', outline: OUTLINE, background: BACKGROUND, worldFacts: WORLD_FACTS,
   randomEvent: { enabled: false },
@@ -407,32 +389,7 @@ check('非法 JSON 时未进入故事阶段（仅 1 次请求）', requests.leng
 report.scenarios.push({ name: 'planner_pre 非法 JSON', requests: requests.length, error: String(jsonError?.message) });
 
 // =====================================================================
-// 场景 5：Responses 格式端到端 + 记录被静默丢弃的设置
-// =====================================================================
-console.log('\n[场景 5] Responses 格式端到端');
-requests.length = 0;
-script = [
-  { kind: 'text', isResponses: true, chunks: [JSON.stringify(PRE_BRIEF)], extra: { usage: { input_tokens: 900, output_tokens: 120 } } },
-  { kind: 'text', isResponses: true, chunks: ['响应格式下的正文。'], extra: { usage: { input_tokens: 1000, output_tokens: 60 } } },
-  { kind: 'text', isResponses: true, chunks: [postPatchText({ roundSummary: '响应格式回合。' }, 'commit-e2e-resp', 1)] },
-];
-cursor = 0;
-const settingsResponses = { ...settingsFor('responses'), plannerToolsEnabled: true };
-let responsesResult, responsesError;
-try {
-  responsesResult = await runTurnV2({
-    state: { ...stateForTurn2, phase: 'generating' }, input: '响应格式测试。', settings: settingsResponses,
-    outline: OUTLINE, background: BACKGROUND, worldFacts: WORLD_FACTS,
-  });
-} catch (error) { responsesError = error; }
-check('Responses 格式三阶段跑通', !!responsesResult && !responsesError, String(responsesError?.message));
-check('Responses 请求打到 /responses 且带 instructions', requests.every((r) => r.url.includes('/responses')) && typeof requests[0].body.instructions === 'string', JSON.stringify({ url: requests[0]?.url, hasInstructions: typeof requests[0]?.body?.instructions }));
-const droppedInResponses = ['temperature', 'max_output_tokens', 'tools', 'thinking', 'reasoning_effort'].filter((k) => requests.every((r) => !(k in r.body)));
-check('Responses 格式下工具被禁用（符合源码注释）', requests.every((r) => !('tools' in r.body)), 'tools 被发送');
-report.scenarios.push({ name: 'Responses 格式', requests: requests.length, ok: !!responsesResult, droppedInResponses });
-
-// =====================================================================
-// 场景 6：非 2xx 错误透传
+// 场景 5：非 2xx 错误透传
 // =====================================================================
 console.log('\n[场景 6] 供应商返回 429');
 requests.length = 0;
@@ -446,50 +403,27 @@ check('HTTP 429 抛错且错误信息含状态码与供应商原文', /429/.test
 report.scenarios.push({ name: 'HTTP 429', requests: requests.length, error: String(httpError?.message) });
 
 // =====================================================================
-// 场景 7：Responses 格式下的截断检测（供应商未提供 incomplete_details 时）
+// 场景 6：storyMaxTokens 是否真的生效
 // =====================================================================
-console.log('\n[场景 7] Responses 格式：截断是否仍能被检出');
+console.log('\n[场景 6] storyMaxTokens 传递');
 requests.length = 0;
 script = [
   { kind: 'text', chunks: [JSON.stringify(PRE_BRIEF)] },
-  // 只有裸 delta，没有 response.completed / incomplete_details / status。
-  { kind: 'text', isResponses: true, chunks: ['半截响应正文……'], extra: { bare: true } },
+  { kind: 'text', chunks: ['正文'] },
+  { kind: 'text', chunks: [postPatchText({}, 'commit-tok', 1)] },
 ];
 cursor = 0;
-let bareError;
 try {
   await runTurnV2({
-    state: { ...stateForTurn2, phase: 'generating' }, input: '响应格式截断测试。', settings: settingsResponses,
+    state: { ...stateForTurn2, phase: 'generating' }, input: '预算测试。',
+    settings: { ...settingsFor(), storyMaxTokens: 4096 },
     outline: OUTLINE, background: BACKGROUND, worldFacts: WORLD_FACTS,
   });
-} catch (error) { bareError = error; }
-check('Responses 截断（无 incomplete_details）仍被判失败', !!bareError, '未抛错——截断被静默接受，可能提交残缺回合');
-report.scenarios.push({ name: 'Responses 截断检测', requests: requests.length, error: String(bareError?.message ?? '(无错误，回合被接受)') });
+} catch { /* 本场景只看请求字段 */ }
+const storyReq = requests[1];
+check('storyMaxTokens=4096 被发送为 max_tokens', 'max_tokens' in storyReq.body && storyReq.body.max_tokens === 4096, `story 请求体字段：${Object.keys(storyReq.body).join(', ')}`);
+report.scenarios.push({ name: 'storyMaxTokens', body: storyReq.body });
 
-// =====================================================================
-// 场景 8：storyMaxTokens 是否真的生效
-// =====================================================================
-console.log('\n[场景 8] storyMaxTokens 在各格式下的传递');
-for (const format of ['chat', 'responses']) {
-  requests.length = 0;
-  script = [
-    { kind: 'text', isResponses: format === 'responses', chunks: [JSON.stringify(PRE_BRIEF)] },
-    { kind: 'text', isResponses: format === 'responses', chunks: ['正文'] },
-    { kind: 'text', isResponses: format === 'responses', chunks: [postPatchText({}, 'commit-tok', 1)] },
-  ];
-  cursor = 0;
-  try {
-    await runTurnV2({
-      state: { ...stateForTurn2, phase: 'generating' }, input: '预算测试。',
-      settings: { ...settingsFor(format), storyMaxTokens: 4096 },
-      outline: OUTLINE, background: BACKGROUND, worldFacts: WORLD_FACTS,
-    });
-  } catch { /* 本场景只看请求字段 */ }
-  const storyReq = requests[1];
-  const hasBudget = format === 'chat' ? 'max_tokens' in storyReq.body : 'max_output_tokens' in storyReq.body;
-  check(`${format} 格式下 storyMaxTokens=4096 被发送`, hasBudget, `story 请求体字段：${Object.keys(storyReq.body).join(', ')}`);
-  report.scenarios.push({ name: `storyMaxTokens(${format})`, body: storyReq.body });
-}
 // ---------- 写报告 ----------
 report.requests = requests;
 report.checks = checks;

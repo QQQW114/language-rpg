@@ -38,7 +38,7 @@ describe('llmUsage.normalizeLlmUsage', () => {
     assert.equal(usage?.cache?.missTokens, undefined);
   });
 
-  it('Responses 风格 input_tokens/output_tokens 归一化', () => {
+  it('部分供应商使用 input_tokens/output_tokens 命名时的归一化', () => {
     const usage = normalizeLlmUsage({ input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 4 } });
     assert.equal(usage?.promptTokens, 10);
     assert.equal(usage?.completionTokens, 5);

@@ -195,9 +195,17 @@ function warning(path: string, message: string): WorkshopIssue {
   return { level: 'warning', path, message };
 }
 
+/**
+ * 与 `lib/contentLibrary.validateWorldBook` 保持同一区间：
+ * 工坊保存时夹到 [0,100]、内容库校验允许 [-10000,10000] 的话，
+ * 导出再导入会把工坊允许之外的值静默改写（往返不一致）。
+ */
+const WORLD_BOOK_PRIORITY_MIN = -10_000;
+const WORLD_BOOK_PRIORITY_MAX = 10_000;
+
 function clampPriority(value: number | undefined): number | undefined {
   if (value === undefined || !Number.isFinite(value)) return undefined;
-  return Math.max(0, Math.min(100, Math.round(value)));
+  return Math.max(WORLD_BOOK_PRIORITY_MIN, Math.min(WORLD_BOOK_PRIORITY_MAX, Math.round(value)));
 }
 
 function toChineseNumber(index: number): string {

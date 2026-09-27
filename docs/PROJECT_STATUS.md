@@ -27,7 +27,7 @@
 | `src/v2/types.ts` | V2 游戏状态与 Patch 类型 |
 | `src/v2/store.ts` | 存档创建、回合提交、最近回合回退 |
 | `src/v2/GamePage.tsx` | 游戏主界面、侧边栏、队列与活动面板 |
-| `src/services/llmClient.ts` | Chat Completions / Responses 流式调用、工具循环、JSON 回退 |
+| `src/services/llmClient.ts` | Chat Completions 流式调用、工具循环、JSON 回退 |
 | `src/lib/sse.ts` | SSE 解析、`<think>` 拆分、思考通道 JSON 回退 |
 | `src/pages/SettingsPage.tsx` | 模型、上下文、注入、输入视角、展示详情设置 |
 | `src/store/useSettingsStore.ts` | 设置持久化与 normalize |
@@ -151,7 +151,7 @@
 
 `AppSettings` 当前包含：
 
-- API：`apiBaseUrl / apiKey / apiFormat`
+- API：`apiBaseUrl / apiKey`（仅支持 Chat Completions 协议）
 - 模型：`storyModel / plannerModel`
 - 生成：`temperatureStory / storyMaxTokens`
 - 规划上下文：`plannerContextPreset / plannerContextTokens`

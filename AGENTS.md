@@ -38,7 +38,7 @@ src/
     store.ts                  V2 存档（persist -> lrpg.v2）
     GamePage.tsx / SetupPage.tsx / HomePage.tsx / WorkshopPage.tsx
     workshop/                 命运工坊编辑器与校验（model.ts）
-  services/llmClient.ts       模型调用（Chat Completions / Responses、工具循环、JSON 回退）
+  services/llmClient.ts       模型调用（Chat Completions、工具循环、JSON 回退）
   lib/                        sse 解析、思考链处理、内容库校验、token 用量、通用工具
   store/                      useContentStore（自定义内容）、useSettingsStore（模型设置）
   types/                      content / settings / llm / ledger 类型

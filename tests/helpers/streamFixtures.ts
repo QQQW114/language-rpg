@@ -25,10 +25,6 @@ export function chatSSE(frames: Array<unknown>): Response {
   return sseResponse(frames.map((frame) => (typeof frame === 'string' ? frame : dataFrame(frame))));
 }
 
-export function responsesSSE(frames: Array<unknown>): Response {
-  return chatSSE(frames);
-}
-
 // ---- chat 格式分帧构造 ----
 
 export function contentFrame(text: string): unknown {
@@ -49,16 +45,6 @@ export function usageFrame(usage: unknown, content?: string): unknown {
 
 export function toolCallFrame(calls: unknown[]): unknown {
   return { choices: [{ index: 0, delta: { tool_calls: calls } }] };
-}
-
-// ---- responses 格式分帧构造 ----
-
-export function responsesTextFrame(text: string): unknown {
-  return { type: 'response.output_text.delta', delta: text };
-}
-
-export function responsesCompletedFrame(payload: Record<string, unknown> = {}): unknown {
-  return { type: 'response.completed', response: payload };
 }
 
 // ---- fetch mock ----

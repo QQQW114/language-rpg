@@ -1,5 +1,3 @@
-export type ApiFormat = 'chat' | 'responses';
-
 export type PlannerContextPreset = 'compact' | 'standard' | 'rich' | 'custom';
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled';
 export type ReasoningEffort = 'high' | 'max';
@@ -31,7 +29,6 @@ export const PLANNER_CONTEXT_PRESET_TOKENS: Record<
 export interface AppSettings {
   apiBaseUrl: string;
   apiKey: string;
-  apiFormat: ApiFormat;
   storyModel: string;
   plannerModel: string;
   temperatureStory: number;
@@ -53,7 +50,6 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   apiBaseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
-  apiFormat: 'chat',
   storyModel: 'deepseek-v4-pro',
   plannerModel: 'deepseek-v4-pro',
   temperatureStory: 0.9,

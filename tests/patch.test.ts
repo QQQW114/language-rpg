@@ -2,12 +2,19 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { commitTurnPatchV2 } from '@/v2/patch';
 import { makePatch, makeState } from './helpers/fixtures';
-import type { GameStateV2, TurnPatchV2 } from '@/v2/types';
+import type { GameStateV2, PatchWarningV2, TurnPatchV2 } from '@/v2/types';
 
 /** 用统一夹具提交一个 Patch；baseRevision/turn 默认对齐 state。 */
 function commit(stateOverrides: Record<string, unknown> = {}, patchOverrides: Record<string, unknown> = {}): GameStateV2 {
+  return commitResult(stateOverrides, patchOverrides).state;
+}
+
+/** 同 commit，但额外收集提交阶段产生的警告（out 参数形式）。 */
+function commitResult(stateOverrides: Record<string, unknown> = {}, patchOverrides: Record<string, unknown> = {}) {
   const state = makeState(stateOverrides);
-  return commitTurnPatchV2(state, makePatch({ baseRevision: state.revision, turn: state.turn, ...patchOverrides }));
+  const warnings: PatchWarningV2[] = [];
+  const next = commitTurnPatchV2(state, makePatch({ baseRevision: state.revision, turn: state.turn, ...patchOverrides }), warnings);
+  return { state: next, warnings };
 }
 
 const S = 7; // makeState 默认 turn
@@ -90,14 +97,40 @@ describe('patch — 人物', () => {
     assert.equal(created?.firstSeenTurn, S);
     assert.equal(created?.lastSeenTurn, S);
     assert.equal(created?.aliases.length, 8, 'aliases 最多保留 8 个');
-    // discovered issue：合并分支用 Set 去重，但 create 新建分支只做 trim/filter/slice，
-    // 重复别名会原样保留（期望：['二号','别名0',...]，实际保留了两个“二号”）。
-    assert.deepEqual(created?.aliases.slice(0, 3), ['二号', '二号', '别名0']);
+    // 回归：create 分支曾只做 trim/filter/slice 而不去重，会原样保留重复别名。
+    assert.deepEqual(created?.aliases.slice(0, 3), ['二号', '别名0', '别名1']);
+    assert.equal(new Set(created?.aliases).size, created?.aliases.length, 'aliases 不应有重复项');
     assert.equal(created?.knownFacts.length, 12, '新建时 knownFacts 最多 12 条');
   });
 
-  it('create 缺 name、非对象行会被安全跳过', () => {
-    const next = commit({}, {
+  it('白名单外的枚举取值会被改写并留下警告（回归：曾完全静默）', () => {
+    const created = commitResult({}, {
+      characters: [{ op: 'create', id: 'char-cn', name: '中文枚举人物', status: '死亡', reason: 'x' }],
+    });
+    assert.equal(created.state.characters.find((c) => c.id === 'char-cn')?.status, 'active', '非法枚举回退到默认值');
+    assert.equal(created.warnings.filter((w) => w.code === 'enum_value_coerced').length, 1);
+
+    const updated = commitResult({}, {
+      characters: [{ op: 'update', id: 'char-a', status: '失踪', reason: 'x' }],
+    });
+    assert.equal(updated.state.characters.find((c) => c.id === 'char-a')?.status, 'active');
+    assert.equal(updated.warnings[0]?.code, 'enum_value_coerced');
+
+    const inventory = commitResult({}, {
+      inventory: [{ op: 'grant', id: 'item-x', name: '玉符', kind: '能力', quantity: 1, reason: 'x' }],
+    });
+    assert.equal(inventory.state.inventory.find((i) => i.id === 'item-x')?.kind, 'item');
+    assert.equal(inventory.warnings[0]?.code, 'enum_value_coerced');
+
+    // 合法取值不应产生警告
+    const ok = commitResult({}, {
+      characters: [{ op: 'create', id: 'char-ok', name: '合法人物', status: 'dead', reason: 'x' }],
+    });
+    assert.equal(ok.state.characters.find((c) => c.id === 'char-ok')?.status, 'dead');
+    assert.deepEqual(ok.warnings, []);
+  });
+
+  it('create 缺 name、非对象行会被安全跳过', () => {    const next = commit({}, {
       characters: [
         { op: 'create', id: 'char-x' },
         'not-an-object',
@@ -330,14 +363,18 @@ describe('patch — 故事线程', () => {
     assert.equal(created?.kind, 'hook');
     assert.equal(created?.status, 'candidate');
     assert.equal(created?.progress, undefined);
-    // discovered issue：update 分支用 Set 去重，create 分支不去重（空串会被过滤）。
-    assert.deepEqual(created?.involvedCharacterIds, ['char-a', 'char-a']);
+    // 回归：update 分支去重、create 分支曾不去重，同一份数据两条路径结果不同。
+    assert.deepEqual(created?.involvedCharacterIds, ['char-a']);
     assert.equal(created?.updatedAtTurn, S);
   });
 
-  it('op=create 但缺 title 时落入 update 分支（当前实现的行为）', () => {
-    const next = commit({}, { threads: [{ op: 'create', id: 'thread-1', status: 'completed', reason: 'x' }] });
-    assert.equal(next.storyThreads[0].status, 'completed');
+  it('op=create 但缺 title 时整条忽略（回归：曾退化为按 id 覆盖已有线程）', () => {
+    const result = commitResult({}, { threads: [{ op: 'create', id: 'thread-1', status: 'completed', reason: 'x' }] });
+    // create 缺 title 不能退化成 update：那会让一次失误的 create 悄悄改写已有线程，
+    // 且完全不校验 reason。现在整条忽略并给出可观察警告。
+    assert.equal(result.state.storyThreads[0].status, 'active', '既有线程不应被 create 改写');
+    assert.equal(result.warnings.length, 1);
+    assert.equal(result.warnings[0].code, 'thread_create_without_title');
   });
 
   it('update 覆盖给定字段、重算进度并替换涉及人物；目标不存在时忽略', () => {
@@ -593,31 +630,90 @@ describe('patch — 故事节（destiny.beats）', () => {
     assert.deepEqual(withEvidence.destiny.beats[0].evidenceTurns, [3, S]);
   });
 
-  it('superseded 缺 replacementBeatId 时丢弃；存在时写入', () => {
-    const dropped = commit({}, {
+  it('superseded 缺 replacementBeatId 时降级为 reframed；有真实替代者时正常写入', () => {
+    const noReplacement = commitResult({}, {
       destiny: { reason: 'x', beatChanges: [{ beatId: 'beat-1-1', status: 'superseded', evidenceQuote: '证据', reason: 'x' }] },
     });
-    assert.equal(dropped.destiny.beats[0].status, 'available');
+    assert.equal(noReplacement.state.destiny.beats[0].status, 'reframed');
+    assert.equal(noReplacement.warnings[0]?.code, 'superseded_replacement_missing');
 
-    const applied = commit({}, {
+    const applied = commitResult({}, {
       destiny: {
         reason: 'x',
         beatChanges: [{ beatId: 'beat-1-1', status: 'superseded', replacementBeatId: 'beat-1-2', evidenceQuote: '证据', reason: 'x' }],
       },
     });
-    assert.equal(applied.destiny.beats[0].status, 'superseded');
-    assert.equal(applied.destiny.beats[0].replacementBeatId, 'beat-1-2');
+    assert.equal(applied.state.destiny.beats[0].status, 'superseded');
+    assert.equal(applied.state.destiny.beats[0].replacementBeatId, 'beat-1-2');
+    assert.deepEqual(applied.warnings, [], '有真实替代者时不应产生警告');
   });
 
-  it('replacementBeatId 指向不存在的故事节时仍会置为 superseded，但不写入该 id（引用完整性缺口）', () => {
-    const next = commit({}, {
+  it('replacementBeatId 指向不存在的故事节时降级为 reframed，而不是无替代者的 superseded（回归）', () => {
+    const result = commitResult({}, {
       destiny: {
         reason: 'x',
         beatChanges: [{ beatId: 'beat-1-1', status: 'superseded', replacementBeatId: 'beat-does-not-exist', evidenceQuote: '证据', reason: 'x' }],
       },
     });
-    assert.equal(next.destiny.beats[0].status, 'superseded');
-    assert.equal(next.destiny.beats[0].replacementBeatId, undefined);
+    // 不能保留 superseded：结局判定把它算作已完成，会虚增完成度并可能提前触发结尾，
+    // 而那个替代者永远不会存在。降级为 reframed 既不丢剧情推进，也不放宽结局门槛。
+    assert.equal(result.state.destiny.beats[0].status, 'reframed');
+    assert.equal(result.state.destiny.beats[0].replacementBeatId, undefined);
+    assert.equal(result.warnings.length, 1);
+    assert.equal(result.warnings[0].code, 'superseded_replacement_missing');
+    assert.ok(result.warnings[0].message.includes('beat-does-not-exist'), '警告应指明无效的替代者 id');
+  });
+
+  it('历史坏数据：已落库的无替代者 superseded 会被降回 reframed', () => {
+    const state = makeState({
+      destiny: {
+        completionEstimate: 90,
+        completionReason: '接近结尾',
+        currentActId: 'act-1',
+        currentStage: '第一幕',
+        currentPath: 'p',
+        beats: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceTurns: [1], updatedAtTurn: 1 },
+          { beatId: 'beat-1-2', status: 'superseded', evidenceTurns: [1], updatedAtTurn: 1 },
+        ],
+        endingReached: false,
+        updatedAtTurn: 0,
+      },
+    });
+    const warnings: PatchWarningV2[] = [];
+    const next = commitTurnPatchV2(state, makePatch({
+      baseRevision: state.revision,
+      turn: state.turn,
+      destiny: { reason: '收尾', completionEstimate: 100, endingReached: true },
+    }), warnings);
+    assert.equal(next.destiny.beats[1].status, 'reframed', '无替代者的 superseded 必须重新计入待完成');
+    assert.ok(warnings.some((w) => w.code === 'superseded_replacement_dangling'));
+    // 仍有未完成的故事节 → 结局不得触发
+    assert.equal(next.destiny.endingReached, false);
+  });
+
+  it('全部故事节 satisfied/superseded 且完成度 100 时结局正常触发（不受上面的降级影响）', () => {
+    const state = makeState({
+      destiny: {
+        completionEstimate: 99,
+        completionReason: '只差一步',
+        currentActId: 'act-1',
+        currentStage: '第一幕',
+        currentPath: 'p',
+        beats: [{ beatId: 'beat-1-1', status: 'satisfied', evidenceTurns: [1], updatedAtTurn: 1 }],
+        endingReached: false,
+        updatedAtTurn: 0,
+      },
+    });
+    const warnings: PatchWarningV2[] = [];
+    const next = commitTurnPatchV2(state, makePatch({
+      baseRevision: state.revision,
+      turn: state.turn,
+      destiny: { reason: '收尾', completionEstimate: 100, endingReached: true },
+    }), warnings);
+    assert.equal(next.destiny.endingReached, true);
+    assert.equal(next.destiny.endingReachedAtTurn, state.turn);
+    assert.deepEqual(warnings, []);
   });
 
   it('beatId 不存在、beatChanges 混入非法元素时安全忽略', () => {
