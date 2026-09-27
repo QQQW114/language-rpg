@@ -23,7 +23,8 @@ cmd /c npm run test:patch # Patch/命运状态回归测试
 - 单元测试位于 `tests/`，约定见 [`tests/README.md`](tests/README.md)，全部离线（模型调用 mock `fetch`）。
 - `npm run test:e2e` 会在随机端口起一个 mock 供应商，跑完整回合并断言请求形状与落盘状态；产物见被忽略的 `test-runs/e2e-mock-report.json`。
 - `npm run test:storage` 会跑 30 回合并测体积增长与配额行为；想要真实长局数据可传回合数（`node scripts/e2e-storage-growth.mjs 60`）。
-- PowerShell 里直接敲 `npm` 可能被执行策略拦截（`npm.ps1`），优先用 `cmd /c npm ...`。- Windows 上一键脚本：`start.cmd`（开发）、`build.cmd`（构建 + preview）。
+- PowerShell 里直接敲 `npm` 可能被执行策略拦截（`npm.ps1`），优先用 `cmd /c npm ...`。
+- Windows 上一键脚本：`start.cmd`（开发）、`build.cmd`（构建 + preview）。
 
 ## 代码结构（当前真实布局）
 
