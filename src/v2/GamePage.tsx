@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { confirmDialog } from '@/components/ui/ConfirmDialog';
 import { readDraft, writeDraft } from './draft';
 import { diffSidePanelChanges, toChangeMap, type SidePanelChangeKind } from './sidePanelUpdates';
-import { UpdateGlow } from '@/components/ui/UpdateGlow';
+import { UPDATE_TIMELINE, UpdateGlow } from '@/components/ui/UpdateGlow';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnV2 } from './engine';
@@ -220,7 +220,7 @@ function ModelActivityPanel({ activities, thinking, busy, patchStats }: { activi
   </section>;
 }
 
-function CharacterCard({ saveId, character, canEdit }: { saveId: string; character: CharacterV2; canEdit: boolean }) {
+function CharacterCard({ saveId, character, canEdit, blockId }: { saveId: string; character: CharacterV2; canEdit: boolean; blockId?: string }) {
   const [editing, setEditing] = useState(false);
   const [role, setRole] = useState(character.role ?? '');
   const [description, setDescription] = useState(character.description ?? '');
@@ -270,7 +270,7 @@ function CharacterCard({ saveId, character, canEdit }: { saveId: string; charact
   };
 
   return (
-    <div className="rounded-lg border border-parchment-600/20 bg-ink/20 p-3">
+    <div data-block={blockId} className="rounded-lg border border-parchment-600/20 bg-ink/20 p-3">
       <div className="flex items-center justify-between">
         <span className="text-gold-light">{character.name}</span>
         <div className="flex items-center gap-2">
@@ -296,7 +296,7 @@ function CharacterCard({ saveId, character, canEdit }: { saveId: string; charact
   );
 }
 
-function RelationshipRow({ saveId, relationship, canEdit, nameById }: { saveId: string; relationship: RelationshipV2; canEdit: boolean; nameById: (id: string) => string }) {
+function RelationshipRow({ saveId, relationship, canEdit, nameById, blockId }: { saveId: string; relationship: RelationshipV2; canEdit: boolean; nameById: (id: string) => string; blockId?: string }) {
   const [editing, setEditing] = useState(false);
   const [affinity, setAffinity] = useState(String(relationship.affinity));
   const [label, setLabel] = useState(relationship.label ?? '');
@@ -411,27 +411,26 @@ function SidePanel({ save, canEdit }: { save: NonNullable<ReturnType<typeof useA
     const timer = window.setTimeout(() => setChanges(new Map()), 1600);
     return () => window.clearTimeout(timer);
   }, [changes]);
-  const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;
-  return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
+  const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;  return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
     <UpdateGlow blockId="destiny" change={changes.get('destiny')}><DestinyCard destiny={save.state.destiny} showDetails={canEdit} /></UpdateGlow>
     <section className="overflow-hidden rounded-xl border border-parchment-600/25 bg-parchment-900/35">
       <div className="flex border-b border-parchment-600/20">{tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex flex-1 items-center justify-center gap-1 py-3 text-xs transition ${tab === item.id ? 'border-b-2 border-gold text-gold-light' : 'text-parchment-200/55 hover:text-parchment-100'}`}>{item.icon}{item.label}</button>)}</div>
       <div className="p-3 text-sm">
         {tab === 'people' && <div className="space-y-3">
-          {save.state.characters.length ? save.state.characters.map((c) => <UpdateGlow key={c.id} blockId={`character:${c.id}`} change={changes.get(`character:${c.id}`)}><CharacterCard saveId={save.id} character={c} canEdit={canEdit} /></UpdateGlow>) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
-          {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <UpdateGlow key={rel.id} blockId={`relationship:${rel.id}`} change={changes.get(`relationship:${rel.id}`)}><RelationshipRow saveId={save.id} relationship={rel} canEdit={canEdit} nameById={characterName} /></UpdateGlow>)}</div></div>}
+          {save.state.characters.length ? save.state.characters.map((c) => <UpdateGlow key={c.id} blockId={`character:${c.id}`} change={changes.get(`character:${c.id}`)}><CharacterCard blockId={`character:${c.id}`} saveId={save.id} character={c} canEdit={canEdit} /></UpdateGlow>) : <p className="text-xs text-parchment-200/45">故事人物将在正文中出现。</p>}
+          {save.state.relationships.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><div className="mb-2 text-xs text-parchment-200/45">关系</div><div className="space-y-1.5">{save.state.relationships.map((rel) => <UpdateGlow key={rel.id} blockId={`relationship:${rel.id}`} change={changes.get(`relationship:${rel.id}`)}><RelationshipRow blockId={`relationship:${rel.id}`} saveId={save.id} relationship={rel} canEdit={canEdit} nameById={characterName} /></UpdateGlow>)}</div></div>}
         </div>}
-        {tab === 'world' && <div className="space-y-3">{save.state.currentScene && <UpdateGlow blockId="scene"><div><div className="text-xs text-parchment-200/45">当前场景</div><div className="mt-1 text-gold-light">{save.state.currentScene.name}</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/65">{save.state.currentScene.description}</p><div className="mt-2 text-[11px] text-parchment-200/45">{[save.state.currentScene.time, save.state.currentScene.weather].filter(Boolean).join(' · ')}</div></div></UpdateGlow>}<UpdateGlow blockId="progress" className="border-t border-parchment-600/15 pt-3"><div><div className="text-xs text-parchment-200/45">最新进展</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/70">{save.state.latestProgress || save.state.summary || '故事刚刚开始。'}</p></div></UpdateGlow>{save.state.facts.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><button type="button" onClick={() => setFactsOpen((v) => !v)} className="flex w-full items-center justify-between text-xs text-parchment-200/45 hover:text-parchment-100"><span>正史事实（{save.state.facts.length}）</span>{factsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{factsOpen && <div className="mt-2 space-y-1.5">{save.state.facts.map((fact) => <UpdateGlow key={fact.id} blockId={`fact:${fact.id}`}><div className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-parchment-200/70"><span className="text-parchment-100">{fact.subjectId}</span><span className="mx-1 text-parchment-200/40">·</span>{fact.predicate}<span className="mx-1 text-parchment-200/40">=</span>{fact.value}</div></UpdateGlow>)}</div>}</div>}</div>}
-        {tab === 'items' && <div className="space-y-2">{save.state.inventory.length ? save.state.inventory.map((item) => <UpdateGlow key={item.id} blockId={`item:${item.id}`}><div className="flex items-start justify-between rounded-lg border border-parchment-600/20 p-2.5"><div><div className="flex items-center gap-2"><span className="text-parchment-100">{item.name}</span>{item.consumable && <span className="rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/75">消耗品</span>}</div><div className="text-[11px] text-parchment-200/50">{item.description || item.kind}</div></div><span className="text-gold-light">×{item.quantity}</span></div></UpdateGlow>) : <p className="text-xs text-parchment-200/45">暂无物品。</p>}</div>}
-        {tab === 'threads' && <div className="space-y-2">{save.state.storyThreads.length ? save.state.storyThreads.map((thread) => <UpdateGlow key={thread.id} blockId={`thread:${thread.id}`}><div className="rounded-lg border border-parchment-600/20 p-2.5"><div className="flex justify-between gap-2"><span className="text-parchment-100">{thread.title}</span><span className="text-[10px] text-gold/70">{THREAD_STATUS[thread.status] ?? thread.status}</span></div>{thread.currentStep && <p className="mt-1 text-xs text-parchment-200/60">{thread.currentStep}</p>}{thread.progress !== undefined && <div className="mt-2 flex items-center gap-2"><div className="h-1 flex-1 overflow-hidden rounded-full bg-ink/60"><div className="h-full rounded-full bg-gold/60" style={{ width: `${Math.max(0, Math.min(100, thread.progress))}%` }} /></div><span className="text-[10px] tabular-nums text-parchment-200/45">{Math.max(0, Math.min(100, Math.round(thread.progress)))}%</span></div>}</div></UpdateGlow>) : <p className="text-xs text-parchment-200/45">故事线索将在推进后出现。</p>}</div>}
+        {tab === 'world' && <div className="space-y-3">{save.state.currentScene && <UpdateGlow blockId="scene"><div data-block="scene"><div className="text-xs text-parchment-200/45">当前场景</div><div className="mt-1 text-gold-light">{save.state.currentScene.name}</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/65">{save.state.currentScene.description}</p><div className="mt-2 text-[11px] text-parchment-200/45">{[save.state.currentScene.time, save.state.currentScene.weather].filter(Boolean).join(' · ')}</div></div></UpdateGlow>}<UpdateGlow blockId="progress"><div data-block="progress" className="border-t border-parchment-600/15 pt-3"><div className="text-xs text-parchment-200/45">最新进展</div><p className="mt-1 text-xs leading-relaxed text-parchment-200/70">{save.state.latestProgress || save.state.summary || '故事刚刚开始。'}</p></div></UpdateGlow>{save.state.facts.length > 0 && <div className="border-t border-parchment-600/15 pt-3"><button type="button" onClick={() => setFactsOpen((v) => !v)} className="flex w-full items-center justify-between text-xs text-parchment-200/45 hover:text-parchment-100"><span>正史事实（{save.state.facts.length}）</span>{factsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{factsOpen && <div className="mt-2 space-y-1.5">{save.state.facts.map((fact) => <UpdateGlow key={fact.id} blockId={`fact:${fact.id}`}><div data-block={`fact:${fact.id}`} className="rounded border border-parchment-600/15 bg-ink/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-parchment-200/70"><span className="text-parchment-100">{fact.subjectId}</span><span className="mx-1 text-parchment-200/40">·</span>{fact.predicate}<span className="mx-1 text-parchment-200/40">=</span>{fact.value}</div></UpdateGlow>)}</div>}</div>}</div>}
+        {tab === 'items' && <div className="space-y-2">{save.state.inventory.length ? save.state.inventory.map((item) => <UpdateGlow key={item.id} blockId={`item:${item.id}`}><div data-block={`item:${item.id}`} className="flex items-start justify-between rounded-lg border border-parchment-600/20 p-2.5"><div><div className="flex items-center gap-2"><span className="text-parchment-100">{item.name}</span>{item.consumable && <span className="rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/75">消耗品</span>}</div><div className="text-[11px] text-parchment-200/50">{item.description || item.kind}</div></div><span className="text-gold-light">×{item.quantity}</span></div></UpdateGlow>) : <p className="text-xs text-parchment-200/45">暂无物品。</p>}</div>}
+        {tab === 'threads' && <div className="space-y-2">{save.state.storyThreads.length ? save.state.storyThreads.map((thread) => <UpdateGlow key={thread.id} blockId={`thread:${thread.id}`}><div data-block={`thread:${thread.id}`} className="rounded-lg border border-parchment-600/20 p-2.5"><div className="flex justify-between gap-2"><span className="text-parchment-100">{thread.title}</span><span className="text-[10px] text-gold/70">{THREAD_STATUS[thread.status] ?? thread.status}</span></div>{thread.currentStep && <p className="mt-1 text-xs text-parchment-200/60">{thread.currentStep}</p>}{thread.progress !== undefined && <div className="mt-2 flex items-center gap-2"><div className="h-1 flex-1 overflow-hidden rounded-full bg-ink/60"><div className="h-full rounded-full bg-gold/60" style={{ width: `${Math.max(0, Math.min(100, thread.progress))}%` }} /></div><span className="text-[10px] tabular-nums text-parchment-200/45">{Math.max(0, Math.min(100, Math.round(thread.progress)))}%</span></div>}</div></UpdateGlow>) : <p className="text-xs text-parchment-200/45">故事线索将在推进后出现。</p>}</div>}
       </div>
     </section>
-    <UpdateGlow blockId="randomEvent" className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
+    <UpdateGlow blockId="randomEvent"><div data-block="randomEvent" className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
       <div>故事脉动：{save.state.randomEvent.enabled === false ? '随机事件已关闭' : save.state.randomEvent.pending ? '新的事件正在靠近' : '命运沿当前路径流动'}</div>
       {save.state.randomEvent.lastPlan && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件安排：</span>{save.state.randomEvent.lastPlan}</div>}
       {/* note 现在在任何回合都会记录（审计文本），因此只在事件真的触发过之后才显示为"结果"。 */}
       {save.state.randomEvent.lastNote && save.state.randomEvent.lastTriggeredTurn !== undefined && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件结果：</span>{save.state.randomEvent.lastNote}</div>}
-    </UpdateGlow>
+    </div></UpdateGlow>
   </aside>;
 }
 
@@ -504,8 +503,10 @@ export default function GamePageV2() {
   const runIdRef = useRef(0);
   const streamBufferRef = useRef('');
   const storyEndRef = useRef<HTMLDivElement>(null);
-  /** 玩家是否主动往上翻读（此时不要自动滚动打断）。 */
-  const userScrolledUpRef = useRef(false);
+  /** 是否继续把视口跟随到正文末尾（玩家主动上翻时置为 false）。 */
+  const autoFollowRef = useRef(true);
+  /** 程序自身滚动的时间窗；窗口内的 scroll 事件不算"用户上翻"。 */
+  const programmaticScrollUntilRef = useRef(0);
   /** 首次到达用 auto（瞬时），之后的增量用 smooth，避免开局就平滑滚动一大段。 */
   const scrollBehaviorRef = useRef<ScrollBehavior>('auto');
   /** 已从 localStorage 恢复过草稿的存档 id（每个存档只恢复一次）。 */
@@ -520,28 +521,37 @@ export default function GamePageV2() {
   // ---------------------------------------------------------------------------
   // 自动滚动到底部
   //
-  // 规则：新内容到达时滚到底，但**用户主动往上翻读时不打断**——只有当视口已经在
-  // 底部附近（或本轮刚由玩家发起）时才自动跟随。否则一边看历史一边被拽回底部。
-  // 用 scrollIntoView 而不是 scrollTop：锚点就在文档流里，浏览器自己处理间距与
-  // 平滑滚动，也不需要维护"底部还差多少像素"这种容易失效的常量。
+  // 规则：新内容到达时滚到底，但**用户主动往上翻读时不打断**——只有当锚点仍然在
+  // 视口内（或下方）时才自动跟随。否则一边看历史一边被拽回底部。
+  //
+  // 判定必须读**锚点的实际位置**，不能读"窗口距底部还有多少像素"：
+  // 流式生成时文档一直在变长，用像素余量判断会在每次滚动事件里把"用户没动过"
+  // 误判成"用户上翻了"，于是自动跟随只生效一次就永久停住。
+  //
+  // 另外用 scrollIntoView 而不是 scrollTop：锚点就在文档流里，浏览器自己处理间距，
+  // 不需要维护"底部还差多少像素"这种容易失效的常量。
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const anchor = storyEndRef.current;
-    if (!anchor) return;
-    if (userScrolledUpRef.current) return;
+    if (!anchor || !autoFollowRef.current) return;
     const behavior: ScrollBehavior = scrollBehaviorRef.current;
     scrollBehaviorRef.current = 'smooth';
+    // 标记这次滚动是我们自己发起的：平滑滚动的过程会触发 scroll 事件，
+    // 否则会被下面的监听当成"用户上翻了"。
+    programmaticScrollUntilRef.current = Date.now() + 800;
     anchor.scrollIntoView({ block: 'end', behavior });
   }, [save?.state.history.length, stream, activeTurn, busy, queue.length]);
 
   useEffect(() => {
     const onScroll = () => {
-      const doc = document.documentElement;
-      const remaining = doc.scrollHeight - window.scrollY - window.innerHeight;
-      // 120px 是"贴底"的宽容区间：留一点余量，避免因取整误差误判为用户上翻。
-      userScrolledUpRef.current = remaining > 120;
+      if (Date.now() < programmaticScrollUntilRef.current) return;
+      const anchor = storyEndRef.current;
+      if (!anchor) return;
+      const bottom = anchor.getBoundingClientRect().bottom;
+      // 锚点还在视口内（或下方）→ 用户没有往上翻，继续跟随；
+      // 锚点已经滚到视口下方之外 → 用户正在看历史，停止跟随。
+      autoFollowRef.current = bottom <= window.innerHeight + 4;
     };
-    onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
@@ -702,8 +712,9 @@ export default function GamePageV2() {
     setQueue((current) => [...current, { id: createQueueId(), input: trimmed, pace: selectedPace, createdAt: Date.now() }]);
     setInput('');
     // 发送后立刻跟到底部，让玩家看到自己刚发出的行动与开始生成的正文。
-    userScrolledUpRef.current = false;
+    autoFollowRef.current = true;
     scrollBehaviorRef.current = 'smooth';
+    programmaticScrollUntilRef.current = Date.now() + 800;
     storyEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
   };
   const enqueue = (value: string) => enqueueWithPace(value, pace);
@@ -785,9 +796,13 @@ export default function GamePageV2() {
           <ModelActivityPanel activities={activities} thinking={thinking} busy={busy} patchStats={save.state.turnRecords?.[save.state.turnRecords.length - 1]?.patchStats} />
           {stream && <StoryArticle turn={save.state.turn} content={stream} writing />}
           {!busy && failedDraft && <article className="prose-story prose-story--settled my-8 rounded-lg border border-blood/30 bg-blood/5 p-4"><div className="mb-3 text-[10px] tracking-[.22em] text-blood">未提交的故事草稿 · 重试后将被替换</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{failedDraft}</ReactMarkdown></article>}
-          {/* 滚动锚点：发送后滚到这里即"到底"。放在文献卡内部、输入框之前，
-              所以滚到底时底部输入框自然贴住它，不会盖住正文末尾。 */}
-          <div ref={storyEndRef} className="h-px w-full" aria-hidden />
+          {/* 滚动锚点：发送后滚到这里即"到底"。放在文献卡内部、输入框之前。
+              必须留出滚动边距：输入框是 sticky 在底部的，锚点紧贴它之前会被它盖住，
+              而 `scrollIntoView` 一旦认为锚点"已在视口内"就不再滚动，于是正文会停在
+              输入框后面一段距离。边距把判定位置抬到输入框上方。
+              用行内样式而不是 Tailwind 任意值：`scroll-mb-[260px]` 这类类名
+              没有出现在产物 CSS 里（已实测），行内样式更可靠。 */}
+          <div ref={storyEndRef} style={{ scrollMarginBottom: 280 }} className="h-px w-full" aria-hidden />
         </div>
         {save.lastTurnCheckpoint && <div className="mt-3 flex flex-wrap justify-end gap-2"><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={retryLastTurn}><RotateCcw size={13} />重新生成最近回合</Button><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={editLastTurn}><Pencil size={13} />修改最近输入</Button></div>}
         {error && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-blood/50 bg-blood/10 px-4 py-3 text-sm text-blood"><span className="whitespace-pre-wrap">{error}</span>{queuePaused && queue.length > 0 && <Button size="xs" variant="outline" onClick={retryQueue}><RotateCcw size={13} />重试模型请求</Button>}</div>}

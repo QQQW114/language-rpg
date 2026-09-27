@@ -114,7 +114,22 @@ function sse(res, { content, reasoning, usage: usagePayload }) {
   res.end();
 }
 
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': '*',
+  'access-control-max-age': '600',
+};
+
 const server = http.createServer((req, res) => {
+  // 浏览器从 dev server（另一个端口）发请求，属跨源；没有这几个头就会被
+  // 浏览器直接拦掉，表现成 `Failed to fetch`。
+  for (const [key, value] of Object.entries(CORS)) res.setHeader(key, value);
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   if (req.method === 'GET') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ object: 'list', data: [{ id: 'mock-model', object: 'model' }] }));
