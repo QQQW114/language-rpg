@@ -17,6 +17,7 @@ import type { WorldBookEntry } from '@/types/content';
 import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
 import { buildRandomEventContextBlock, buildRandomEventInstruction, listRandomEventTargets, validateRandomEventBinding } from './randomEvents';
 import { buildStageAndActWindow, DYNAMIC_WORLD_FACT_LIMIT, normalizeBeatsThisTurn, splitWorldFacts, STABLE_WORLD_FACT_LIMIT } from './actWindow';
+import { analyzePace, buildPaceCorrectionAlert } from './paceGuard';
 import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, RandomEventBindingV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
@@ -486,6 +487,19 @@ function paceInstruction(p: TurnRequestV2) {
 }
 
 /**
+ * 上一回合的节奏纠偏块（D8）。
+ *
+ * 只读取 `turnRecords` 最后一条的 `pacing`：明确 `needsCorrection === true` 才生成
+ * `【PACE_CORRECTION_ALERT】`；旧存档没有 `pacing`、或上一回合是干净回合时返回空串，
+ * 提示词里就不会出现该块。纠偏只收紧下一轮的节奏要求，不回滚、不改写已提交的正文。
+ */
+function paceCorrectionAlertOf(state: GameStateV2): string {
+  const records = Array.isArray(state.turnRecords) ? state.turnRecords : [];
+  const audit = records[records.length - 1]?.pacing;
+  return audit?.needsCorrection === true ? buildPaceCorrectionAlert(audit) : '';
+}
+
+/**
  * 本回合随机事件提示词（到期才注入）。
  *
  * 与旧版"一句 ---额外---"的区别（D7）：先给 `【RANDOM_EVENT_CONTEXT】`（待兑现绑定、
@@ -936,7 +950,9 @@ async function runPostAndCommitV2(
     { id: genId('msg'), role: 'user', content: turn.input, turn: commitBase.turn, createdAt: now },
     { id: genId('msg'), role: 'assistant', content: turn.story, turn: commitBase.turn, createdAt: now, thinking: joinThinking(...thinkingParts) },
   ];
-  const turnRecord: TurnRecordV2 = { turn: commitBase.turn, input: turn.input, story: turn.story, calls: turnCalls, patchStats };
+  // D8：程序侧节奏审计随回合留档，作为下一轮软纠偏的输入；不进 snapshot，不扩大模型输入。
+  const pacing = analyzePace({ story: turn.story, pace: turn.narrativePace });
+  const turnRecord: TurnRecordV2 = { turn: commitBase.turn, input: turn.input, story: turn.story, calls: turnCalls, patchStats, pacing };
   next.turnRecords = [...(commitBase.turnRecords ?? []), turnRecord].slice(-100);
   next.turn = commitBase.turn + 1;
   next.phase = 'input';
@@ -994,6 +1010,9 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   const dynamicWorldFacts = dynamicWorldFactsLine(worldFacts.dynamic);
   // 随机事件到期时注入【RANDOM_EVENT_CONTEXT】+ 三档指令；planner_pre 与 story 共用同一份文本。
   const randomEventPrompt = randomEventPromptText(p);
+  // 上一回合越界（升华式收尾 / 时间跳太多 / 篇幅超预算）时，本轮只做软纠偏：
+  // 在 planner_pre 与 story 的可变区（窗口之后、【AUTHORITATIVE_STATE】之前）注入纠偏块。
+  const paceCorrectionAlert = paceCorrectionAlertOf(p.state);
   // 提示词结构对缓存命中至关重要：供应商（DeepSeek / Anthropic / OpenAI）的前缀缓存
   // 只认"从第一个字节开始、逐字节相同的部分"。因此每条消息都按
   //   固定指令与输出模板（每回合逐字节相同） → 本回合可变的状态与输入
@@ -1002,8 +1021,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   const preMessages: ChatMessage[] = [
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-    // 固定输出模板行仍排在最前（可复用前缀）；三幕窗口与动态世界书只出现在模板之后。
-    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
+    // 固定输出模板行仍排在最前（可复用前缀）；三幕窗口、动态世界书与节奏纠偏只出现在模板之后。
+    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n${paceCorrectionAlert ? `${paceCorrectionAlert}\n` : ''}【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   let pre;
@@ -1057,6 +1076,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     stageActWindow,
     dynamicWorldFacts,
     `【beatsThisTurn】${JSON.stringify(beatsThisTurn)}`,
+    // D8 软纠偏：上一回合越界时放在窗口/节拍之后、【AUTHORITATIVE_STATE】之前。
+    paceCorrectionAlert,
   ].filter(Boolean).join('\n');
 
   emitPhase(p, 'story', storyModel, 'started');

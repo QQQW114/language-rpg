@@ -297,6 +297,26 @@ export interface TurnModelCallV2 {
   usage?: LlmUsage;
 }
 
+/**
+ * 程序侧节奏审计（D8）：提交回合时由 `paceGuard.analyzePace` 写入 `TurnRecordV2.pacing`。
+ *
+ * 只做观察，不修改正文：本轮越界（升华式收尾 / 单轮时间跨度过大 / 慢、标准叙事篇幅超预算）
+ * 时，下一回合的 planner_pre 与 story 提示词会注入 `【PACE_CORRECTION_ALERT】` 做软纠偏。
+ * 旧存档的 turnRecord 没有该字段，读取方按 undefined 退化（不伪造历史）。
+ */
+export interface PacingAuditV2 {
+  /** 正文字符数。 */
+  length: number;
+  /** 时间推进词计数（上限 5）。 */
+  timeJumpCount: number;
+  /** 尾 220 字的叙述部分是否命中升华/收束模式。 */
+  closureDetected: boolean;
+  /** 慢/标准叙事下正文是否超过篇幅上限。 */
+  overBudget: boolean;
+  /** 是否需要下一轮软纠偏：closureDetected || timeJumpCount >= 3 || overBudget。 */
+  needsCorrection: boolean;
+}
+
 export interface TurnRecordV2 {
   turn: number;
   input: string;
@@ -308,6 +328,11 @@ export interface TurnRecordV2 {
    * 把被拒情况回显给模型的数据来源。
    */
   patchStats?: PatchStatsV2;
+  /**
+   * 本轮节奏审计（程序侧确定性检测）。下一轮读取最后一条记录决定是否注入
+   * `【PACE_CORRECTION_ALERT】`；本字段不进入模型上下文（snapshot 不暴露）。
+   */
+  pacing?: PacingAuditV2;
 }
 
 /**

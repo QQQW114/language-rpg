@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeDestinyPatch, runTurnSettlementV2, runTurnV2, TurnPostFailureV2 } from '@/v2/engine';
+import { PACE_LENGTH_LIMIT } from '@/v2/paceGuard';
 import type { AppSettings } from '@/types/settings';
 import type { GameStateV2, ModelActivityV2, ModelPhaseV2, ModelPhaseStatusV2, TurnPartialV2, TurnRequestV2 } from '@/v2/types';
 import { makeBackground, makeOutline, makeSettings, makeState } from './helpers/fixtures';
@@ -1679,5 +1680,101 @@ describe('engine.runTurnV2 — 随机事件绑定与三态闭环', () => {
     assert.equal(resumed.state.randomEvent.history![0].targetId, 'beat-1-1');
     assert.equal(resumed.state.randomEvent.activeBinding, undefined);
     assert.equal(resumed.state.randomEvent.lastTriggeredTurn, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I. 程序侧收尾检测与下轮软纠偏（D8）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 节奏审计与下轮软纠偏', () => {
+  const PACE_ALERT = '【PACE_CORRECTION_ALERT】';
+
+  /** 以完整存档作为下一回合的输入（makeRequest 的 state 是 Record<string, unknown>）。 */
+  const asState = (state: unknown) => state as Record<string, unknown>;
+
+  /** 指定正文的 story 阶段响应。 */
+  const storyWithText = (text: string) => () => storyStream({ text });
+
+  it('干净回合：turnRecord.pacing 存在且 needsCorrection=false；下一回合不注入纠偏块', async () => {
+    const firstRequests: RecordedRequest[] = [];
+    const first = await withFetchMock(phaseHandler(), async (mock) => {
+      const output = await runTurnV2(makeRequest());
+      firstRequests.push(...mock.requests);
+      return output;
+    });
+    // 首回合存档里还没有 turnRecords：没有上一轮的审计可读，提示词不应出现纠偏块。
+    for (const request of firstRequests) {
+      assert.ok(!allPromptTextOf(request).includes(PACE_ALERT), `${phaseOf(request)}：无历史 pacing 时不应注入纠偏块`);
+    }
+    const record = first.state.turnRecords?.[0];
+    assert.ok(record?.pacing, '提交回合必须写入 pacing 审计');
+    assert.deepEqual(record!.pacing, {
+      length: STORY_TEXT.length,
+      timeJumpCount: 0,
+      closureDetected: false,
+      overBudget: false,
+      needsCorrection: false,
+    });
+
+    const secondRequests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: asState(first.state) }));
+      secondRequests.push(...mock.requests);
+    });
+    for (const request of secondRequests) {
+      assert.ok(!allPromptTextOf(request).includes(PACE_ALERT), `${phaseOf(request)}：干净回合不应注入纠偏块（needsCorrection=false）`);
+    }
+  });
+
+  it('上一轮篇幅越界：下一轮 planner_pre 与 story 都注入纠偏块（窗口之后、权威状态之前），planner_post 不注入', async () => {
+    const longStory = '雨'.repeat(PACE_LENGTH_LIMIT + 1);
+    const first = await withFetchMock(
+      phaseHandler({ story: storyWithText(longStory) }),
+      () => runTurnV2(makeRequest()),
+    );
+    const pacing = first.state.turnRecords?.[0]?.pacing;
+    assert.equal(pacing?.length, longStory.length);
+    assert.equal(pacing?.overBudget, true);
+    assert.equal(pacing?.needsCorrection, true);
+
+    const requests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: asState(first.state) }));
+      requests.push(...mock.requests);
+    });
+    const pre = lastUserPromptOf(requests[0]);
+    const storyPrompt = lastUserPromptOf(requests[1]);
+    const post = lastUserPromptOf(requests[2]);
+    for (const [phase, prompt] of [['planner_pre', pre], ['story', storyPrompt]] as const) {
+      assert.ok(prompt.includes(PACE_ALERT), `${phase} 应注入纠偏块`);
+      assert.ok(prompt.includes('只推进 1 个节拍'), `${phase} 纠偏要求本轮只推进 1 个节拍`);
+      assert.ok(prompt.indexOf('【DYNAMIC_WORLD_FACTS】') < prompt.indexOf(PACE_ALERT), `${phase}：纠偏块在动态世界书之后`);
+      assert.ok(prompt.indexOf(PACE_ALERT) < prompt.indexOf('【AUTHORITATIVE_STATE】'), `${phase}：纠偏块在权威状态之前`);
+    }
+    assert.ok(pre.indexOf('【STAGE_AND_ACT_WINDOW】') < pre.indexOf(PACE_ALERT), 'planner_pre：纠偏块在三幕窗口之后');
+    assert.ok(storyPrompt.indexOf('【beatsThisTurn】') < storyPrompt.indexOf(PACE_ALERT), 'story：纠偏块在节拍清单之后');
+    assert.ok(pre.includes(`正文 ${longStory.length} 字`), '纠偏块应说明上轮篇幅');
+    assert.ok(!post.includes(PACE_ALERT), 'planner_post 不注入纠偏块（D8 只做下一轮软纠偏）');
+    assert.ok(!post.includes('"pacing"'), 'snapshot 不暴露 pacing，避免扩大模型输入');
+  });
+
+  it('上一轮升华式收尾：下一轮注入纠偏块并说明收尾越界类型', async () => {
+    const closureStory = `${STORY_TEXT}多年以后，他还会想起这个雨夜。`;
+    const first = await withFetchMock(
+      phaseHandler({ story: storyWithText(closureStory) }),
+      () => runTurnV2(makeRequest()),
+    );
+    assert.equal(first.state.turnRecords?.[0]?.pacing?.closureDetected, true);
+    assert.equal(first.state.turnRecords?.[0]?.pacing?.needsCorrection, true);
+
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: asState(first.state) }));
+      for (const index of [0, 1]) {
+        const prompt = lastUserPromptOf(mock.requests[index]);
+        assert.ok(prompt.includes(PACE_ALERT), `${phaseOf(mock.requests[index])} 应注入纠偏块`);
+        assert.ok(prompt.includes('升华/收束'), '纠偏块应说明上轮越界类型是收尾/升华');
+      }
+    });
   });
 });

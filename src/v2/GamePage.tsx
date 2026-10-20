@@ -12,7 +12,8 @@ import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { runTurnSettlementV2, runTurnV2, TurnPostFailureV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { CharacterV2, DestinyProgressV2, GameStateV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnPartialV2, TurnRecordV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, GameStateV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RandomEventIntensityV2, RandomEventResolutionV2, RandomEventTargetKindV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnPartialV2, TurnRecordV2 } from './types';
+import type { StoryAct } from '@/types/content';
 import type { LlmUsage } from '@/types/llm';
 import { formatCacheHitRate } from '@/lib/llmUsage';
 
@@ -34,6 +35,19 @@ const THREAD_STATUS: Record<StoryThreadV2['status'], string> = {
 
 const CHARACTER_STATUS: Record<CharacterV2['status'], string> = {
   active: '活跃', absent: '暂离', missing: '失踪', dead: '死亡', unknown: '未知',
+};
+
+// 随机事件三态/强度/绑定目标的界面标签（D7）：玩家看到的应是语义，而不是协议枚举值。
+const RANDOM_EVENT_INTENSITY: Record<RandomEventIntensityV2, string> = {
+  related: '相关', progress: '推进', destiny: '命运',
+};
+
+const RANDOM_EVENT_RESOLUTION: Record<RandomEventResolutionV2, string> = {
+  resolved: '已兑现', ongoing_hook: '留钩子', interrupted: '被打断',
+};
+
+const RANDOM_EVENT_TARGET_KIND: Record<RandomEventTargetKindV2, string> = {
+  beat: '故事节', thread: '线程', relationship: '关系', reconvergence: '命运锚',
 };
 
 const clampAffinity = (value: number) => Math.max(-100, Math.min(100, Math.round(value) || 0));
@@ -106,10 +120,27 @@ function UsageLine({ usage, total = false }: { usage: LlmUsage; total?: boolean 
   </div>;
 }
 
-function DestinyCard({ destiny, showDetails }: { destiny: DestinyProgressV2; showDetails: boolean }) {
+function DestinyCard({ destiny, showDetails, outlineActs }: { destiny: DestinyProgressV2; showDetails: boolean; outlineActs?: StoryAct[] }) {
   const [open, setOpen] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
   const completion = Math.max(0, Math.min(100, Math.round(Number(destiny.completionEstimate) || 0)));
+  // 幕进展：程序权威 currentActIndex + 大纲幕标题优先；缺大纲时退回模型自由文本 currentStage。
+  // 旧存档的 currentActIndex 可能是 undefined 或越界，一律收敛到合法范围，避免渲染出「幕 NaN/0」。
+  const acts = outlineActs ?? [];
+  const rawActIndex = Number(destiny.currentActIndex);
+  const currentActIndex = acts.length
+    ? (Number.isInteger(rawActIndex) ? Math.max(0, Math.min(rawActIndex, acts.length - 1)) : 0)
+    : 0;
+  const currentAct = acts[currentActIndex];
+  const actProgress = currentAct
+    ? `幕 ${currentActIndex + 1}/${acts.length} · 《${currentAct.title}》`
+    : (destiny.currentStage || '尚未定位');
+  /** 挂账来源用大纲反查幕序号；大纲里找不到时退化为「前幕」。 */
+  const carriedLabel = (carriedFromActId?: string): string => {
+    if (!carriedFromActId) return '';
+    const index = acts.findIndex((act) => act.id === carriedFromActId);
+    return index >= 0 ? `挂账自第 ${index + 1} 幕` : '挂账自前幕';
+  };
   // 默认只展示已经发生的故事节，避免把未来路径提前剧透；
   // 开启“故事推进详情”后，展示全部故事节、下一里程碑与收敛计划。
   const beats = showDetails
@@ -129,14 +160,21 @@ function DestinyCard({ destiny, showDetails }: { destiny: DestinyProgressV2; sho
       </div>
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-ink/80"><div className="h-full rounded-full bg-gradient-to-r from-gold/50 to-gold-light/90 transition-all" style={{ width: `${completion}%` }} /></div>
       <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-        <div><span className="text-parchment-200/45">当前幕</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.currentStage}>{destiny.currentStage || '尚未定位'}</p></div>
+        <div><span className="text-parchment-200/45">当前幕</span><p className="mt-0.5 truncate text-parchment-100" title={actProgress}>{actProgress}</p>{currentAct && destiny.currentStage && destiny.currentStage !== currentAct.title && <p className="mt-0.5 truncate text-[10px] text-parchment-200/40" title={destiny.currentStage}>{destiny.currentStage}</p>}</div>
         <div><span className="text-parchment-200/45">当前路径</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.currentPath}>{destiny.currentPath || '自由发展'}</p></div>
       </div>
       {showDetails && destiny.nextMilestone && <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><div><span className="text-parchment-200/45">下一里程碑</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.nextMilestone}>{destiny.nextMilestone}</p></div>{destiny.convergencePlan && <div><span className="text-parchment-200/45">收敛计划</span><p className="mt-0.5 truncate text-parchment-100" title={destiny.convergencePlan}>{destiny.convergencePlan}</p></div>}</div>}
       {destiny.completionReason && <button type="button" onClick={() => setReasonOpen((v) => !v)} className="mt-2 inline-flex items-center gap-1 text-xs text-gold/75 hover:text-gold-light">{reasonOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{reasonOpen ? '收起完成度说明' : '当前完成度说明'}</button>}
       {reasonOpen && destiny.completionReason && <p className="mt-2 border-t border-parchment-600/15 pt-2 text-xs leading-relaxed text-parchment-200/70">{destiny.completionReason}</p>}
       <button type="button" onClick={() => setOpen((v) => !v)} className="mt-2 inline-flex items-center gap-1 text-xs text-gold/75 hover:text-gold-light">{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{open ? '收起故事节' : '展开故事节'}</button>
-      {open && <div className="mt-2 space-y-1 border-t border-parchment-600/15 pt-2 text-xs">{beats.length ? beats.map((beat) => <div key={beat.beatId} className="flex gap-2"><span className="text-parchment-100">{showDetails ? (beat.evidenceSummary || beat.currentPlan || '尚未展开。') : (beat.evidenceSummary || '本故事节已在正文中发生。')}</span><span className="shrink-0 text-gold/70">{BEAT_STATUS[beat.status]}</span></div>) : <span className="text-parchment-200/45">尚未发生可展示的故事节。</span>}</div>}
+      {open && <div className="mt-2 space-y-1 border-t border-parchment-600/15 pt-2 text-xs">{beats.length ? beats.map((beat) => {
+        const carried = carriedLabel(beat.carriedFromActId);
+        return <div key={beat.beatId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="min-w-0 flex-1 text-parchment-100">{showDetails ? (beat.evidenceSummary || beat.currentPlan || '尚未展开。') : (beat.evidenceSummary || '本故事节已在正文中发生。')}</span>
+          {carried && <span className="shrink-0 rounded border border-gold/30 bg-gold/5 px-1.5 py-0.5 text-[10px] text-gold/80">{carried}</span>}
+          <span className="shrink-0 text-gold/70">{BEAT_STATUS[beat.status]}</span>
+        </div>;
+      }) : <span className="text-parchment-200/45">尚未发生可展示的故事节。</span>}</div>}
     </section>
   );
 }
@@ -411,8 +449,12 @@ function SidePanel({ save, canEdit }: { save: NonNullable<ReturnType<typeof useA
     const timer = window.setTimeout(() => setChanges(new Map()), 1600);
     return () => window.clearTimeout(timer);
   }, [changes]);
-  const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;  return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
-    <UpdateGlow blockId="destiny" change={changes.get('destiny')}><DestinyCard destiny={save.state.destiny} showDetails={canEdit} /></UpdateGlow>
+  const characterName = (id: string) => id === 'player' ? '主角' : save.state.characters.find((c) => c.id === id)?.name ?? id;
+  // 「故事脉动」卡的数据源（D7）：最近的滚动事件历史与待兑现绑定。
+  const recentRandomEvents = (save.state.randomEvent.history ?? []).slice(-3);
+  const activeBinding = save.state.randomEvent.activeBinding;
+  return <aside className="space-y-4 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-92px)] lg:overflow-auto">
+    <UpdateGlow blockId="destiny" change={changes.get('destiny')}><DestinyCard destiny={save.state.destiny} showDetails={canEdit} outlineActs={save.outline?.acts} /></UpdateGlow>
     <section className="overflow-hidden rounded-xl border border-parchment-600/25 bg-parchment-900/35">
       <div className="flex border-b border-parchment-600/20">{tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex flex-1 items-center justify-center gap-1 py-3 text-xs transition ${tab === item.id ? 'border-b-2 border-gold text-gold-light' : 'text-parchment-200/55 hover:text-parchment-100'}`}>{item.icon}{item.label}</button>)}</div>
       <div className="p-3 text-sm">
@@ -427,6 +469,20 @@ function SidePanel({ save, canEdit }: { save: NonNullable<ReturnType<typeof useA
     </section>
     <UpdateGlow blockId="randomEvent"><div data-block="randomEvent" className="rounded-xl border border-parchment-600/20 bg-ink/20 p-3 text-xs text-parchment-200/50">
       <div>故事脉动：{save.state.randomEvent.enabled === false ? '随机事件已关闭' : save.state.randomEvent.pending ? '新的事件正在靠近' : '命运沿当前路径流动'}</div>
+      {/* 待兑现绑定：写前规划已绑定、等待结算兑现的事件目标，让玩家看到"命运欠了一笔账"。 */}
+      {activeBinding && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">待兑现：</span>{RANDOM_EVENT_TARGET_KIND[activeBinding.targetKind] ?? activeBinding.targetKind} <span className="text-parchment-200/45">{activeBinding.targetId}</span>{activeBinding.summary ? ` · ${activeBinding.summary}` : ''}</div>}
+      {/* 滚动事件历史：最近 3 条，展示回合/强度/目标/三态，便于玩家回顾回收过的伏笔。 */}
+      {recentRandomEvents.length > 0 && <div className="mt-2 border-t border-parchment-600/15 pt-2">
+        <div className="text-[10px] text-parchment-200/40">最近事件</div>
+        <div className="mt-1 space-y-1 leading-relaxed text-parchment-200/60">
+          {recentRandomEvents.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="tabular-nums text-parchment-200/40">第 {item.turn + 1} 回合</span>
+            <span className="text-gold/70">{RANDOM_EVENT_INTENSITY[item.intensity] ?? item.intensity}</span>
+            <span className="truncate" title={`${item.targetKind}:${item.targetId}`}>{RANDOM_EVENT_TARGET_KIND[item.targetKind] ?? item.targetKind} {item.targetId}</span>
+            <span>{RANDOM_EVENT_RESOLUTION[item.status] ?? item.status}</span>
+          </div>)}
+        </div>
+      </div>}
       {save.state.randomEvent.lastPlan && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件安排：</span>{save.state.randomEvent.lastPlan}</div>}
       {/* note 现在在任何回合都会记录（审计文本），因此只在事件真的触发过之后才显示为"结果"。 */}
       {save.state.randomEvent.lastNote && save.state.randomEvent.lastTriggeredTurn !== undefined && <div className="mt-2 border-t border-parchment-600/15 pt-2 leading-relaxed text-parchment-200/70"><span className="text-gold/70">随机事件结果：</span>{save.state.randomEvent.lastNote}</div>}
