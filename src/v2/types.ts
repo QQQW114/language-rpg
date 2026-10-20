@@ -7,6 +7,16 @@ export type JourneyModeV2 = 'author' | 'adventure';
 export type NarrativePaceV2 = 'slow' | 'standard' | 'fast' | 'timeskip';
 export type RandomEventIntensityV2 = 'related' | 'progress' | 'destiny';
 
+/** 随机事件必须绑定的目标类型：故事节 / 线程 / 关系 / 最终命运锚。 */
+export type RandomEventTargetKindV2 = 'beat' | 'thread' | 'relationship' | 'reconvergence';
+/**
+ * 随机事件三态结算：
+ * - resolved：本回合完整兑现；
+ * - ongoing_hook：已经起头、留待后续回合回收（滚动钩子）；
+ * - interrupted：被玩家打断 / 正文里没有真实发生，调度顺延到下一回合重试。
+ */
+export type RandomEventResolutionV2 = 'resolved' | 'ongoing_hook' | 'interrupted';
+
 /** 一轮生成中三个可展示的模型阶段。 */
 export type ModelPhaseV2 = 'planner_pre' | 'story' | 'planner_post';
 export type ModelPhaseStatusV2 = 'started' | 'completed' | 'failed';
@@ -160,6 +170,36 @@ export interface DestinyProgressV2 {
   updatedAtTurn: number;
 }
 
+/**
+ * 写前规划提交、并已通过候选目标校验的随机事件绑定。
+ *
+ * 随机事件不允许是"无绑定的路人事件"：每一档强度都必须落到一个具体目标上
+ * （推进某个故事节 / 线程 / 关系，或回收最终命运锚），这样事件才会真正改变故事，
+ * 而不是一次性的氛围插曲。
+ */
+export interface RandomEventBindingV2 {
+  targetKind: RandomEventTargetKindV2;
+  targetId: string;
+  /** 写前摘要，≤80 字；结算时写入 `history[].summary`。 */
+  summary: string;
+  /** 规划该绑定的回合。 */
+  plannedAtTurn: number;
+}
+
+/** 随机事件历史条目：让"事件发生过就不再记得"变成可回收的滚动钩子。 */
+export interface RandomEventHistoryItemV2 {
+  id: string;
+  turn: number;
+  intensity: RandomEventIntensityV2;
+  targetKind: RandomEventTargetKindV2;
+  targetId: string;
+  /** 写前摘要，≤80 字。 */
+  summary: string;
+  /** 写后结果说明，≤100 字。 */
+  outcomeNote?: string;
+  status: RandomEventResolutionV2;
+}
+
 export interface RandomEventStateV2 {
   enabled: boolean;
   nextTriggerTurn: number;
@@ -174,6 +214,17 @@ export interface RandomEventStateV2 {
   lastPlan?: string;
   /** 结算模型最近一次提交的随机事件备注/结果说明。 */
   lastNote?: string;
+  /**
+   * 写前规划已校验、等待结算兑现的绑定。
+   * - handled / interrupted 结算后清空（interrupted 会保留供下一回合重试）；
+   * - 旧存档没有该字段，读取方按 undefined 退化。
+   */
+  activeBinding?: RandomEventBindingV2;
+  /**
+   * 滚动事件历史：上限 8，超限时优先保留最近的 ongoing_hook（最多 3 条）。
+   * 旧存档没有该字段，读取方按空数组退化（本字段暂由随机事件发送方写入，而非 hydrate）。
+   */
+  history?: RandomEventHistoryItemV2[];
 }
 
 export interface CharacterV2 {
@@ -378,7 +429,12 @@ export interface TurnPatchV2 {
     actTransition?: { proposeNextAct?: boolean; actExitSummary?: string };
     beatChanges?: Array<{ beatId: string; status: StoryBeatStatusV2; currentPlan?: string; evidenceSummary?: string; evidenceQuote?: string; replacementBeatId?: string; reason: string }>;
   };
-  randomEvent?: { handled: boolean; note?: string };
+  randomEvent?: {
+    handled: boolean;
+    /** 三态结算：完整兑现 / 已起头留钩子 / 被玩家打断未发生。缺省时按 resolved 处理。 */
+    resolution?: RandomEventResolutionV2;
+    note?: string;
+  };
 }
 
 export interface TurnRequestV2 {

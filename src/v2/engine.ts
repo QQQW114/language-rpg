@@ -15,8 +15,9 @@ import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import type { WorldBookEntry } from '@/types/content';
 import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
+import { buildRandomEventContextBlock, buildRandomEventInstruction, listRandomEventTargets, validateRandomEventBinding } from './randomEvents';
 import { buildStageAndActWindow, DYNAMIC_WORLD_FACT_LIMIT, normalizeBeatsThisTurn, splitWorldFacts, STABLE_WORLD_FACT_LIMIT } from './actWindow';
-import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
+import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, RandomEventBindingV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
 玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。`;
@@ -32,7 +33,8 @@ ${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 叙事速度约束的是单回合覆盖的故事时间、主要动作和场景数量，不是要求凑够篇幅。慢叙事与标准叙事应选择最早且有意义的玩家可介入节点，给后续回合保留反应、对话和后果；不得把一次输入扩展成自带开端、发展、结尾的完整短篇。
 stopBoundary必须是本轮正文最后一个允许发生的动作；不得把边界后的动作、事后反应、下一地点或后续安排写入writingBrief。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：上一幕只作只读因果基线，当前幕是唯一可展开的施工区，下一幕只允许埋自然伏笔，更远的幕不得提前兑现；窗口未列出的字段表示大纲未提供，不得臆造。
-beatsThisTurn只写本轮要推进的1到3个原子节拍（慢叙事只写1个），每条一句话写清本轮该发生的小事件；不得写成整段剧情清单，不得把尚未发生的事写成已完成，也不得激活窗口未列出的后续故事节。`;
+beatsThisTurn只写本轮要推进的1到3个原子节拍（慢叙事只写1个），每条一句话写清本轮该发生的小事件；不得写成整段剧情清单，不得把尚未发生的事写成已完成，也不得激活窗口未列出的后续故事节。
+若本回合注入了【RANDOM_EVENT_CONTEXT】，randomEvent.planned为true时必须同时给出targetKind（beat|thread|relationship|reconvergence）、targetId（只能取自候选目标）与summary（≤80字）；优先回收列出的旧钩子。严禁无绑定的路人事件、纯氛围插曲或为凑事件新增无关角色。`;
 }
 
 const storyPlayerAgency = `玩家是共同作者，应真实承接其行动。世界书决定行动在这个世界里如何实现，而不是用来机械拒绝玩家。玩家改变路线时，可以迁移舞台与事件，但必须保持世界规律，并让长期命运通过新的合理路径继续发展。`;
@@ -50,6 +52,7 @@ ${director ? storyDirectorAgency : storyPlayerAgency}
 结尾处严禁总结、点明主旨、升华、回顾前文、感慨或任何“章节完/本回完”式收束；写完stopBoundary处的动作或反应即停，给后续回合留下自然接口。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：只展开当前幕施工契约允许的内容，上一幕只作因果基线，下一幕只允许埋伏笔，严禁提前兑现。
 【beatsThisTurn】是本轮唯一的节拍清单：只推进列出的1到3个节拍，不得自行激活未列出的故事节，也不得把多个节拍合并成一段概述草草写完。
+【RANDOM_EVENT_CONTEXT】与【RANDOM_EVENT_PLAN】给出随机事件的档位、绑定目标与安排：事件必须自然落在当前场景与玩家行动里，不得让角色瞬移、强行冲突或写成与绑定目标无关的路人事件。
 到达stopBoundary后立即停止，不多写一步，不输出分析或JSON。`;
 }
 
@@ -66,6 +69,8 @@ destiny.currentActId必须原样回显权威状态中的当前幕，不得自行
 satisfied不是“提到过标题”或“计划过”的标记，只有当CURRENT_STORY实际实现了该故事节的purpose（叙事功能），并能用正文原句证明时才可使用。只完成了铺垫、绕开、切断、改走其他路径时，不得标记satisfied，应使用active、weakened或reframed，并说明当前实现/缺口。已satisfied的故事节不得无理由回退为active、available或pending；若后续正文确实削弱已实现结果，只能使用weakened或reframed，并提供直接证据和原因。beatChanges只提交本轮发生变化的故事节，不重抄全部。
 玩家改变路线时优先reframed并更新currentPlan，不删除命运功能。不要强行拉回旧地点。
 若CURRENT_WRITE_PLAN中的randomEvent.planned为true，只有CURRENT_STORY已经实际发生了对应安排的事件时randomEvent.handled才为true；计划留到下一回合时保持false。
+randomEvent三态：resolution=resolved表示事件在本回合完整兑现；ongoing_hook表示事件已经起头、留待后续回合回收；interrupted表示被玩家打断或正文里没有真实发生（此时handled必须为false，调度会顺延到下一回合重试）。handled与resolution必须自洽，不得虚报事件已发生。
+随机事件必须落在CURRENT_WRITE_PLAN.randomEvent绑定的targetKind/targetId上；不得在结算时改写成无绑定的路人事件或另开无关新事件。若正文只推进了与绑定目标相邻的内容，记ongoing_hook并在note里说明缺口，不要记resolved。
 characters、relationships、inventory、threads、facts全部是增量Patch，不得重抄完整状态。没有变化必须输出空数组。
 必须复用权威状态中已有ID。新对象ID使用稳定、简短、语义化的小写ASCII ID；同一对象后续永远复用该ID。
 relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityDelta每回合范围-20到20；只有正文出现实际关系变化才提交。
@@ -149,7 +154,7 @@ const postShape = `{
   "scene":{"id":"stable-scene-id","name":"地点名","description":"","time":"","weather":""},
   "actions":[{"id":"stable-action-id","label":"行动选项","hint":"可选提示"}],
   "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","actTransition":{"proposeNextAct":false,"actExitSummary":""},"currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
-  "randomEvent":{"handled":false,"note":""}
+  "randomEvent":{"handled":false,"resolution":"resolved|ongoing_hook|interrupted","note":""}
 }`;
 
 function relevantFacts(p: TurnRequestV2) {
@@ -406,6 +411,9 @@ function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) 
     triggerIntervalMax: p.state.randomEvent.triggerIntervalMax,
     lastPlan: p.state.randomEvent.lastPlan,
     lastNote: p.state.randomEvent.lastNote,
+    // D7：让规划/结算模型看到"当前绑定到谁"与"最近发生过什么"，从而能回收旧钩子而不是另开事件。
+    activeBinding: p.state.randomEvent.activeBinding,
+    history: (p.state.randomEvent.history ?? []).slice(-8),
   };
   const destiny = {
     completionEstimate: p.state.destiny.completionEstimate,
@@ -477,17 +485,67 @@ function paceInstruction(p: TurnRequestV2) {
   return instructions[p.state.narrativePace] ?? instructions.standard;
 }
 
-function randomEventInstruction(p: TurnRequestV2) {
+/**
+ * 本回合随机事件提示词（到期才注入）。
+ *
+ * 与旧版"一句 ---额外---"的区别（D7）：先给 `【RANDOM_EVENT_CONTEXT】`（待兑现绑定、
+ * 最近事件钩子、候选 targetId），再给三档指令；planner_pre 与 story 看到同一份文本，
+ * story 另外保留写前安排 `【RANDOM_EVENT_PLAN】`。
+ */
+function randomEventPromptText(p: TurnRequestV2): string {
   const randomEvent = p.state.randomEvent;
-  const enabled = randomEvent?.enabled !== false;
-  const due = enabled && (randomEvent.pending || p.state.turn >= randomEvent.nextTriggerTurn);
+  if (!randomEvent || randomEvent.enabled === false) return '';
+  const due = randomEvent.pending || p.state.turn >= randomEvent.nextTriggerTurn;
   if (!due) return '';
-  const instructions = {
-    related: '---额外---：在本回合或下回合自然插入一个与当前故事严格相关的随机事件。事件必须联系当前角色、环境、关系或active/available故事节，不能是无关装饰。',
-    progress: '---额外---：在本回合或下回合自然插入一个与当前故事严格相关的随机事件。该事件必须推进active故事节，或为available故事节创造自然条件，不能只是一次性插曲。',
-    destiny: '---额外---：在本回合或下回合自然插入一个与当前故事严格相关的随机事件。该事件必须推进核心故事节、为reframed故事节找到新实现形式，或推进最终结尾条件。',
-  } as const;
-  return `${instructions[p.state.randomEvent.intensity]} 随机事件同样服从当前叙事速度：慢叙事或标准叙事可以只让事件自然出现或推进一小步，不必在本回合解决完整事件。`;
+  const targets = listRandomEventTargets({ destiny: p.state.destiny, state: p.state });
+  const history = randomEvent.history ?? [];
+  const context = buildRandomEventContextBlock({ randomEvent, targets, history });
+  const instruction = buildRandomEventInstruction({ intensity: randomEvent.intensity, targets, history });
+  return `${context}\n${instruction}`;
+}
+
+interface RandomEventBindingCheckV2 {
+  /** 校验通过的绑定；提交阶段会写入 state.randomEvent.activeBinding。 */
+  binding?: RandomEventBindingV2;
+  /** 绑定非法时的可观察警告（random_event_binding_invalid）。 */
+  warning?: PatchWarningV2;
+}
+
+/**
+ * 校验 planner_pre 输出的随机事件绑定（D7）。
+ *
+ * 只有 `planned === true` 才需要绑定。合法绑定会在提交阶段连同 lastPlan 一起写入权威状态：
+ * 本回合结算兑现时由 patch.ts 读取它生成 history；若本回合没发生（interrupted），绑定会被
+ * 保留供下一回合重试。非法绑定只写 lastPlan 并留下警告，避免错误目标进入调度状态。
+ */
+function checkPlannerRandomEventBinding(p: TurnRequestV2, brief: Record<string, unknown>): RandomEventBindingCheckV2 {
+  const rawPlan = brief?.randomEvent;
+  if (!rawPlan || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) return {};
+  if ((rawPlan as Record<string, unknown>).planned !== true) return {};
+  const targets = listRandomEventTargets({ destiny: p.state.destiny, state: p.state });
+  const result = validateRandomEventBinding(rawPlan, targets);
+  if (!result.ok) {
+    return {
+      warning: {
+        code: 'random_event_binding_invalid',
+        path: 'randomEvent',
+        message: `规划模型安排了随机事件，但绑定无效：${result.reason}；本回合只记录事件文字（lastPlan），不写入绑定，请改用候选目标重试。`,
+      },
+    };
+  }
+  return { binding: { ...result.binding, plannedAtTurn: p.state.turn } };
+}
+
+/**
+ * 把已校验的绑定放进"提交阶段看到的回合前状态"。
+ *
+ * patch.ts 的结算分支只从 `state.randomEvent.activeBinding` 读目标（它不接触 brief），
+ * 因此绑定必须在提交前 seed 进状态，再由提交阶段统一落库；否则同一回合 planned 且
+ * handled 的事件会因为 patch 看不到 bind 而写不出 history。
+ */
+function withRandomEventBinding(state: GameStateV2, binding: RandomEventBindingV2 | undefined): GameStateV2 {
+  if (!binding) return state;
+  return { ...state, randomEvent: { ...state.randomEvent, activeBinding: binding } };
 }
 
 export function normalizeDestinyPatch(raw: unknown, warnings: PatchWarningV2[]): TurnPatchV2['destiny'] {
@@ -788,6 +846,11 @@ interface TurnPostInputV2 {
   turnCalls: TurnModelCallV2[];
   thinkingParts: string[];
   usage: { pre?: LlmUsage; story?: LlmUsage };
+  /**
+   * 已通过候选目标校验的随机事件绑定。提交前会 seed 进 `state.randomEvent.activeBinding`，
+   * 供 patch.ts 在结算分支里读目标、生成 history；续跑时由 brief 重新校验得到。
+   */
+  randomEventBinding?: RandomEventBindingV2;
 }
 
 /**
@@ -802,9 +865,12 @@ async function runPostAndCommitV2(
   turn: TurnPostInputV2,
 ): Promise<TurnResultV2> {
   const stateBeforeTurn = turn.stateBeforeTurn;
+  // 随机事件绑定在提交前 seed 进状态：patch.ts 的结算分支只认 state.randomEvent.activeBinding，
+  // 这样"本回合规划并兑现"的事件才能在同一个提交里写出 history（而不是丢给下一回合）。
+  const commitBase = withRandomEventBinding(stateBeforeTurn, turn.randomEventBinding);
   // 结算提示词里的权威状态必须与生成正文时一致，因此用 partial/首次执行捕获的状态快照，
   // 而不是调用方此刻的 p.state（二者仅由 runTurnSettlementV2 的 CAS 校验保证 revision/turn 相同）。
-  const postRequest: TurnRequestV2 = { ...p, state: stateBeforeTurn, input: turn.input };
+  const postRequest: TurnRequestV2 = { ...p, state: commitBase, input: turn.input };
   const plannerAuthorityBeforeTurn = snapshot(postRequest);
   // 模板里不再内嵌 commitId / baseRevision / turn（它们每回合变化，会让整段模板失效）。
   // 具体值统一在下面这条消息的可变区里给出：TURN_ID 带 turn 与 commitId，
@@ -812,7 +878,7 @@ async function runPostAndCommitV2(
   // asPatch() 会用程序自己的值覆盖这三个字段，因此模型照抄占位值也不会出错。
   const postMessages: ChatMessage[] = [
     { role: 'system', content: runtime.plannerPostPrompt },
-    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${stateBeforeTurn.turn}:${turn.commitId}\n【baseRevision】${stateBeforeTurn.revision}\n【turn】${stateBeforeTurn.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${turn.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(turn.brief)}\n【CURRENT_STOP_BOUNDARY】${String(turn.brief.stopBoundary ?? '')}\n${stateBeforeTurn.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${turn.story}` },
+    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${commitBase.turn}:${turn.commitId}\n【baseRevision】${commitBase.revision}\n【turn】${commitBase.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${turn.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(turn.brief)}\n【CURRENT_STOP_BOUNDARY】${String(turn.brief.stopBoundary ?? '')}\n${commitBase.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${turn.story}` },
   ];
   const postThinkingParts: string[] = [];
   emitPhase(p, 'planner_post', runtime.plannerModel, 'started', undefined, false);
@@ -863,16 +929,16 @@ async function runPostAndCommitV2(
   // 这些说明同样要进入活动流，否则玩家与排障者只看到状态被改却找不到原因。
   const commitWarnings: PatchWarningV2[] = [];
   const patchStats = emptyPatchStatsV2();
-  const next = commitTurnPatchV2(stateBeforeTurn, patch, commitWarnings, patchStats);
+  const next = commitTurnPatchV2(commitBase, patch, commitWarnings, patchStats);
   emitPatchWarnings(p, runtime.plannerModel, commitWarnings);
   const now = Date.now();
-  next.history = [...stateBeforeTurn.history,
-    { id: genId('msg'), role: 'user', content: turn.input, turn: stateBeforeTurn.turn, createdAt: now },
-    { id: genId('msg'), role: 'assistant', content: turn.story, turn: stateBeforeTurn.turn, createdAt: now, thinking: joinThinking(...thinkingParts) },
+  next.history = [...commitBase.history,
+    { id: genId('msg'), role: 'user', content: turn.input, turn: commitBase.turn, createdAt: now },
+    { id: genId('msg'), role: 'assistant', content: turn.story, turn: commitBase.turn, createdAt: now, thinking: joinThinking(...thinkingParts) },
   ];
-  const turnRecord: TurnRecordV2 = { turn: stateBeforeTurn.turn, input: turn.input, story: turn.story, calls: turnCalls, patchStats };
-  next.turnRecords = [...(stateBeforeTurn.turnRecords ?? []), turnRecord].slice(-100);
-  next.turn = stateBeforeTurn.turn + 1;
+  const turnRecord: TurnRecordV2 = { turn: commitBase.turn, input: turn.input, story: turn.story, calls: turnCalls, patchStats };
+  next.turnRecords = [...(commitBase.turnRecords ?? []), turnRecord].slice(-100);
+  next.turn = commitBase.turn + 1;
   next.phase = 'input';
   if (runtime.shouldInjectPlanner) next.plannerInjectApplied = true;
   const randomEventPlanText = randomEventPlanToText(turn.brief.randomEvent);
@@ -926,6 +992,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   // 三幕聚焦窗口只进可变区（D4）：system 与【STABLE_STORY_CONTEXT】必须逐字节稳定。
   const stageActWindow = buildStageAndActWindow({ outline: p.outline, destiny: p.state.destiny, turn: p.state.turn });
   const dynamicWorldFacts = dynamicWorldFactsLine(worldFacts.dynamic);
+  // 随机事件到期时注入【RANDOM_EVENT_CONTEXT】+ 三档指令；planner_pre 与 story 共用同一份文本。
+  const randomEventPrompt = randomEventPromptText(p);
   // 提示词结构对缓存命中至关重要：供应商（DeepSeek / Anthropic / OpenAI）的前缀缓存
   // 只认"从第一个字节开始、逐字节相同的部分"。因此每条消息都按
   //   固定指令与输出模板（每回合逐字节相同） → 本回合可变的状态与输入
@@ -935,7 +1003,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
     // 固定输出模板行仍排在最前（可复用前缀）；三幕窗口与动态世界书只出现在模板之后。
-    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}` },
+    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   let pre;
@@ -975,6 +1043,13 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     throw error;
   }
   const brief = requireJSONObject(pre.text, phaseLabels.planner_pre) as any;
+  // 随机事件绑定校验：合法绑定在提交阶段写入 activeBinding + lastPlan；非法时只写 lastPlan，
+  // 并把原因送进活动流（random_event_binding_invalid），避免错误目标进入调度状态。
+  const randomEventBindingCheck = checkPlannerRandomEventBinding(p, brief);
+  if (randomEventBindingCheck.warning) {
+    console.warn(`[V2 patch] ${randomEventBindingCheck.warning.path}: ${randomEventBindingCheck.warning.message}`);
+    emitActivity(p, { type: 'warning', phase: 'planner_pre', model: plannerModel, ...randomEventBindingCheck.warning });
+  }
   const randomEventPlanForStory = randomEventPlanToText(brief?.randomEvent) ?? '本回合无随机事件安排';
   // 规划模型可能漏写或写多节拍：统一裁剪后再交给故事模型（慢叙事只保留 1 个，D8）。
   const beatsThisTurn = normalizeBeatsThisTurn(brief?.beatsThisTurn, p.state.narrativePace);
@@ -1001,7 +1076,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
         // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
         // story 的 user 消息以【NARRATIVE_PACE】开头）。
-        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}` },
+        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}` },
       ],
       onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {
@@ -1031,6 +1106,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     turnCalls,
     thinkingParts: turnThinkingParts,
     usage: { pre: pre.usage, story: story.usage },
+    randomEventBinding: randomEventBindingCheck.binding,
   });
 }
 
@@ -1050,6 +1126,13 @@ export async function runTurnSettlementV2(p: TurnRequestV2, partial: TurnPartial
     throw new Error(`无法仅重试结算：当前存档已推进到 revision=${p.state.revision} / 第 ${p.state.turn} 回合，待结算正文属于 revision=${partial.state.revision} / 第 ${partial.state.turn} 回合。请重新生成本回合。`);
   }
   const runtime = resolveTurnRuntime(p, partial.state);
+  // 续跑不再调用 planner_pre，但绑定校验必须与首发一致：用 partial 的回合前状态与 brief 重新校验，
+  // 这样"仅重试结算"提交出的 activeBinding/history 与正常三阶段回合等价。
+  const randomEventBindingCheck = checkPlannerRandomEventBinding({ ...p, state: partial.state }, partial.brief);
+  if (randomEventBindingCheck.warning) {
+    console.warn(`[V2 patch] ${randomEventBindingCheck.warning.path}: ${randomEventBindingCheck.warning.message}`);
+    emitActivity(p, { type: 'warning', phase: 'planner_post', model: runtime.plannerModel, ...randomEventBindingCheck.warning });
+  }
   return runPostAndCommitV2(p, runtime, {
     stateBeforeTurn: partial.state,
     input: partial.input,
@@ -1064,5 +1147,6 @@ export async function runTurnSettlementV2(p: TurnRequestV2, partial: TurnPartial
       pre: partial.turnCalls.find((call) => call.phase === 'planner_pre')?.usage,
       story: partial.turnCalls.find((call) => call.phase === 'story')?.usage,
     },
+    randomEventBinding: randomEventBindingCheck.binding,
   });
 }

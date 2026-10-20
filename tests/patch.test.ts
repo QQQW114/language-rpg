@@ -957,6 +957,279 @@ describe('patch — 随机事件', () => {
   });
 });
 
+describe('patch — 随机事件三态闭环与智能调度（D7）', () => {
+  const binding = { targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '雨夜交出旧信', plannedAtTurn: 6 };
+
+  /** 到期状态：nextTriggerTurn=1 < turn=7，且区间 min=max 让重排结果确定。 */
+  function dueState(randomEventOverrides: Record<string, unknown> = {}): GameStateV2 {
+    return makeState({
+      randomEvent: {
+        enabled: true,
+        nextTriggerTurn: 1,
+        pending: false,
+        intensity: 'related',
+        triggerIntervalMin: 2,
+        triggerIntervalMax: 2,
+        ...randomEventOverrides,
+      },
+    });
+  }
+
+  /** 基于给定状态提交 Patch 并收集警告。 */
+  function commitWith(state: GameStateV2, patchOverrides: Record<string, unknown> = {}) {
+    const warnings: PatchWarningV2[] = [];
+    const next = commitTurnPatchV2(
+      state,
+      makePatch({ baseRevision: state.revision, turn: state.turn, ...patchOverrides }),
+      warnings,
+    );
+    return { state: next, warnings };
+  }
+
+  it('handled + resolved：写一条 resolved 历史、清空绑定并重排下一次触发', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next, warnings } = commitWith(state, {
+      randomEvent: { handled: true, resolution: 'resolved', note: '旧信被找到' },
+    });
+
+    assert.equal(next.randomEvent.history?.length, 1);
+    const item = next.randomEvent.history![0];
+    assert.equal(item.status, 'resolved');
+    assert.equal(item.targetKind, 'beat');
+    assert.equal(item.targetId, 'beat-1-1');
+    assert.equal(item.summary, '雨夜交出旧信');
+    assert.equal(item.outcomeNote, '旧信被找到');
+    assert.equal(item.turn, S);
+    assert.equal(item.intensity, 'related', '历史记录的是事件发生时的强度');
+    assert.ok(item.id.length > 0);
+
+    assert.equal('activeBinding' in next.randomEvent, false, '兑现后必须清空绑定');
+    assert.equal(next.randomEvent.pending, false);
+    assert.equal(next.randomEvent.lastTriggeredTurn, S);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 2, 'min=max 时区间确定');
+    assert.equal(next.randomEvent.intensity, 'related', '常态下智能强度回落到相关档');
+    assert.equal(next.randomEvent.lastNote, '旧信被找到');
+    assert.deepEqual(warnings, [], '正常结算不应产生提交警告');
+  });
+
+  it('handled + ongoing_hook：记为滚动钩子（不视为完整兑现），同样清空绑定', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next } = commitWith(state, {
+      randomEvent: { handled: true, resolution: 'ongoing_hook', note: '只让阿黎提到旧信' },
+    });
+    assert.equal(next.randomEvent.history?.[0].status, 'ongoing_hook');
+    assert.equal('activeBinding' in next.randomEvent, false);
+    assert.equal(next.randomEvent.lastTriggeredTurn, S, '已起头也算事件发生过');
+  });
+
+  it('handled=true 且缺 resolution 时按 resolved 处理（旧协议向后兼容）', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next } = commitWith(state, { randomEvent: { handled: true } });
+    assert.equal(next.randomEvent.history?.[0].status, 'resolved');
+    assert.equal('activeBinding' in next.randomEvent, false);
+  });
+
+  it('handled=false + interrupted：写 interrupted 历史、pending 顺延到下一回合、保留绑定', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next } = commitWith(state, {
+      randomEvent: { handled: false, resolution: 'interrupted', note: '玩家转身离开' },
+    });
+
+    assert.equal(next.randomEvent.history?.length, 1);
+    assert.equal(next.randomEvent.history![0].status, 'interrupted');
+    assert.equal(next.randomEvent.history![0].outcomeNote, '玩家转身离开');
+    assert.equal(next.randomEvent.pending, true);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 1);
+    assert.equal(next.randomEvent.lastTriggeredTurn, undefined, '未发生不算触发');
+    assert.deepEqual(next.randomEvent.activeBinding, binding, '被打断时保留绑定供下回合重试');
+  });
+
+  it('handled=true 与 resolution=interrupted 冲突时以 interrupted 为准（自洽规则）', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next } = commitWith(state, {
+      randomEvent: { handled: true, resolution: 'interrupted' },
+    });
+    assert.equal(next.randomEvent.history?.[0].status, 'interrupted');
+    assert.equal(next.randomEvent.pending, true);
+    assert.deepEqual(next.randomEvent.activeBinding, binding);
+  });
+
+  it('handled=false 但 resolution=ongoing_hook 时信任三态：事件已起头，写历史并清空绑定', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next } = commitWith(state, {
+      randomEvent: { handled: false, resolution: 'ongoing_hook', note: '刚起了个头' },
+    });
+    assert.equal(next.randomEvent.history?.[0].status, 'ongoing_hook');
+    assert.equal('activeBinding' in next.randomEvent, false);
+    assert.equal(next.randomEvent.pending, false);
+  });
+
+  it('到期但既未 handled 也无 interrupted：维持 pending 顺延（旧行为不变）', () => {
+    const state = dueState({ activeBinding: binding });
+    const { state: next } = commitWith(state, { randomEvent: { handled: false } });
+    assert.equal(next.randomEvent.pending, true);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 1);
+    assert.equal(next.randomEvent.history, undefined, '没有结算结果就不该伪造历史');
+    assert.deepEqual(next.randomEvent.activeBinding, binding);
+  });
+
+  it('到期 handled 但没有 activeBinding（旧档/模型未规划绑定）：照常重排，不伪造 history', () => {
+    const state = dueState();
+    const { state: next } = commitWith(state, { randomEvent: { handled: true, resolution: 'resolved', note: '一次偶遇' } });
+    assert.equal(next.randomEvent.history, undefined);
+    assert.equal(next.randomEvent.lastTriggeredTurn, S);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 2);
+    assert.equal(next.randomEvent.lastNote, '一次偶遇');
+  });
+
+  it('未到期时调度、绑定与历史原样保留（只有 note 作为审计文本记录）', () => {
+    const history = [
+      { id: 'rev-1', turn: 2, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '旧事件', status: 'resolved' as const },
+    ];
+    const state = makeState({
+      randomEvent: {
+        enabled: true,
+        nextTriggerTurn: 99,
+        pending: false,
+        intensity: 'progress',
+        triggerIntervalMin: 3,
+        triggerIntervalMax: 5,
+        activeBinding: binding,
+        history,
+      },
+    });
+    const untouched = commitWith(state, {}).state;
+    assert.deepEqual(untouched.randomEvent, state.randomEvent, '未到期且无备注时随机事件状态逐字段不变');
+
+    const withNote = commitWith(state, { randomEvent: { handled: true, note: '计划留到后面' } }).state;
+    assert.deepEqual(withNote.randomEvent.activeBinding, binding);
+    assert.deepEqual(withNote.randomEvent.history, history);
+    assert.equal(withNote.randomEvent.pending, false);
+    assert.equal(withNote.randomEvent.nextTriggerTurn, 99);
+    assert.equal(withNote.randomEvent.lastNote, '计划留到后面');
+  });
+
+  it('历史滚动上限 8，且最近 3 条 ongoing_hook 优先保留', () => {
+    const history = [
+      { id: 'hook-1', turn: 1, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '钩子1', status: 'ongoing_hook' as const },
+      { id: 'hook-2', turn: 2, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '钩子2', status: 'ongoing_hook' as const },
+      { id: 'hook-3', turn: 3, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '钩子3', status: 'ongoing_hook' as const },
+      { id: 'rev-a', turn: 4, intensity: 'progress' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '旧事件A', status: 'resolved' as const },
+      { id: 'rev-b', turn: 5, intensity: 'progress' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '旧事件B', status: 'resolved' as const },
+      { id: 'rev-c', turn: 6, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '旧事件C', status: 'resolved' as const },
+      { id: 'rev-d', turn: 6, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '旧事件D', status: 'resolved' as const },
+      { id: 'rev-e', turn: 6, intensity: 'related' as const, targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '旧事件E', status: 'resolved' as const },
+    ];
+    const state = dueState({ activeBinding: binding, history });
+    const { state: next } = commitWith(state, { randomEvent: { handled: true, resolution: 'resolved' } });
+    const nextHistory = next.randomEvent.history!;
+    assert.equal(nextHistory.length, 8, '滚动上限 8');
+    assert.deepEqual(nextHistory.filter((item) => item.status === 'ongoing_hook').map((item) => item.id), ['hook-1', 'hook-2', 'hook-3'], '三条钩子全部保留');
+    assert.equal(nextHistory[nextHistory.length - 1].targetId, 'beat-1-1', '新事件追加在最后');
+    assert.ok(!nextHistory.some((item) => item.id === 'rev-a'), '最旧的非钩子事件被裁掉');
+  });
+
+  it('旧存档没有 history / activeBinding 字段时不崩，到期不写伪造历史', () => {
+    const state = makeState({
+      randomEvent: { enabled: true, nextTriggerTurn: 1, pending: false, intensity: 'related', triggerIntervalMin: 2, triggerIntervalMax: 2 },
+    });
+    assert.equal('history' in state.randomEvent, false);
+    assert.equal('activeBinding' in state.randomEvent, false);
+    const { state: next } = commitWith(state, { randomEvent: { handled: true } });
+    assert.equal(next.randomEvent.history, undefined);
+    assert.equal(next.revision, state.revision + 1);
+  });
+
+  it('幕切换平滑：nextTriggerTurn 很远时拉近到 turn+1~2 并升级为推进档', () => {
+    const state = makeState({
+      randomEvent: { enabled: true, nextTriggerTurn: 99, pending: false, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 5 },
+      destiny: {
+        ...makeState().destiny,
+        currentActId: 'act-1',
+        currentActIndex: 0,
+        actHistory: [],
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-1-2', actId: 'act-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+      },
+    });
+    const { state: next } = commitWith(state, {
+      destiny: {
+        reason: '本幕收束',
+        beatChanges: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据一' },
+          { beatId: 'beat-1-2', status: 'satisfied', evidenceQuote: '证据二' },
+        ],
+      },
+    });
+    assert.equal(next.destiny.lastActTransitionTurn, S, '先确认本回合确实发生了切幕');
+    assert.equal(next.randomEvent.intensity, 'progress', '刚切幕 → 智能强度给推进档');
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 2);
+    assert.equal(next.randomEvent.lastTriggeredTurn, undefined, '平滑只调调度，不伪造事件已发生');
+    assert.equal(next.randomEvent.history, undefined);
+  });
+
+  it('幕切换平滑：存在 reframed 节时升级为命运档并拉近到 turn+1', () => {
+    const state = makeState({
+      randomEvent: { enabled: true, nextTriggerTurn: 99, pending: false, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 5 },
+      destiny: {
+        ...makeState().destiny,
+        currentActId: 'act-1',
+        currentActIndex: 1,
+        actHistory: [],
+        beats: [
+          { beatId: 'beat-0-1', actId: 'act-0', status: 'reframed', currentPlan: '换实现', evidenceTurns: [], updatedAtTurn: 5 },
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-1-2', actId: 'act-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+      },
+    });
+    const { state: next } = commitWith(state, {
+      destiny: {
+        reason: '本幕收束',
+        beatChanges: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据一' },
+          { beatId: 'beat-1-2', status: 'satisfied', evidenceQuote: '证据二' },
+        ],
+      },
+    });
+    assert.equal(next.destiny.lastActTransitionTurn, S);
+    assert.equal(next.randomEvent.intensity, 'destiny');
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 1);
+  });
+
+  it('未切幕或 nextTriggerTurn 已在 turn+2 内时，平滑不生效', () => {
+    const noTransition = makeState({
+      randomEvent: { enabled: true, nextTriggerTurn: 99, pending: false, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 5 },
+    });
+    const { state: next } = commitWith(noTransition, {});
+    assert.equal(next.randomEvent.nextTriggerTurn, 99, '没有切幕不该改调度');
+    assert.equal(next.randomEvent.intensity, 'related');
+
+    const state = makeState({
+      randomEvent: { enabled: true, nextTriggerTurn: S + 2, pending: false, intensity: 'progress', triggerIntervalMin: 3, triggerIntervalMax: 5 },
+      destiny: {
+        ...makeState().destiny,
+        currentActId: 'act-1',
+        currentActIndex: 0,
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+      },
+    });
+    const { state: pulled } = commitWith(state, {
+      destiny: { reason: '收束', beatChanges: [{ beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据' }] },
+    });
+    assert.equal(pulled.destiny.lastActTransitionTurn, S);
+    assert.equal(pulled.randomEvent.nextTriggerTurn, S + 2, '已在 turn+2 内时不重复拉近');
+    assert.equal(pulled.randomEvent.intensity, 'progress', '已有强度也不被覆盖');
+  });
+});
+
 describe('patch — 提交对账统计（patchStats）', () => {
   const emptyStats = emptyPatchStatsV2;
   const run = (patchOverrides: Record<string, unknown>, stateOverrides: Record<string, unknown> = {}) => {

@@ -1,6 +1,7 @@
 import { normalizeChoices } from '@/lib/actions';
 import { clamp, genId, textOrPrevious } from '@/lib/utils';
-import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchCategoryStatsV2, PatchStatsV2, PatchWarningV2, RandomEventIntensityV2, RelationshipV2, StoryBeatRuntimeV2, StoryBeatStatusV2, StoryThreadV2, TurnPatchV2 } from './types';
+import { pickRandomEventIntensity, pushRandomEventHistory, readRandomEventBinding } from './randomEvents';
+import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchCategoryStatsV2, PatchStatsV2, PatchWarningV2, RandomEventHistoryItemV2, RandomEventResolutionV2, RandomEventStateV2, RelationshipV2, StoryBeatRuntimeV2, StoryBeatStatusV2, StoryThreadV2, TurnPatchV2 } from './types';
 
 const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -491,29 +492,70 @@ export function commitTurnPatchV2(
   const randomEventEnabled = state.randomEvent.enabled !== false;
   const dueRandomEvent = randomEventEnabled && (state.randomEvent.pending || state.turn >= state.randomEvent.nextTriggerTurn);
   const randomEventNote = text(patch.randomEvent?.note, 500) || undefined;
-  let randomEvent = { ...state.randomEvent };
+  let randomEvent: RandomEventStateV2 = { ...state.randomEvent };
   // lastNote 是纯审计文本（前端"故事脉动"卡片显示为「随机事件结果」），它不参与
   // 事件调度。此前只在"事件到期"分支里记录，于是模型在未到期回合给出的说明会被
   // 无声丢弃。这里所有分支都记录，调度字段（pending / nextTriggerTurn / intensity）
   // 仍然只在到期时改动。
   if (randomEventNote) randomEvent.lastNote = randomEventNote;
   if (dueRandomEvent) {
-    if (patch.randomEvent?.handled) {
-      const intensities: RandomEventIntensityV2[] = ['related', 'progress', 'destiny'];
-      const intervalMin = Math.max(1, Math.round(randomEvent.triggerIntervalMin ?? 3));
-      const intervalMax = Math.max(intervalMin, Math.round(randomEvent.triggerIntervalMax ?? 6));
+    // 三态闭环（D7）：resolved=完整兑现、ongoing_hook=已起头留钩子、interrupted=被玩家打断未发生。
+    // handled 为旧协议字段，缺 resolution 时按"发生了"处理（向后兼容）；两者冲突时以 interrupted 为准，
+    // 因为只有它明确表示"正文里没有真实发生"，不应该清空绑定或重排长间隔。
+    const rawResolution = patch.randomEvent?.resolution;
+    const resolution: RandomEventResolutionV2 | undefined =
+      rawResolution === 'resolved' || rawResolution === 'ongoing_hook' || rawResolution === 'interrupted'
+        ? rawResolution
+        : undefined;
+    const interrupted = resolution === 'interrupted';
+    const occurred = !interrupted && (patch.randomEvent?.handled === true || resolution === 'resolved' || resolution === 'ongoing_hook');
+    const binding = readRandomEventBinding(randomEvent.activeBinding);
+    const intervalMin = Math.max(1, Math.round(randomEvent.triggerIntervalMin ?? 3));
+    const intervalMax = Math.max(intervalMin, Math.round(randomEvent.triggerIntervalMax ?? 6));
+    const historyItem = (status: RandomEventHistoryItemV2['status']): RandomEventHistoryItemV2 => ({
+      id: genId('rev'),
+      turn: state.turn,
+      intensity: randomEvent.intensity,
+      targetKind: binding!.targetKind,
+      targetId: binding!.targetId,
+      summary: text(binding!.summary, 80) || binding!.targetId,
+      ...(randomEventNote ? { outcomeNote: text(randomEventNote, 100) } : {}),
+      status,
+    });
+    if (interrupted) {
+      // 未发生：写 interrupted 历史（有绑定才写，没有绑定就没有可记录的事件），pending 顺延，
+      // activeBinding 原样保留供下一回合重试绑定。
+      if (binding) randomEvent.history = pushRandomEventHistory(randomEvent.history, historyItem('interrupted'));
+      randomEvent = { ...randomEvent, pending: true, nextTriggerTurn: state.turn + 1 };
+    } else if (occurred) {
+      // 已发生：写 resolved / ongoing_hook 历史并清空绑定，再按智能强度重排下一次触发。
+      if (binding) randomEvent.history = pushRandomEventHistory(randomEvent.history, historyItem(resolution === 'ongoing_hook' ? 'ongoing_hook' : 'resolved'));
+      const nextIntensity = pickRandomEventIntensity({ destiny, randomEvent, turn: state.turn });
       randomEvent = {
         ...randomEvent,
         nextTriggerTurn: state.turn + intervalMin + Math.floor(Math.random() * (intervalMax - intervalMin + 1)),
         pending: false,
-        intensity: intensities[Math.floor(Math.random() * intensities.length)],
+        intensity: nextIntensity,
         lastTriggeredTurn: state.turn,
       };
+      if (binding) delete randomEvent.activeBinding;
     } else {
       randomEvent = { ...randomEvent, pending: true, nextTriggerTurn: state.turn + 1 };
     }
   } else if (!randomEventEnabled) {
     randomEvent = { ...randomEvent, pending: false };
+  }
+
+  // 幕切换平滑（D7）：本回合发生切幕、而随机事件还排在 turn+2 之后时，把它拉近到 turn+1~2，
+  // 并换成推进/命运档——新幕开局需要外部事件助推，而不是再等好几个回合。
+  // 该分支只动调度字段，不会伪造已发生的事件（不写 history / lastTriggeredTurn）。
+  if (randomEventEnabled && destiny.lastActTransitionTurn === state.turn && randomEvent.nextTriggerTurn > state.turn + 2) {
+    const intensity = pickRandomEventIntensity({ destiny, randomEvent, turn: state.turn });
+    randomEvent = {
+      ...randomEvent,
+      intensity: intensity === 'destiny' ? 'destiny' : 'progress',
+      nextTriggerTurn: state.turn + (intensity === 'destiny' ? 1 : 2),
+    };
   }
 
   return { ...state, revision: state.revision + 1, summary: textOrPrevious(patch.roundSummary, state.summary, 5000), latestProgress: textOrPrevious(patch.latestProgress, state.latestProgress, 500), characters, relationships, inventory: inventory.filter((x) => x.quantity > 0), storyThreads: threads, facts, destiny, randomEvent, currentScene: patch.scene ? { id: text(patch.scene.id, 80) || state.currentScene?.id || genId('scene'), name: text(patch.scene.name, 50) || state.currentScene?.name || '未知地点', description: text(patch.scene.description, 240) || state.currentScene?.description, time: text(patch.scene.time, 40) || state.currentScene?.time, weather: text(patch.scene.weather, 40) || state.currentScene?.weather } : state.currentScene,

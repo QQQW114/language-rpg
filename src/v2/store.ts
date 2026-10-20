@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { genId } from '@/lib/utils';
+import { readRandomEventBinding } from './randomEvents';
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
-import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2, TurnRecordV2 } from './types';
+import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2, RandomEventHistoryItemV2, TurnRecordV2 } from './types';
 
 export interface SaveV2 {
   id: string;
@@ -138,6 +139,29 @@ export function sanitizeGameStateV2(raw: unknown, outline?: unknown): GameStateV
     .filter((message) => typeof message.content === 'string')
     .map((message) => ({ ...message, turn: typeof message.turn === 'number' ? message.turn : 0, createdAt: typeof message.createdAt === 'number' ? message.createdAt : 0 }));
 
+  // 随机事件（D7）：先 spread 保留 lastPlan/lastNote/lastTriggeredTurn 等旧字段，再归一化
+  // 滚动钩子与待兑现绑定。非法绑定必须显式删除——否则 spread 会把原始坏对象带进状态。
+  const sanitizedRandomEvent = {
+    ...(randomEventRaw as unknown as GameStateV2['randomEvent']),
+    enabled: randomEventRaw.enabled !== false,
+    nextTriggerTurn: typeof randomEventRaw.nextTriggerTurn === 'number' ? randomEventRaw.nextTriggerTurn : 1,
+    pending: randomEventRaw.pending === true,
+    intensity: randomEventRaw.intensity === 'progress' || randomEventRaw.intensity === 'destiny' ? randomEventRaw.intensity : 'related',
+    triggerIntervalMin: typeof randomEventRaw.triggerIntervalMin === 'number' ? randomEventRaw.triggerIntervalMin : 3,
+    triggerIntervalMax: typeof randomEventRaw.triggerIntervalMax === 'number' ? randomEventRaw.triggerIntervalMax : 6,
+    history: objectsOf<RandomEventHistoryItemV2>(randomEventRaw.history)
+      .filter((item) => typeof item.id === 'string' && item.id && typeof item.turn === 'number' && Number.isFinite(item.turn))
+      .map((item) => ({
+        ...item,
+        status: item.status === 'ongoing_hook' || item.status === 'interrupted' ? item.status : 'resolved',
+        summary: typeof item.summary === 'string' ? item.summary.slice(0, 80) : String(item.targetId ?? item.id),
+        ...(typeof item.outcomeNote === 'string' ? { outcomeNote: item.outcomeNote.slice(0, 100) } : {}),
+      })),
+  } as GameStateV2['randomEvent'];
+  const sanitizedRandomEventBinding = readRandomEventBinding(randomEventRaw.activeBinding);
+  if (sanitizedRandomEventBinding) sanitizedRandomEvent.activeBinding = sanitizedRandomEventBinding;
+  else delete sanitizedRandomEvent.activeBinding;
+
   return {
     ...(raw as unknown as GameStateV2),
     schemaVersion: 2,
@@ -178,18 +202,7 @@ export function sanitizeGameStateV2(raw: unknown, outline?: unknown): GameStateV
       endingReached: destinyRaw.endingReached === true,
       updatedAtTurn: typeof destinyRaw.updatedAtTurn === 'number' ? destinyRaw.updatedAtTurn : 0,
     },
-    randomEvent: {
-      // 必须先 spread 原始对象再逐字段兜底：`lastPlan` / `lastNote` / `lastTriggeredTurn`
-      // 是游戏页「故事脉动」卡片的数据源，之前漏了这行，导致每次 hydrate 都静默丢掉它们
-      // （与 destiny 分支的写法保持一致，也顺带保留未来版本新增的字段）。
-      ...(randomEventRaw as unknown as GameStateV2['randomEvent']),
-      enabled: randomEventRaw.enabled !== false,
-      nextTriggerTurn: typeof randomEventRaw.nextTriggerTurn === 'number' ? randomEventRaw.nextTriggerTurn : 1,
-      pending: randomEventRaw.pending === true,
-      intensity: randomEventRaw.intensity === 'progress' || randomEventRaw.intensity === 'destiny' ? randomEventRaw.intensity : 'related',
-      triggerIntervalMin: typeof randomEventRaw.triggerIntervalMin === 'number' ? randomEventRaw.triggerIntervalMin : 3,
-      triggerIntervalMax: typeof randomEventRaw.triggerIntervalMax === 'number' ? randomEventRaw.triggerIntervalMax : 6,
-    },
+    randomEvent: sanitizedRandomEvent,
     // calls 是持久化 / 导出裁剪（`toPortableSaveV2`）的必经字段：手改过的存档或跨版本导入的
     // 文件可能缺 calls 或给了非数组，归一化为对象数组，避免 `calls.map(...)` 在写盘或导出时抛错。
     turnRecords: objectsOf<TurnRecordV2>(raw.turnRecords)
@@ -499,6 +512,7 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
           intensity: 'related',
           triggerIntervalMin,
           triggerIntervalMax,
+          history: [],
         },
       },
     };

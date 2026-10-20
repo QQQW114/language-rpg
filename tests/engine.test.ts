@@ -1463,3 +1463,221 @@ describe('engine.runTurnV2 — 三幕窗口与 beatsThisTurn', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// H. 随机事件：目的绑定、滚动钩子与三态闭环（D7）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 随机事件绑定与三态闭环', () => {
+  /** 到期状态：turn=2，nextTriggerTurn=1，区间 min=max 让重排结果确定。 */
+  const DUE_RANDOM_EVENT = {
+    enabled: true,
+    nextTriggerTurn: 1,
+    pending: false,
+    intensity: 'related' as const,
+    triggerIntervalMin: 2,
+    triggerIntervalMax: 2,
+  };
+
+  const PLANNED_BINDING = { planned: true, targetKind: 'beat', targetId: 'beat-1-1', summary: '让阿黎在雨夜交出旧信' };
+
+  function dueRequest(hooks: Parameters<typeof makeRequest>[0] = {}) {
+    return makeRequest({ ...hooks, state: { randomEvent: DUE_RANDOM_EVENT, ...(hooks.state ?? {}) } });
+  }
+
+  it('到期时 planner_pre 与 story 都注入【RANDOM_EVENT_CONTEXT】和新指令；planner_post 暴露三态协议', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(dueRequest());
+      const pre = lastUserPromptOf(mock.requests[0]);
+      const story = lastUserPromptOf(mock.requests[1]);
+      for (const [phase, prompt] of [['planner_pre', pre], ['story', story]] as const) {
+        assert.ok(prompt.includes('【RANDOM_EVENT_CONTEXT】'), `${phase} 应注入随机事件上下文`);
+        assert.ok(prompt.includes('【绑定要求】'), `${phase} 应包含绑定要求`);
+        assert.ok(prompt.includes('targetKind') && prompt.includes('targetId') && prompt.includes('summary'));
+        assert.ok(prompt.includes('reconvergence：destiny_main'), `${phase} 候选目标应含命运锚`);
+      }
+      // planner_pre 输出模板新增绑定字段。
+      assert.ok(pre.includes('"randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""'));
+      // story 仍保留写前安排。
+      assert.ok(story.includes('【RANDOM_EVENT_PLAN】'));
+      // planner_post 输出模板与系统提示加入三态。
+      const post = lastUserPromptOf(mock.requests[2]);
+      assert.ok(post.includes('"resolution":"resolved|ongoing_hook|interrupted"'), 'postShape 应包含 resolution');
+      const postSystem = systemPromptOf(mock.requests[2]);
+      assert.ok(postSystem.includes('randomEvent三态'), 'planner_post 系统提示应说明三态');
+      assert.ok(postSystem.includes('interrupted'), 'planner_post 应说明被打断语义');
+      assert.ok(postSystem.includes('handled与resolution必须自洽'));
+    });
+
+    // 未到期回合不注入随机事件上下文（保持旧行为，避免每回合都提醒模型插事件）。
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest());
+      assert.ok(!lastUserPromptOf(mock.requests[0]).includes('【RANDOM_EVENT_CONTEXT】'));
+      assert.ok(!lastUserPromptOf(mock.requests[1]).includes('【RANDOM_EVENT_CONTEXT】'));
+    });
+  });
+
+  it('planner_pre 合法绑定：提交后写入 activeBinding 与 lastPlan，pending 回合保留绑定', async () => {
+    const activity: ModelActivityV2[] = [];
+    const brief = { ...BRIEF, randomEvent: PLANNED_BINDING };
+    const request = dueRequest({ hooks: { onModelActivity: (item) => activity.push(item) } });
+    const result = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(brief), post: () => jsonStream({ ...POST_PATCH, randomEvent: { handled: false, note: '' } }) }),
+      () => runTurnV2(request),
+    );
+    assert.deepEqual(result.state.randomEvent.activeBinding, {
+      targetKind: 'beat',
+      targetId: 'beat-1-1',
+      summary: '让阿黎在雨夜交出旧信',
+      plannedAtTurn: 2,
+    });
+    assert.equal(result.state.randomEvent.lastPlan, '让阿黎在雨夜交出旧信');
+    assert.equal(result.state.randomEvent.pending, true, '本回合没发生 → 顺延');
+    assert.equal(result.state.randomEvent.nextTriggerTurn, 3);
+    assert.ok(!activity.some((item) => item.type === 'warning' && (item as any).code === 'random_event_binding_invalid'), '合法绑定不应产生警告');
+  });
+
+  it('planner_pre 非法绑定：发 random_event_binding_invalid 警告、只写 lastPlan 不写 activeBinding', async () => {
+    const activity: ModelActivityV2[] = [];
+    const brief = {
+      ...BRIEF,
+      randomEvent: { planned: true, targetKind: 'character', targetId: 'char-a', summary: '无绑定路人事件' },
+    };
+    const request = dueRequest({ hooks: { onModelActivity: (item) => activity.push(item) } });
+    const result = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(brief) }),
+      () => runTurnV2(request),
+    );
+    const warning = activity.find((item) => item.type === 'warning' && (item as any).code === 'random_event_binding_invalid');
+    assert.ok(warning, '应发出 random_event_binding_invalid 警告');
+    assert.ok((warning as any).message.includes('targetKind'));
+    assert.equal(result.state.randomEvent.activeBinding, undefined, '非法绑定不得写入权威状态');
+    assert.equal(result.state.randomEvent.lastPlan, '无绑定路人事件', 'lastPlan 仍记录模型文字');
+  });
+
+  it('过期绑定目标（id 不存在）同样被拒', async () => {
+    const brief = { ...BRIEF, randomEvent: { planned: true, targetKind: 'beat', targetId: 'beat-404', summary: '旧目标' } };
+    const result = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(brief) }),
+      () => runTurnV2(dueRequest()),
+    );
+    assert.equal(result.state.randomEvent.activeBinding, undefined);
+    assert.equal(result.state.randomEvent.lastPlan, '旧目标');
+  });
+
+  it('handled + resolution：同一回合闭环，history 出现并按三态落库；planner_post 能看到 seed 的绑定', async () => {
+    const brief = { ...BRIEF, randomEvent: PLANNED_BINDING };
+    const result = await withFetchMock(
+      phaseHandler({
+        brief: () => jsonStream(brief),
+        post: () => jsonStream({ ...POST_PATCH, randomEvent: { handled: true, resolution: 'ongoing_hook', note: '只让阿黎提到旧信' } }),
+      }),
+      async (mock) => {
+        const output = await runTurnV2(dueRequest());
+        // planner_post 的权威状态应包含本回合刚校验通过的绑定（否则结算模型不知道要兑现哪个目标）。
+        const post = lastUserPromptOf(mock.requests[2]);
+        assert.ok(post.includes('"activeBinding":{"targetKind":"beat","targetId":"beat-1-1"'), '结算快照应 seed 本回合绑定');
+        return output;
+      },
+    );
+    const randomEvent = result.state.randomEvent;
+    assert.equal(randomEvent.history?.length, 1);
+    const item = randomEvent.history![0];
+    assert.equal(item.status, 'ongoing_hook');
+    assert.equal(item.targetKind, 'beat');
+    assert.equal(item.targetId, 'beat-1-1');
+    assert.equal(item.summary, '让阿黎在雨夜交出旧信');
+    assert.equal(item.outcomeNote, '只让阿黎提到旧信');
+    assert.equal(item.turn, 2, '历史记录发生回合（提交前 turn）');
+    assert.equal(randomEvent.activeBinding, undefined, '已兑现（含留钩子）后清空绑定');
+    assert.equal(randomEvent.pending, false);
+    assert.equal(randomEvent.lastTriggeredTurn, 2);
+    assert.equal(randomEvent.nextTriggerTurn, 4, 'turn 2 + interval 2');
+    assert.equal(randomEvent.lastPlan, '让阿黎在雨夜交出旧信');
+    assert.equal(result.state.turn, 3, '历史记录写入后回合号才前进');
+  });
+
+  it('interrupted：写 interrupted 历史、保留绑定、pending 顺延', async () => {
+    const brief = { ...BRIEF, randomEvent: PLANNED_BINDING };
+    const result = await withFetchMock(
+      phaseHandler({
+        brief: () => jsonStream(brief),
+        post: () => jsonStream({ ...POST_PATCH, randomEvent: { handled: false, resolution: 'interrupted', note: '玩家转身离开' } }),
+      }),
+      () => runTurnV2(dueRequest()),
+    );
+    assert.equal(result.state.randomEvent.history?.[0].status, 'interrupted');
+    assert.deepEqual(result.state.randomEvent.activeBinding, {
+      targetKind: 'beat', targetId: 'beat-1-1', summary: '让阿黎在雨夜交出旧信', plannedAtTurn: 2,
+    });
+    assert.equal(result.state.randomEvent.pending, true);
+    assert.equal(result.state.randomEvent.nextTriggerTurn, 3);
+  });
+
+  it('snapshot 暴露 activeBinding 与最近 history（≤8 条，供模型回收旧钩子）', async () => {
+    const history = Array.from({ length: 10 }, (_, index) => ({
+      id: `rev-${index}`,
+      turn: index,
+      intensity: 'related' as const,
+      targetKind: 'beat' as const,
+      targetId: 'beat-1-1',
+      summary: `旧事件${index}`,
+      status: 'ongoing_hook' as const,
+    }));
+    const request = dueRequest({
+      state: {
+        randomEvent: {
+          ...DUE_RANDOM_EVENT,
+          activeBinding: { targetKind: 'beat', targetId: 'beat-1-1', summary: '等待兑现的绑定', plannedAtTurn: 1 },
+          history,
+        },
+      },
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      const pre = lastUserPromptOf(mock.requests[0]);
+      assert.ok(pre.includes('"activeBinding":{"targetKind":"beat","targetId":"beat-1-1","summary":"等待兑现的绑定"'));
+      assert.ok(pre.includes('"history":[{"id":"rev-2"'), '历史应只暴露最近 8 条（rev-2 ~ rev-9）');
+      assert.ok(!pre.includes('"id":"rev-1"'), '更早的历史被裁掉');
+      assert.ok(pre.includes('可回收旧钩子'), '上下文块应提示可回收的旧钩子');
+    });
+  });
+
+  it('仅重试结算：从 partial.brief 重新校验绑定，提交结果与首发等价（history + 清空绑定）', async () => {
+    const brief = { ...BRIEF, randomEvent: PLANNED_BINDING };
+    const request = dueRequest();
+    let failure: TurnPostFailureV2 | undefined;
+    // 首次执行：planner_post 返回非法 JSON → 可续跑的 TurnPostFailureV2。
+    await withFetchMock(
+      phaseHandler({
+        brief: () => jsonStream(brief),
+        post: () => chatSSE([contentFrame('null'), DONE_FRAME]),
+      }),
+      async () => {
+        try {
+          await runTurnV2(request);
+        } catch (error) {
+          failure = error as TurnPostFailureV2;
+        }
+      },
+    );
+    assert.ok(failure instanceof TurnPostFailureV2, `应抛出 TurnPostFailureV2，实际：${String(failure)}`);
+    assert.deepEqual(failure!.partial.brief.randomEvent, brief.randomEvent, 'partial 保留写前绑定');
+
+    const resumed = await withFetchMock(
+      phaseHandler({
+        post: () => jsonStream({ ...POST_PATCH, randomEvent: { handled: true, resolution: 'resolved', note: '旧信被找到' } }),
+      }),
+      async (mock) => {
+        const output = await runTurnSettlementV2(dueRequest(), failure!.partial);
+        assert.equal(mock.requests.length, 1, '续跑只发一次结算请求');
+        return output;
+      },
+    );
+    assert.equal(resumed.state.randomEvent.history?.length, 1);
+    assert.equal(resumed.state.randomEvent.history![0].status, 'resolved');
+    assert.equal(resumed.state.randomEvent.history![0].targetId, 'beat-1-1');
+    assert.equal(resumed.state.randomEvent.activeBinding, undefined);
+    assert.equal(resumed.state.randomEvent.lastTriggeredTurn, 2);
+  });
+});

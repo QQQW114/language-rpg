@@ -119,6 +119,8 @@ export function makeState(overrides: Record<string, unknown> = {}): GameStateV2 
       intensity: 'related' as const,
       triggerIntervalMin: 3,
       triggerIntervalMax: 5,
+      // D7：滚动钩子历史默认空数组；导出/导入往返与 hydrate 都需要这一项保持一致。
+      history: [],
     },
     ...overrides,
   };

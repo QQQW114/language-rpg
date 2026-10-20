@@ -790,3 +790,82 @@ describe('useGameStoreV2 — 幕状态机字段（create 与旧档迁移）', ()
     assert.equal(destiny.currentActIndex, 1);
   });
 });
+
+describe('useGameStoreV2 — 随机事件历史与绑定（D7）', () => {
+  const persistApi = () => (useGameStoreV2 as unknown as {
+    persist: { rehydrate: () => Promise<void> | void };
+  }).persist;
+
+  it('create 新存档写入空 history（D7 默认值）', () => {
+    const id = store().create({ name: '事件默认值', mode: 'author' });
+    assert.deepEqual(saveOf(id)!.state.randomEvent.history, []);
+  });
+
+  it('hydrate 保留合法 history 与 activeBinding，过滤坏条目', async () => {
+    seedPersisted('lrpg.v2', {
+      saves: {
+        'save-events': {
+          id: 'save-events',
+          name: '事件档',
+          createdAt: 1,
+          updatedAt: 2,
+          worldFacts: [],
+          state: makeState({
+            randomEvent: {
+              enabled: true,
+              nextTriggerTurn: 2,
+              pending: false,
+              intensity: 'progress',
+              triggerIntervalMin: 3,
+              triggerIntervalMax: 6,
+              lastPlan: '旧安排',
+              lastNote: '旧结果',
+              activeBinding: { targetKind: 'beat', targetId: 'beat-1-1', summary: '让门廊出现线索', plannedAtTurn: 4 },
+              history: [
+                { id: 'rev-1', turn: 3, intensity: 'progress', targetKind: 'beat', targetId: 'beat-1-1', summary: '旧事件', outcomeNote: '已兑现', status: 'resolved' },
+                { id: 'rev-bad-turn', turn: 'x', summary: '坏回合' },
+                'not-an-object',
+              ],
+            },
+          }),
+        },
+      },
+      activeId: 'save-events',
+    }, 1);
+    await persistApi().rehydrate();
+    const event = useGameStoreV2.getState().saves['save-events'].state.randomEvent;
+    assert.equal(event.history?.length, 1, '只保留合法历史条目');
+    assert.equal(event.history?.[0].status, 'resolved');
+    assert.equal(event.activeBinding?.targetId, 'beat-1-1', '合法绑定应原样保留');
+  });
+
+  it('非法 activeBinding 被丢弃，history 缺失时补空数组', async () => {
+    seedPersisted('lrpg.v2', {
+      saves: {
+        'save-events-bad': {
+          id: 'save-events-bad',
+          name: '坏事件档',
+          createdAt: 1,
+          updatedAt: 2,
+          worldFacts: [],
+          state: makeState({
+            randomEvent: {
+              enabled: true,
+              nextTriggerTurn: 2,
+              pending: false,
+              intensity: 'related',
+              triggerIntervalMin: 3,
+              triggerIntervalMax: 6,
+              activeBinding: { targetKind: 'character', targetId: '', summary: '' },
+            },
+          }),
+        },
+      },
+      activeId: 'save-events-bad',
+    }, 1);
+    await persistApi().rehydrate();
+    const event = useGameStoreV2.getState().saves['save-events-bad'].state.randomEvent;
+    assert.equal(event.activeBinding, undefined);
+    assert.deepEqual(event.history, []);
+  });
+});
