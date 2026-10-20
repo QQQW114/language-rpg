@@ -279,27 +279,40 @@ async function runOneTurn(input, turnIndex) {
 }
 
 const report = { runId: RUN_ID, apiBase: API_BASE, model: MODEL, settings: { storyMaxTokens: MAX_TOKENS }, turns: [], requests: requestLog };
+const TURN_ATTEMPTS = 2;
 let failed = false;
 for (let index = 0; index < TURNS; index += 1) {
   const input = INPUTS[index % INPUTS.length];
   console.log(`\n[real-chain] ===== 第 ${index + 1} 回合 =====`);
   console.log(`[real-chain] 输入：${input}`);
-  try {
-    const turn = await runOneTurn(input, index);
-    report.turns.push(turn);
-    console.log(`[real-chain] 完成：${(turn.elapsedMs / 1000).toFixed(1)}s · 正文 ${turn.storyLength} 字 · 调用 ${turn.calls.join(' / ')}`);
-    console.log(`[real-chain] 正文头：${turn.storyHead.replace(/\n/g, ' ')}…`);
-    console.log(`[real-chain] 正文尾：…${turn.storyTail.replace(/\n/g, ' ')}`);
-    console.log(`[real-chain] usage：输入 ${turn.usage.prompt} / 输出 ${turn.usage.completion} / 缓存命中 ${turn.usage.cacheHit}`);
-    console.log(`[real-chain] pacing：${JSON.stringify(turn.pacing)}`);
-    console.log(`[real-chain] 状态：${JSON.stringify(turn.state)}`);
-    console.log(`[real-chain] 活动：${turn.activities.slice(-12).join(' | ')}`);
-  } catch (error) {
+  let lastError;
+  let turn;
+  for (let attempt = 1; attempt <= TURN_ATTEMPTS; attempt += 1) {
+    try {
+      turn = await runOneTurn(input, index);
+      break;
+    } catch (error) {
+      lastError = error;
+      const transient = /空内容|empty|JSON|timeout|超时|aborted|network|fetch/i.test(String(error?.message ?? error));
+      console.error(`[real-chain] 第 ${index + 1} 回合第 ${attempt} 次失败${transient ? '（可重试）' : ''}：${error?.message ?? error}`);
+      if (!transient || attempt === TURN_ATTEMPTS) break;
+      console.log('[real-chain] 换一个 session seed 重跑本回合…');
+      await sleep(1500 + Math.floor(Math.random() * 1500));
+    }
+  }
+  if (!turn) {
     failed = true;
-    report.error = String(error?.stack ?? error);
-    console.error(`[real-chain] 第 ${index + 1} 回合失败：${error?.message ?? error}`);
+    report.error = String(lastError?.stack ?? lastError);
     break;
   }
+  report.turns.push(turn);
+  console.log(`[real-chain] 完成：${(turn.elapsedMs / 1000).toFixed(1)}s · 正文 ${turn.storyLength} 字 · 调用 ${turn.calls.join(' / ')}`);
+  console.log(`[real-chain] 正文头：${turn.storyHead.replace(/\n/g, ' ')}…`);
+  console.log(`[real-chain] 正文尾：…${turn.storyTail.replace(/\n/g, ' ')}`);
+  console.log(`[real-chain] usage：输入 ${turn.usage.prompt} / 输出 ${turn.usage.completion} / 缓存命中 ${turn.usage.cacheHit}`);
+  console.log(`[real-chain] pacing：${JSON.stringify(turn.pacing)}`);
+  console.log(`[real-chain] 状态：${JSON.stringify(turn.state)}`);
+  console.log(`[real-chain] 活动：${turn.activities.slice(-12).join(' | ')}`);
 }
 
 report.requests = requestLog;
