@@ -11,7 +11,8 @@
     "test:e2e": "node scripts/e2e-mock-flow.mjs",
     "test:storage": "node scripts/e2e-storage-growth.mjs",
     "test:story": "node scripts/test-story-flow.mjs",
-    "test:patch": "node scripts/test-destiny-patch.mjs"
+    "test:patch": "node scripts/test-destiny-patch.mjs",
+    "test:real": "node scripts/real-chain-smoke.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",
