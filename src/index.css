@@ -150,12 +150,13 @@ body::before {
   font-weight: 300;
 }
 
-/* 故事正文：去掉 max-width 限制，由父容器控制；行高放宽给读者呼吸空间 */
+/* 故事正文：支持通过 CSS 变量动态调节字号与行高（默认严格保持 17px / 1.95） */
 .prose-story {
-  font-size: 17px;
-  line-height: 1.95;
+  font-size: var(--story-font-size, 17px);
+  line-height: var(--story-line-height, 1.95);
   letter-spacing: 0.02em;
   color: theme('colors.parchment.100');
+  transition: font-size 0.2s ease, line-height 0.2s ease;
 }
 .prose-story p {
   margin: 0 0 1.25em;
@@ -227,6 +228,27 @@ body::before {
   background-image: theme('backgroundImage.gold-line');
   animation: line-draw-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
   transform-origin: left;
+}
+
+/* 路由切换时顶部延伸金线 */
+@keyframes route-gold-extend {
+  0% {
+    transform: scaleX(0);
+    opacity: 0.95;
+  }
+  65% {
+    transform: scaleX(1);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 0;
+  }
+}
+
+.route-gold-bar {
+  transform-origin: center;
+  animation: route-gold-extend 0.68s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,54 +1,114 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { SidePanelChangeKind } from '@/v2/sidePanelUpdates';
 
 /**
- * 侧边栏块的信息更新特效。
+ * 侧边栏块的信息更新特效（强化版 · 五层同源金线编排）。
  *
- * 视觉语言与项目其余部分一致：金色斜线（`gold` 系列色，与卡片边框、分隔线同源）
- * 自左向右扫过；掠过之处浮现本回合的新内容；随后几颗同色小星星原地转圈、闪烁、
- * 慢慢淡去。原本不存在的块先用淡金线描出轮廓，再走同一套斜线 + 星星。
+ * 在保留原有「暗金古书 + 金线扫掠 + 星芒闪烁」视觉语言与契约的基础上，
+ * 将特效从单一渐变条升级为五层精密编排：
+ *   ① 0ms      SVG 双轨流光金线沿卡片边框顺时针疾速描摹闭合 + 四角星铆点亮
+ *              （`new` 块额外叠加内圈虚线描边与暗金内晕，强调「新卷入册」）
+ *   ② 180ms    主光刃（1.5px 高亮金锋）+ 柔光宽带 + 残影副刃呈 -18° 斜向划过
+ *   ③ 260ms    右上角浮现微缩古籍批注印记（`✦ 新录` / `✧ 演化`），随光刃点亮后隐去
+ *   ④ 780ms 起 七曜星芒与微金尘粒依次浮现，原地旋转闪烁并向上微飘消散
+ *   ⑤ 2400ms   覆盖层完整卸载，DOM 零残留
  *
- * ## 两个必须这样做的地方（曾经踩过）
- *
- * 1. **不能给块外面套一层 div。** 侧边栏用的是 `space-y-*` 与 flex 布局，
- *    它们依赖"直接子元素"关系；多包一层会打断间距计算、改变 flex 子项，
- *    于是覆盖层画出的大小与卡片实际大小不一致——表现就是"特效错位"。
- *    这里用 `display: contents` 让包装层不产生盒子，子元素仍是原父容器的直接子元素。
- * 2. **覆盖层改用 portal 挂到 body。** 上面那条的代价是包装层不再是定位祖先，
- *    `absolute inset-0` 会锚到更上层。因此覆盖层由 portal 渲染，并按目标元素的
- *    实测矩形（`getBoundingClientRect`）定位；滚动与窗口尺寸变化时重新测量。
- *
- * ## 动画分步播放
- *
- * 四拍依次进行，总时长约 2.4s：
- *   ① 0ms      新块先用金线描出轮廓
- *   ② 180ms    斜线自左向右扫过（约 850ms）
- *   ③ 780ms 起 五颗小星星依次出现，各 900ms 转圈闪烁后淡出
- *   ④ 2360ms   覆盖层整体退场，DOM 里不留残留
- * 逐步的延迟写在行内 style 上（Tailwind 的任意值语法不好表达"每颗一个延迟"）。
+ * ## 架构约束（严格保持）
+ * 1. 包装层使用 `display: contents`，绝不破坏父级 `space-y-*` 或 flex 布局。
+ * 2. 覆盖层通过 `createPortal` 挂载到 `document.body`，使用 `position: fixed` +
+ *    `getBoundingClientRect()` + `ResizeObserver` 实时追踪位置与尺寸。
+ * 3. 全程 `pointer-events-none`，绝不拦截卡片点击、折叠或编辑操作。
+ * 4. 严格尊重 `prefers-reduced-motion: reduce`（开启减弱动效时不渲染覆盖层）。
  */
 
-const SPARKLE_GLYPHS = ['✦', '✧', '⋆', '✧', '✦'] as const;
+const SPARKLE_GLYPHS = ['✦', '✧', '⋆', '✵', '✦', '✧', '⋆'] as const;
 
-/** 星星位置用固定序列而不是随机：同一块每次播放的位置一致，看起来是设计好的而非抖动。 */
-const SPARKLE_POSITIONS: Array<{ left: string; top: string }> = [
-  { left: '13%', top: '24%' },
-  { left: '34%', top: '70%' },
-  { left: '52%', top: '28%' },
-  { left: '71%', top: '64%' },
-  { left: '87%', top: '30%' },
+/**
+ * 七曜星芒位置序列（固定确定性坐标 + 微漂移向量，保证同一块每次播放如设计手稿般稳定，不抖动）。
+ */
+const SPARKLE_POSITIONS: Array<{
+  left: string;
+  top: string;
+  driftX: string;
+  driftY: string;
+  size: number;
+}> = [
+  { left: '12%', top: '26%', driftX: '3px', driftY: '-8px', size: 12 },
+  { left: '28%', top: '72%', driftX: '-2px', driftY: '-10px', size: 10 },
+  { left: '44%', top: '22%', driftX: '4px', driftY: '-7px', size: 13 },
+  { left: '58%', top: '66%', driftX: '-3px', driftY: '-9px', size: 11 },
+  { left: '73%', top: '30%', driftX: '2px', driftY: '-11px', size: 12 },
+  { left: '84%', top: '68%', driftX: '-4px', driftY: '-8px', size: 10 },
+  { left: '91%', top: '24%', driftX: '2px', driftY: '-6px', size: 11 },
 ];
 
-/** 四拍时间轴（ms）。 */
+/** 微金尘粒：伴随主光刃升起的极细金粉点。 */
+const DUST_MOTES: Array<{ left: string; top: string; delayOffset: number }> = [
+  { left: '22%', top: '54%', delayOffset: 60 },
+  { left: '49%', top: '48%', delayOffset: 190 },
+  { left: '67%', top: '58%', delayOffset: 310 },
+  { left: '82%', top: '44%', delayOffset: 430 },
+];
+
+/** 四拍核心时间轴（ms）——保留原有字段名与总时长契约，供外部组件与测试引用。 */
 export const UPDATE_TIMELINE = {
   outlineStart: 0,
   sweepStart: 180,
+  secondarySweepStart: 275,
+  badgeStart: 260,
   sparkleStart: 780,
-  sparkleStagger: 130,
-  sparkleDuration: 900,
+  sparkleStagger: 115,
+  sparkleDuration: 920,
   total: 2400,
 } as const;
+
+/** 内联关键帧兜底：即使独立复制本文件到未更新 tailwind.config.js 的工程，动效也能完整运行。 */
+const INLINE_KEYFRAMES = `
+@keyframes lrpg-border-trace {
+  0% { stroke-dashoffset: var(--lrpg-perim, 600); opacity: 0.25; }
+  15% { opacity: 1; }
+  55% { stroke-dashoffset: 0; opacity: 0.95; }
+  82% { stroke-dashoffset: 0; opacity: 0.55; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes lrpg-afterglow {
+  0% { opacity: 0; }
+  22% { opacity: 1; }
+  68% { opacity: 0.65; }
+  100% { opacity: 0; }
+}
+@keyframes lrpg-blade-sweep {
+  0% { transform: translateX(-125%) skewX(-18deg); opacity: 0; }
+  10% { opacity: 1; }
+  88% { opacity: 0.92; }
+  100% { transform: translateX(135%) skewX(-18deg); opacity: 0; }
+}
+@keyframes lrpg-corner-flash {
+  0% { opacity: 0; transform: scale(0.35) rotate(0deg); }
+  28% { opacity: 1; transform: scale(1.12) rotate(45deg); }
+  70% { opacity: 0.7; transform: scale(0.95) rotate(45deg); }
+  100% { opacity: 0; transform: scale(0.5) rotate(90deg); }
+}
+@keyframes lrpg-badge-float {
+  0% { opacity: 0; transform: translateY(3px) scale(0.92); }
+  20% { opacity: 0.96; transform: translateY(0) scale(1); }
+  78% { opacity: 0.88; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-3px) scale(0.96); }
+}
+@keyframes lrpg-star-drift {
+  0% { opacity: 0; transform: translate3d(0, 2px, 0) scale(0.35) rotate(0deg); }
+  20% { opacity: 1; transform: translate3d(calc(var(--tx, 0px) * 0.35), calc(var(--ty, -8px) * 0.35), 0) scale(1.12) rotate(90deg); }
+  42% { opacity: 0.42; transform: translate3d(calc(var(--tx, 0px) * 0.6), calc(var(--ty, -8px) * 0.6), 0) scale(0.86) rotate(175deg); }
+  65% { opacity: 0.98; transform: translate3d(calc(var(--tx, 0px) * 0.85), calc(var(--ty, -8px) * 0.85), 0) scale(1.04) rotate(265deg); }
+  100% { opacity: 0; transform: translate3d(var(--tx, 0px), var(--ty, -8px), 0) scale(0.45) rotate(360deg); }
+}
+@keyframes lrpg-dust-rise {
+  0% { opacity: 0; transform: translateY(4px) scale(0.5); }
+  30% { opacity: 0.85; transform: translateY(-3px) scale(1); }
+  100% { opacity: 0; transform: translateY(-14px) scale(0.3); }
+}
+`;
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
@@ -69,13 +129,12 @@ interface OverlayBox {
   width: number;
   height: number;
   radius: string;
+  radiusPx: number;
 }
 
 /**
  * 覆盖层：portal 到 body，按目标元素的实测矩形定位。
- *
- * 定位用 `position: fixed` + `getBoundingClientRect()` 的视口坐标，
- * 因此不受侧边栏自身滚动容器的影响；滚动与 resize 时重新测量。
+ * 同时监听窗口滚动、resize 与目标元素自身的 ResizeObserver，确保卡片展开或高度变化时严丝合缝。
  */
 function UpdateOverlay({ target, kind, seed, onDone }: {
   target: HTMLElement;
@@ -84,6 +143,7 @@ function UpdateOverlay({ target, kind, seed, onDone }: {
   onDone: () => void;
 }) {
   const [box, setBox] = useState<OverlayBox | undefined>(undefined);
+  const gradId = useId().replace(/:/g, '');
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -92,19 +152,37 @@ function UpdateOverlay({ target, kind, seed, onDone }: {
         return;
       }
       const rect = target.getBoundingClientRect();
-      const radius = window.getComputedStyle(target).borderTopLeftRadius || '12px';
-      setBox({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, radius });
+      const computed = window.getComputedStyle(target);
+      const radius = computed.borderTopLeftRadius || '12px';
+      const parsedRadius = parseFloat(radius);
+      const radiusPx = Number.isFinite(parsedRadius) ? Math.max(2, Math.min(24, parsedRadius)) : 10;
+      setBox({
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        radius,
+        radiusPx,
+      });
     };
     measure();
     window.addEventListener('scroll', measure, { passive: true, capture: true });
     window.addEventListener('resize', measure);
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => measure())
+      : undefined;
+    resizeObserver?.observe(target);
     return () => {
       window.removeEventListener('scroll', measure, true);
       window.removeEventListener('resize', measure);
+      resizeObserver?.disconnect();
     };
   }, [target, onDone]);
 
-  if (!box) return null;
+  if (!box || box.width <= 4 || box.height <= 4) return null;
+
+  const perimeter = Math.round(2 * (box.width + box.height));
+  const isNew = kind === 'new';
 
   const style: CSSProperties = {
     position: 'fixed',
@@ -115,33 +193,175 @@ function UpdateOverlay({ target, kind, seed, onDone }: {
     borderRadius: box.radius,
   };
 
-  return <div style={style} className="pointer-events-none z-30 overflow-hidden" aria-hidden>
-    {/* ① 新块：先用金线描出轮廓，说明"这里多了一块" */}
-    {kind === 'new' && <div
-      className="absolute inset-0 animate-update-outline border border-dashed border-gold/60"
-      style={{ borderRadius: box.radius, animationDelay: `${UPDATE_TIMELINE.outlineStart}ms` }}
-    />}
-    {/* ② 斜线扫过：中间亮、两端透明，掠过的区域即"新内容所在" */}
-    <div
-      className="absolute -inset-y-1 left-0 w-2/3 animate-update-sweep"
-      style={{
-        animationDelay: `${UPDATE_TIMELINE.sweepStart}ms`,
-        backgroundImage: 'linear-gradient(90deg, transparent 0%, rgba(201,165,102,0.10) 28%, rgba(227,194,126,0.46) 50%, rgba(201,165,102,0.10) 72%, transparent 100%)',
-      }}
-    />
-    {/* ③ 小星星：依次出现，各自转圈闪烁后淡出 */}
-    {SPARKLE_POSITIONS.map((position, index) => (
-      <span
-        key={`${position.left}-${position.top}`}
+  const corners: Array<{ x: number; y: number; delay: number }> = [
+    { x: 5, y: 5, delay: 0 },
+    { x: Math.max(6, box.width - 5), y: 5, delay: 130 },
+    { x: Math.max(6, box.width - 5), y: Math.max(6, box.height - 5), delay: 260 },
+    { x: 5, y: Math.max(6, box.height - 5), delay: 390 },
+  ];
+
+  return (
+    <div style={style} className="pointer-events-none z-30 overflow-hidden select-none" aria-hidden="true">
+      <style>{INLINE_KEYFRAMES}</style>
+
+      {/* ① 底衬内晕：new 块带温润鎏金内发光与顶边高光，updated 块带克制的暗金边缘呼吸 */}
+      <div
+        className="absolute inset-0"
         style={{
-          left: position.left,
-          top: position.top,
-          animationDelay: `${UPDATE_TIMELINE.sparkleStart + index * UPDATE_TIMELINE.sparkleStagger}ms`,
+          borderRadius: box.radius,
+          boxShadow: isNew
+            ? 'inset 0 0 26px rgba(227, 194, 126, 0.24), inset 0 1px 0 rgba(246, 236, 214, 0.42)'
+            : 'inset 0 0 18px rgba(201, 165, 102, 0.16), inset 0 1px 0 rgba(227, 194, 126, 0.28)',
+          animation: `lrpg-afterglow ${isNew ? 1950 : 1650}ms ease-out both`,
         }}
-        className="absolute select-none text-[11px] leading-none text-gold-light drop-shadow-[0_0_4px_rgba(201,165,102,0.55)] animate-sparkle"
-      >{SPARKLE_GLYPHS[(index + seed) % SPARKLE_GLYPHS.length]}</span>
-    ))}
-  </div>;
+      />
+
+      {/* ② 新块专属内圈虚线金框：先勾勒出“此处新增一卷”的古籍栏线 */}
+      {isNew && (
+        <div
+          className="absolute inset-[2px] animate-update-outline border border-dashed border-gold-light/70"
+          style={{
+            borderRadius: `${Math.max(2, box.radiusPx - 2)}px`,
+            animationDelay: `${UPDATE_TIMELINE.outlineStart}ms`,
+          }}
+        />
+      )}
+
+      {/* ③ SVG 双轨流光金线描边 + 四角星铆：沿卡片真实几何边界顺时针疾速闭合 */}
+      <svg
+        width={box.width}
+        height={box.height}
+        viewBox={`0 0 ${box.width} ${box.height}`}
+        className="absolute inset-0 h-full w-full overflow-visible"
+      >
+        <defs>
+          <linearGradient id={`gold-stroke-${gradId}`} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#f6ecd6" stopOpacity="0.95" />
+            <stop offset="45%" stopColor="#e3c27e" stopOpacity="0.9" />
+            <stop offset="80%" stopColor="#c9a566" stopOpacity="0.75" />
+            <stop offset="100%" stopColor="#8d7340" stopOpacity="0.35" />
+          </linearGradient>
+        </defs>
+
+        {/* 外轨流光实线 */}
+        <rect
+          x={0.75}
+          y={0.75}
+          width={Math.max(1, box.width - 1.5)}
+          height={Math.max(1, box.height - 1.5)}
+          rx={box.radiusPx}
+          ry={box.radiusPx}
+          fill="none"
+          stroke={`url(#gold-stroke-${gradId})`}
+          strokeWidth={isNew ? 1.65 : 1.25}
+          strokeDasharray={perimeter}
+          style={{
+            ['--lrpg-perim' as string]: `${perimeter}`,
+            animation: 'lrpg-border-trace 1550ms cubic-bezier(0.16, 1, 0.3, 1) both',
+            filter: 'drop-shadow(0 0 5px rgba(227, 194, 126, 0.55))',
+          }}
+        />
+
+        {/* 四角星铆：金线掠过四角时依次点亮微缩菱形雕花铆点 */}
+        {corners.map((corner, idx) => (
+          <g
+            key={idx}
+            style={{
+              transformOrigin: `${corner.x}px ${corner.y}px`,
+              animation: `lrpg-corner-flash 1100ms cubic-bezier(0.16, 1, 0.3, 1) ${corner.delay}ms both`,
+            }}
+          >
+            <rect
+              x={corner.x - 2.2}
+              y={corner.y - 2.2}
+              width={4.4}
+              height={4.4}
+              fill="#f6ecd6"
+              stroke="#c9a566"
+              strokeWidth={0.6}
+            />
+          </g>
+        ))}
+      </svg>
+
+      {/* ④ 主光刃 + 宽幅柔光带（-18° 斜向扫掠）：中间铸金锋刃、两侧古铜晕染 */}
+      <div
+        className="absolute -inset-y-3 left-0 w-3/4"
+        style={{
+          animation: `lrpg-blade-sweep 880ms cubic-bezier(0.16, 1, 0.3, 1) ${UPDATE_TIMELINE.sweepStart}ms both`,
+          backgroundImage:
+            'linear-gradient(90deg, transparent 0%, rgba(201,165,102,0.06) 20%, rgba(201,165,102,0.22) 44%, rgba(246,236,214,0.78) 50%, rgba(227,194,126,0.32) 56%, rgba(201,165,102,0.08) 78%, transparent 100%)',
+        }}
+      >
+        {/* 核心 1.5px 亮金光刃 */}
+        <div
+          className="absolute inset-y-0 left-1/2 w-[1.5px] -translate-x-1/2"
+          style={{
+            background: 'linear-gradient(180deg, transparent 0%, #f6ecd6 20%, #e3c27e 50%, #f6ecd6 80%, transparent 100%)',
+            boxShadow: '0 0 12px 1px rgba(240, 214, 138, 0.85)',
+          }}
+        />
+      </div>
+
+      {/* ⑤ 副刃残影：滞后 95ms 的细金线回响，增加机械与魔法交织的精密层次 */}
+      <div
+        className="absolute -inset-y-3 left-0 w-1/3"
+        style={{
+          animation: `lrpg-blade-sweep 820ms cubic-bezier(0.16, 1, 0.3, 1) ${UPDATE_TIMELINE.secondarySweepStart}ms both`,
+          backgroundImage:
+            'linear-gradient(90deg, transparent 0%, rgba(227,194,126,0.36) 50%, transparent 100%)',
+        }}
+      />
+
+      {/* ⑥ 右上角微缩古籍批注印记：区分「新录」与「演化」，一目了然且不挡正文 */}
+      <div
+        style={{
+          animation: `lrpg-badge-float 1650ms cubic-bezier(0.16, 1, 0.3, 1) ${UPDATE_TIMELINE.badgeStart}ms both`,
+        }}
+        className={`absolute right-2 top-1.5 flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-serif text-[9px] tracking-[0.18em] shadow-glow-sm ${
+          isNew
+            ? 'border-gold-light/70 bg-parchment-900/90 text-gold-light'
+            : 'border-gold/45 bg-parchment-900/85 text-gold/90'
+        }`}
+      >
+        <span>{isNew ? '✦' : '✧'}</span>
+        <span>{isNew ? '新录' : '演化'}</span>
+      </div>
+
+      {/* ⑦ 七曜星芒：依次点亮、旋转闪烁并沿微向量向上漂浮消散 */}
+      {SPARKLE_POSITIONS.map((position, index) => (
+        <span
+          key={`${position.left}-${position.top}`}
+          style={{
+            left: position.left,
+            top: position.top,
+            fontSize: `${position.size}px`,
+            ['--tx' as string]: position.driftX,
+            ['--ty' as string]: position.driftY,
+            animation: `lrpg-star-drift ${UPDATE_TIMELINE.sparkleDuration}ms ease-in-out ${
+              UPDATE_TIMELINE.sparkleStart + index * UPDATE_TIMELINE.sparkleStagger
+            }ms both`,
+          }}
+          className="absolute select-none leading-none text-gold-light drop-shadow-[0_0_6px_rgba(240,214,138,0.8)]"
+        >
+          {SPARKLE_GLYPHS[(index + seed) % SPARKLE_GLYPHS.length]}
+        </span>
+      ))}
+
+      {/* ⑧ 微金尘粒：随扫掠升起的细小金尘 */}
+      {DUST_MOTES.map((mote, idx) => (
+        <span
+          key={`mote-${idx}`}
+          style={{
+            left: mote.left,
+            top: mote.top,
+            animation: `lrpg-dust-rise 960ms ease-out ${UPDATE_TIMELINE.sweepStart + mote.delayOffset}ms both`,
+          }}
+          className="absolute h-1 w-1 rounded-full bg-gold-light shadow-[0_0_6px_#f6ecd6]"
+        />
+      ))}
+    </div>
+  );
 }
 
 export interface UpdateGlowProps {
@@ -183,10 +403,17 @@ export function UpdateGlow({ blockId, change, children, className }: UpdateGlowP
   const seed = blockId.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % SPARKLE_GLYPHS.length;
   const canPortal = typeof document !== 'undefined';
 
-  return <>
-    <div ref={hostRef} className={className} style={{ display: 'contents' }}>{children}</div>
-    {playing && !reducedMotion && change && target && canPortal
-      ? createPortal(<UpdateOverlay target={target} kind={change} seed={seed} onDone={() => setPlaying(false)} />, document.body)
-      : null}
-  </>;
+  return (
+    <>
+      <div ref={hostRef} className={className} style={{ display: 'contents' }}>
+        {children}
+      </div>
+      {playing && !reducedMotion && change && target && canPortal
+        ? createPortal(
+            <UpdateOverlay target={target} kind={change} seed={seed} onDone={() => setPlaying(false)} />,
+            document.body,
+          )
+        : null}
+    </>
+  );
 }
