@@ -14,6 +14,7 @@ import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import type { WorldBookEntry } from '@/types/content';
+import { buildContextCandidates, buildSearchResponse, parseSearchQuery } from './contextSearch';
 import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
 import { buildRandomEventContextBlock, buildRandomEventInstruction, listRandomEventTargets, validateRandomEventBinding } from './randomEvents';
 import { buildStageAndActWindow, DYNAMIC_WORLD_FACT_LIMIT, normalizeBeatsThisTurn, splitWorldFacts, STABLE_WORLD_FACT_LIMIT } from './actWindow';
@@ -101,22 +102,25 @@ function randomEventPlanToText(raw: unknown): string | undefined {
 const plannerToolDiscipline = `
 【上下文查询工具纪律】
 当前权威状态足够时不得调用工具。只有需要核对较早的人物、承诺、事件、关系或事实，而当前输入中确实缺少证据时，才调用search_story_context。
-查询应使用明确的人名、地点、物品、承诺或事件关键词；通常一次即可，不得为了“更保险”重复搜索。工具轮数上限由玩家设置并由程序强制执行。
-工具返回的是历史证据，不是新的设定；worldFacts、canonicalFacts与当前权威状态仍有更高优先级。`;
+查询先试完整短语（人名、地名、物品、承诺或事件原句）：整串命中会排在最前面；查不到时再把短语拆成更短的关键词。
+中文单字只在人名、地名等确实必要时使用（如「晴」）：单字会大面积误命中，噪声很高。通常一次查询即可，不得为了“更保险”重复搜索；工具轮数上限由玩家设置并由程序强制执行。
+工具返回的是历史证据，不是新的设定：检索只补充证据，不得据此新增或改写 worldFacts、canonicalFacts、人物关系等硬设定；worldFacts、canonicalFacts与当前权威状态仍有更高优先级。`;
 
 const plannerContextTool: ChatTool = {
   type: 'function',
   function: {
     name: 'search_story_context',
-    description: `在当前上下文不足时，查询较早的故事正文、人物档案、关系、Canonical facts 或故事线程，返回少量带来源与回合号的证据。
+    description: `在当前上下文不足时，查询较早的故事正文、人物档案、关系、Canonical facts 或故事线程，返回少量带来源、回合号、命中词与相关度评分的证据。
+用法：先试完整短语（人名、地名、物品、承诺或事件原句），整串命中排在最前；查不到再把短语拆成更短的关键词。
 适用于：核对某个承诺、约定或伏笔是否真的发生过；确认某人物此前是否出场、身份是否已揭示；确认某物品的来源与当前归属；确认某地点此前的描写；确认某故事节是否已经实现过。
-不适用于：当前 AUTHORITATIVE_STATE 或 worldFacts 已经写明的信息（那些已在上下文里，直接使用即可）。`,
+不适用于：当前 AUTHORITATIVE_STATE 或 worldFacts 已经写明的信息（那些已在上下文里，直接使用即可）；也不要把检索结果当作新设定。
+中文单字人名/地名（如「晴」）可以查，但只在必要时使用，单字容易大面积误命中。`,
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: '明确的检索关键词：人名、地名、物品、承诺或事件。中文单字人名（如「晴」）也可以。',
+          description: '检索词：优先用完整短语（人名、地名、物品、承诺或事件）；整串命中优先，查不到再拆成 2~4 字关键词；只有人名等必要时才用中文单字。',
         },
         limit: {
           type: 'integer',
@@ -163,181 +167,16 @@ function relevantFacts(p: TurnRequestV2) {
   return (p.state.facts ?? []).filter((f) => f.stability !== 'temporary' && (f.stability === 'core' || f.updatedAtTurn >= p.state.turn - 4 || f.keywords.some((k) => currentText.includes(k.toLowerCase())))).slice(0, 40);
 }
 
-type ContextSearchScope = 'all' | 'history' | 'characters' | 'relationships' | 'facts' | 'threads';
-
-interface ContextSearchCandidate {
-  source: Exclude<ContextSearchScope, 'all'>;
-  id: string;
-  turn?: number;
-  label: string;
-  evidence: string;
-  searchable: string;
-}
-
 /**
- * 截取证据文本用于回传模型。
- *
- * `anchors` 是本次查询命中的关键词。命中点落在长文本后段时，只截前 900 字会让返回的
- * "证据"里根本没有查询词（模型只看到一段无关开头，然后误判为查不到）。因此当某个
- * 关键词出现在截断点之后时，改为以该命中位置为中心的窗口切片。
- * 注意锚点必须是**单词**而不是整条 query：文本里通常不存在"晴 地名"这样的连串。
+ * 规划模型检索工具 handler：分词 / 候选构建 / 排序与响应组装全部下沉到纯函数模块
+ * （`contextSearch.ts`），这里只负责把工具参数规范化后调用，避免 engine 与单测出现两套逻辑。
  */
-function clipContextEvidence(value: unknown, max = 900, anchors: string[] = []) {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  if (text.length <= max) return text;
-  const lower = text.toLowerCase();
-  // 在所有命中词里挑最早出现、且落在截断点之后的那个作为窗口中心。
-  let hit = -1;
-  let hitLength = 0;
-  for (const anchor of anchors) {
-    const needle = anchor.trim().toLowerCase();
-    if (!needle) continue;
-    const at = lower.indexOf(needle);
-    if (at < 0) continue;
-    if (at + needle.length <= max) {
-      // 起始部分已经包含这个命中词，保持原有的前段截取即可。
-      hit = at;
-      hitLength = needle.length;
-      break;
-    }
-    if (hit < 0 || at < hit) {
-      hit = at;
-      hitLength = needle.length;
-    }
-  }
-  if (hit < 0 || hit + hitLength <= max) return `${text.slice(0, max)}…`;
-  const context = Math.floor((max - hitLength) / 2);
-  const start = Math.max(0, hit - context);
-  const end = Math.min(text.length, start + max);
-  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
-}
-
-function contextSearchTerms(query: string) {
-  const normalized = query.toLowerCase().trim();
-  const pieces = normalized
-    .split(/[\s,，。；;、:：!?！？"“”'‘’()（）[\]【】]+/)
-    .map((part) => part.trim())
-    // 中文单字是有效关键词（单字人名、地名很常见），只有拉丁字母才需要长度 2，
-    // 否则"晴 在哪里"这种查询会因为"晴"被丢掉而返回 0 条。
-    .filter((part) => part.length >= 2 || /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/.test(part));
-  return { normalized, terms: [...new Set(pieces)].slice(0, 10) };
-}
-
-function contextSearchCandidates(p: TurnRequestV2, anchors: string[] = []): ContextSearchCandidate[] {
-  const characterNames = new Map(p.state.characters.map((character) => [
-    character.id,
-    character.name || character.id,
-  ]));
-  return [
-    ...p.state.history.map((message) => ({
-      source: 'history' as const,
-      id: message.id,
-      turn: message.turn,
-      label: message.role === 'user' ? '玩家输入' : '故事正文',
-      // 正文用命中词做锚点切片：否则长回合的证据可能整段不含查询词。
-      evidence: clipContextEvidence(message.content, 900, anchors),
-      searchable: message.content,
-    })),
-    ...p.state.characters.map((character) => {
-      const evidence = [
-        `${character.name}（${character.id}）`,
-        character.aliases.length ? `别名：${character.aliases.join('、')}` : '',
-        character.role ? `角色：${character.role}` : '',
-        character.description ?? '',
-        character.knownFacts.length ? `已知事实：${character.knownFacts.join('；')}` : '',
-        `状态：${character.status}`,
-      ].filter(Boolean).join('；');
-      return {
-        source: 'characters' as const,
-        id: character.id,
-        turn: character.lastSeenTurn,
-        label: `人物：${character.name}`,
-        evidence: clipContextEvidence(evidence),
-        searchable: evidence,
-      };
-    }),
-    ...p.state.relationships.map((relationship) => {
-      const fromName = characterNames.get(relationship.fromId) ?? relationship.fromId;
-      const toName = characterNames.get(relationship.toId) ?? relationship.toId;
-      const evidence = `${fromName} → ${toName}；好感：${relationship.affinity}；关系：${relationship.label ?? '未标注'}；备注：${relationship.note ?? '无'}`;
-      return {
-        source: 'relationships' as const,
-        id: relationship.id,
-        turn: relationship.updatedAtTurn,
-        label: `关系：${fromName} / ${toName}`,
-        evidence: clipContextEvidence(evidence),
-        searchable: `${evidence} ${relationship.fromId} ${relationship.toId}`,
-      };
-    }),
-    ...p.state.facts.filter((fact) => fact.stability !== 'temporary').map((fact) => {
-      const evidence = `${fact.subjectId}.${fact.predicate} = ${fact.value}；范围：${fact.scope}；稳定性：${fact.stability}；证据：${fact.evidenceQuote ?? '无原句'}`;
-      return {
-        source: 'facts' as const,
-        id: fact.id,
-        turn: fact.evidenceTurn,
-        label: `正史事实：${fact.subjectId}.${fact.predicate}`,
-        evidence: clipContextEvidence(evidence),
-        searchable: `${evidence} ${fact.keywords.join(' ')}`,
-      };
-    }),
-    ...p.state.storyThreads.map((thread) => {
-      const involvedNames = thread.involvedCharacterIds.map((id) => characterNames.get(id) ?? id);
-      const evidence = `${thread.title}；类型：${thread.kind}；状态：${thread.status}；进度：${thread.progress ?? '未估算'}；当前步骤：${thread.currentStep ?? '无'}；涉及人物：${involvedNames.join('、') || '无'}；备注：${thread.note ?? '无'}`;
-      return {
-        source: 'threads' as const,
-        id: thread.id,
-        turn: thread.updatedAtTurn,
-        label: `故事线程：${thread.title}`,
-        evidence: clipContextEvidence(evidence),
-        searchable: `${evidence} ${thread.involvedCharacterIds.join(' ')}`,
-      };
-    }),
-  ];
-}
-
 function searchStoryContext(p: TurnRequestV2, args: Record<string, unknown>) {
-  const query = String(args.query ?? '').trim().slice(0, 200);
+  const query = String(args.query ?? '').trim();
   if (!query) return { error: 'query不能为空。' };
-  const requestedScope = String(args.scope ?? 'all') as ContextSearchScope;
-  const allowedScopes: ContextSearchScope[] = ['all', 'history', 'characters', 'relationships', 'facts', 'threads'];
-  const scope = allowedScopes.includes(requestedScope) ? requestedScope : 'all';
-  const numericLimit = Number(args.limit);
-  const limit = Number.isFinite(numericLimit) ? Math.max(1, Math.min(8, Math.floor(numericLimit))) : 5;
-  const { normalized, terms } = contextSearchTerms(query);
-
-  const results = contextSearchCandidates(p, terms)
-    .filter((candidate) => scope === 'all' || candidate.source === scope)
-    .map((candidate) => {
-      const haystack = `${candidate.label}\n${candidate.searchable}`.toLowerCase();
-      let score = haystack.includes(normalized) ? 100 : 0;
-      for (const term of terms) {
-        if (haystack.includes(term)) score += Math.min(20, 4 + term.length * 2);
-      }
-      // 在同等文本命中下优先返回结构化硬状态，再用最近回合作为次级排序。
-      if (score > 0 && candidate.source === 'facts') score += 4;
-      if (score > 0 && candidate.source !== 'history') score += 2;
-      return { candidate, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || (b.candidate.turn ?? -1) - (a.candidate.turn ?? -1))
-    .slice(0, limit)
-    .map(({ candidate }) => ({
-      source: candidate.source,
-      id: candidate.id,
-      ...(candidate.turn !== undefined ? { turn: candidate.turn } : {}),
-      label: candidate.label,
-      evidence: candidate.evidence,
-    }));
-
-  return {
-    query,
-    scope,
-    resultCount: results.length,
-    results,
-    note: results.length
-      ? '返回内容是既有故事证据；请与当前权威状态、worldFacts和canonicalFacts共同判断。'
-      : '没有找到匹配证据。不要据此编造历史；可改用更短、更明确的人名、地点或事件关键词再查询一次（中文单字人名也可以）。',
-  };
+  const parsed = parseSearchQuery(query);
+  const candidates = buildContextCandidates(p.state, parsed.terms);
+  return buildSearchResponse(candidates, parsed, { scope: args.scope, limit: args.limit });
 }
 
 const DEFAULT_PLANNER_CONTEXT_TOKENS = 16_000;

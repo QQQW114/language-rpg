@@ -17,10 +17,12 @@
  *   LRPG_MODEL=minimax/minimax-m3.1-flash:free \
  *   node scripts/real-chain-smoke.mjs
  *
- * 可选：LRPG_TURNS=2（默认 2）、LRPG_MAX_TOKENS=2500、LRPG_RETRIES=5。
+ * 可选：LRPG_TURNS=2（默认 2）、LRPG_MAX_TOKENS=2500、LRPG_RETRIES=5、
+ *       LRPG_TOOLS=1（启用规划模型 search_story_context 工具，默认关闭）。
  * 产物：test-runs/real-chain-report.json（被 gitignore）。
  */
 import { mkdir, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -38,9 +40,15 @@ if (!API_BASE || !API_KEY) {
   process.exit(2);
 }
 const MODEL = String(process.env.LRPG_MODEL || 'minimax/minimax-m3.1-flash:free');
-const TURNS = Math.max(1, Math.min(5, Number(process.env.LRPG_TURNS || 2)));
-const MAX_TOKENS = Math.max(512, Math.min(16000, Number(process.env.LRPG_MAX_TOKENS || 2500)));
+const TURNS = Math.max(1, Math.min(40, Number(process.env.LRPG_TURNS || 2)));
+// 0 = 不限制输出（与真实游玩默认一致）；正数则夹到 [512, 16000]。
+const rawMaxTokens = Number(process.env.LRPG_MAX_TOKENS || 0);
+const MAX_TOKENS = Number.isFinite(rawMaxTokens) && rawMaxTokens > 0
+  ? Math.max(512, Math.min(16000, Math.floor(rawMaxTokens)))
+  : 0;
 const MAX_RETRIES = Math.max(1, Math.min(8, Number(process.env.LRPG_RETRIES || 5)));
+// 默认关闭工具（真实游玩默认也不开）；LRPG_TOOLS=1 时启用规划模型上下文检索工具。
+const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
 const RUN_ID = `lau_rpg-smoke-${Date.now().toString(36)}`;
 let requestSeq = 0;
 
@@ -81,7 +89,7 @@ const settings = {
   temperatureStory: 0.8,
   storyMaxTokens: MAX_TOKENS,
   plannerJsonMode: 'enabled',
-  plannerToolsEnabled: false,
+  plannerToolsEnabled: TOOLS_ENABLED,
   thinkingMode: 'auto',
 };
 
@@ -173,11 +181,22 @@ const saveId = useGameStoreV2.getState().create({
   randomEvent: { enabled: true, triggerIntervalMin: 1, triggerIntervalMax: 1 },
 });
 
-const INPUTS = [
+const INPUTS_FILE = String(process.env.LRPG_INPUTS_FILE || '');
+const DEFAULT_INPUTS = [
   '我在脑中拼命想着：如果我是女孩子就好了。',
   '门外安静下来后，我试着低头观察自己的手和衣着，先弄清现在是什么状况。',
   '我恢复成原本的样子，装作刚下课，往宿舍方向走。',
 ];
+const INPUTS = INPUTS_FILE
+  ? readFileSync(path.resolve(INPUTS_FILE), 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+  : DEFAULT_INPUTS;
+if (!INPUTS.length) {
+  console.error('[real-chain] 输入列表为空（检查 LRPG_INPUTS_FILE），退出。');
+  process.exit(2);
+}
 
 function sumUsage(usage) {
   if (!usage) return { prompt: 0, completion: 0, cacheHit: 0 };
@@ -235,7 +254,13 @@ async function runOneTurn(input, turnIndex) {
     onModelActivity: (activity) => {
       if (activity.type === 'phase') activities.push(`[${activity.phase}] ${activity.status}${activity.error ? ` · ${activity.error}` : ''}`);
       else if (activity.type === 'warning') activities.push(`[warning:${activity.code}] ${activity.message}`);
-      else if (activity.type === 'tool') activities.push(`[tool] ${activity.toolName} ${activity.status}`);
+      else if (activity.type === 'tool') {
+        // 工具冒烟需要看到实际查询词与返回摘要，否则只能知道"调用过"。
+        const detail = activity.status === 'call'
+          ? String(activity.argumentsText ?? '').slice(0, 120)
+          : String(activity.resultText ?? '').slice(0, 160);
+        activities.push(`[tool] ${activity.toolName} ${activity.status}${detail ? ` · ${detail}` : ''}`);
+      }
     },
   };
 
@@ -292,11 +317,14 @@ async function runOneTurn(input, turnIndex) {
     calls: turnRecord?.calls?.map((call) => `${call.phase}:${call.model}`) ?? [],
     activities,
     state: describeState(next),
+    // 保留原始事件历史与幕历史，供长局评测聚合（describeState 里是展示用字符串）。
+    randomEventHistory: next.randomEvent.history ?? [],
+    actHistory: next.destiny.actHistory ?? [],
     story,
   };
 }
 
-const report = { runId: RUN_ID, apiBase: API_BASE, model: MODEL, settings: { storyMaxTokens: MAX_TOKENS }, turns: [], requests: requestLog };
+const report = { runId: RUN_ID, apiBase: API_BASE, model: MODEL, settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED }, turns: [], requests: requestLog };
 const TURN_ATTEMPTS = 2;
 let failed = false;
 for (let index = 0; index < TURNS; index += 1) {
@@ -354,6 +382,49 @@ if (warmTurns.length) {
   ));
   console.log(`[real-chain] 缓存汇总（不含首回合冷启动）：${parts.join(' · ')}`);
   report.cacheSummary = { warmTurns: warmTurns.length, byPhase };
+}
+
+// 长局评测聚合：篇幅分布、收尾/时间跳跃/超预算、纠偏触发、随机事件三态、幕推进、token。
+const evaluation = (() => {
+  const turns = report.turns;
+  if (!turns.length) return undefined;
+  const lengths = turns.map((turnItem) => turnItem.storyLength).sort((a, b) => a - b);
+  const percentile = (ratio) => lengths[Math.min(lengths.length - 1, Math.floor(lengths.length * ratio))] ?? 0;
+  const eventsById = new Map();
+  for (const turnItem of turns) {
+    for (const event of turnItem.randomEventHistory ?? []) eventsById.set(event.id, event);
+  }
+  const eventStatus = { resolved: 0, ongoing_hook: 0, interrupted: 0 };
+  for (const event of eventsById.values()) eventStatus[event.status] = (eventStatus[event.status] ?? 0) + 1;
+  const tokens = turns.reduce((acc, turnItem) => ({
+    prompt: acc.prompt + turnItem.usage.prompt,
+    completion: acc.completion + turnItem.usage.completion,
+    cacheHit: acc.cacheHit + turnItem.usage.cacheHit,
+  }), { prompt: 0, completion: 0, cacheHit: 0 });
+  const lastTurn = turns[turns.length - 1];
+  return {
+    turns: turns.length,
+    length: { min: lengths[0], p50: percentile(0.5), p90: percentile(0.9), max: lengths[lengths.length - 1] },
+    pacing: {
+      closureDetected: turns.filter((turnItem) => turnItem.pacing?.closureDetected).length,
+      timeJumpAtLeast3: turns.filter((turnItem) => (turnItem.pacing?.timeJumpCount ?? 0) >= 3).length,
+      overBudget: turns.filter((turnItem) => turnItem.pacing?.overBudget).length,
+      needsCorrection: turns.filter((turnItem) => turnItem.pacing?.needsCorrection).length,
+    },
+    randomEvents: { unique: eventsById.size, ...eventStatus },
+    actTransitions: Math.max(0, ...turns.map((turnItem) => (turnItem.actHistory ?? []).length)),
+    finalState: lastTurn?.state,
+    tokens,
+    elapsedMsTotal: turns.reduce((sum, turnItem) => sum + turnItem.elapsedMs, 0),
+  };
+})();
+if (evaluation) {
+  report.evaluation = evaluation;
+  console.log(`[real-chain] 篇幅：min ${evaluation.length.min} / p50 ${evaluation.length.p50} / p90 ${evaluation.length.p90} / max ${evaluation.length.max} 字`);
+  console.log(`[real-chain] 节奏：升华收尾 ${evaluation.pacing.closureDetected} 次 · 时间跳跃≥3 ${evaluation.pacing.timeJumpAtLeast3} 次 · 超 5000 字 ${evaluation.pacing.overBudget} 次 · 触发纠偏 ${evaluation.pacing.needsCorrection} 次`);
+  console.log(`[real-chain] 随机事件：${JSON.stringify(evaluation.randomEvents)}`);
+  console.log(`[real-chain] 幕：当前 ${evaluation.finalState?.act} · 幕切换 ${evaluation.actTransitions} 次 · beats ${JSON.stringify(evaluation.finalState?.beats)}`);
+  console.log(`[real-chain] tokens：输入 ${evaluation.tokens.prompt}（命中 ${evaluation.tokens.cacheHit}）· 输出 ${evaluation.tokens.completion} · 总耗时 ${(evaluation.elapsedMsTotal / 60000).toFixed(1)} 分钟`);
 }
 
 report.requests = requestLog;

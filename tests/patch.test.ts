@@ -1433,7 +1433,7 @@ describe('patch — 程序权威幕状态机', () => {
     assert.equal(next.destiny.currentActId, 'act-2');
     assert.equal(next.destiny.currentActIndex, 1);
     assert.equal(next.destiny.lastActTransitionTurn, S);
-    assert.equal(next.destiny.currentStage, '', '切幕后清空阶段文本，等待模型下轮重新描述');
+    assert.equal(next.destiny.currentStage, '本幕开篇', '切幕后给程序侧兜底阶段文本，等模型下轮写出具体阶段');
     assert.deepEqual(next.destiny.actHistory, [{
       actId: 'act-1',
       enteredTurn: 0,

@@ -387,7 +387,10 @@ export function commitTurnPatchV2(
       destiny.actHistory = [...destiny.actHistory, buildActHistoryEntry(authoritativeActId, exitSummary, carriedBeatIds)];
       destiny.currentActId = nextId;
       destiny.currentActIndex = currentActPosition + 1;
-      destiny.currentStage = '';
+      // 旧实现直接清空阶段文本，导致切幕后 1~2 回合 UI 与幕窗口没有阶段描述
+      // （20 回合真实长局里 T5/T6/T12 复现）。这里给一个诚实的程序侧兜底：
+      // 新幕刚开篇，等模型下一轮写出具体阶段后再覆盖。
+      destiny.currentStage = '本幕开篇';
       destiny.lastActTransitionTurn = state.turn;
     };
     const currentActAllTerminal = nativeBeats.length > 0 && nonTerminalBeats.length === 0;

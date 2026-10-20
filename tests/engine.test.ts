@@ -849,6 +849,109 @@ describe('engine.runTurnV2 — 规划上下文工具循环', () => {
       assert.ok(evidence.includes('地名'), '返回证据应包含查询词的另一部分');
     });
   });
+
+  it('工具返回保持兼容字段，并新增 matchedTerms/score（整串命中优先于散词）', async () => {
+    const request = makeRequest({
+      settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 1 },
+      hooks: {
+        state: makeState({
+          history: [
+            { id: 'msg-book', role: 'assistant', content: '旧书店的老板把门锁上了。', turn: 2, createdAt: 2 },
+            { id: 'msg-stall', role: 'assistant', content: '旧书摊的棚布往下淌。', turn: 3, createdAt: 3 },
+          ],
+        }),
+      },
+    });
+
+    await withFetchMock((recorded) => {
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        if ((recorded.body.messages ?? []).some((m: any) => m.role === 'tool')) return jsonStream({ intent: 'done' });
+        return toolCallResponse([
+          { index: 0, id: 'call_rank', type: 'function', function: { name: 'search_story_context', arguments: '{"query":"旧书店","scope":"history","limit":5}' } },
+        ]);
+      }
+      if (system.includes('只写中文小说正文')) return storyStream();
+      return jsonStream(POST_PATCH);
+    }, async (mock) => {
+      await runTurnV2(request);
+      const toolMessage = (mock.requests[1].body.messages ?? []).find((m: any) => m.role === 'tool');
+      const payload = JSON.parse(String(toolMessage.content));
+      // 顶层字段向后兼容
+      assert.equal(payload.query, '旧书店');
+      assert.equal(payload.scope, 'history');
+      assert.equal(payload.resultCount, 2);
+      assert.ok(payload.note.includes('既有故事证据'));
+      // 单条结果保留旧字段，并新增命中词/评分
+      assert.equal(payload.results[0].source, 'history');
+      assert.equal(payload.results[0].id, 'msg-book', '整串命中的正文应排第一');
+      assert.equal(typeof payload.results[0].label, 'string');
+      assert.equal(typeof payload.results[0].evidence, 'string');
+      assert.ok(payload.results[0].matchedTerms.includes('旧书店'), `实际命中词：${JSON.stringify(payload.results[0].matchedTerms)}`);
+      assert.equal(typeof payload.results[0].score, 'number');
+      assert.ok(payload.results[0].score > payload.results[1].score, '整串命中分数应更高');
+    });
+  });
+
+  it('检索结果同来源最多 2 条（避免全部来自同一段长文）', async () => {
+    const request = makeRequest({
+      settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 1 },
+      hooks: {
+        state: makeState({
+          history: [1, 2, 3, 4].map((index) => ({
+            id: `msg-rain-${index}`,
+            role: 'assistant',
+            content: `第${index}次写到雨。`,
+            turn: index,
+            createdAt: index,
+          })),
+        }),
+      },
+    });
+
+    await withFetchMock((recorded) => {
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        if ((recorded.body.messages ?? []).some((m: any) => m.role === 'tool')) return jsonStream({ intent: 'done' });
+        return toolCallResponse([
+          { index: 0, id: 'call_cap', type: 'function', function: { name: 'search_story_context', arguments: '{"query":"雨","limit":8}' } },
+        ]);
+      }
+      if (system.includes('只写中文小说正文')) return storyStream();
+      return jsonStream(POST_PATCH);
+    }, async (mock) => {
+      await runTurnV2(request);
+      const toolMessage = (mock.requests[1].body.messages ?? []).find((m: any) => m.role === 'tool');
+      const payload = JSON.parse(String(toolMessage.content));
+      assert.equal(payload.resultCount, 2, '四条 history 命中应被同来源上限压到 2 条');
+      assert.ok(payload.results.every((item: any) => item.source === 'history'));
+      assert.notEqual(payload.results[0].id, payload.results[1].id, '返回结果不应重复');
+    });
+  });
+
+  it('查不到证据时返回可操作的 0 结果提示（而不是空响应）', async () => {
+    const request = makeRequest({ settings: { plannerToolsEnabled: true, plannerToolMaxCalls: 1 } });
+    await withFetchMock((recorded) => {
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        if ((recorded.body.messages ?? []).some((m: any) => m.role === 'tool')) return jsonStream({ intent: 'done' });
+        return toolCallResponse([
+          { index: 0, id: 'call_empty', type: 'function', function: { name: 'search_story_context', arguments: '{"query":"不存在的人"}' } },
+        ]);
+      }
+      if (system.includes('只写中文小说正文')) return storyStream();
+      return jsonStream(POST_PATCH);
+    }, async (mock) => {
+      await runTurnV2(request);
+      const toolMessage = (mock.requests[1].body.messages ?? []).find((m: any) => m.role === 'tool');
+      const payload = JSON.parse(String(toolMessage.content));
+      assert.equal(payload.resultCount, 0);
+      assert.deepEqual(payload.results, []);
+      assert.ok(payload.note.includes('更短'), '0 结果提示应建议更短的关键词');
+      assert.ok(payload.note.includes('scope'), '0 结果提示应建议改用 scope');
+      assert.ok(payload.note.includes('不要据此编造历史'));
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
