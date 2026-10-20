@@ -33,10 +33,12 @@ ${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 长期大纲描述的是必须逐步抵达的命运、人物成长和设定结局，不是固定路线。玩家改变路线后，规划关键角色、矛盾和事件功能如何自然迁移到新环境，使自由路径最终重新汇合到预设命运。
 偏离只影响抵达速度和路径，不取消长期命运。不要为了拉回大纲而立刻强塞关键角色；本轮只安排自然、可信的一步。
 允许补全资料空白，但只补本回合必要内容。不得预先决定玩家下一步，不得把“考虑、可能、打算”写成已完成决定。
-叙事速度约束的是单回合覆盖的故事时间、主要动作和场景数量，不是要求凑够篇幅。慢叙事与标准叙事应选择最早且有意义的玩家可介入节点，给后续回合保留反应、对话和后果；不得把一次输入扩展成自带开端、发展、结尾的完整短篇。
-stopBoundary必须是本轮正文最后一个允许发生的动作；不得把边界后的动作、事后反应、下一地点或后续安排写入writingBrief。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：上一幕只作只读因果基线，当前幕是唯一可展开的施工区，下一幕只允许埋自然伏笔，更远的幕不得提前兑现；窗口未列出的字段表示大纲未提供，不得臆造。
-beatsThisTurn只写本轮要推进的1到3个原子节拍（慢叙事只写1个），每条一句话写清本轮该发生的小事件；不得写成整段剧情清单，不得把尚未发生的事写成已完成，也不得激活窗口未列出的后续故事节。
+【规划粒度与反机械化铁律】
+1. beatsThisTurn（客观结果底线）：只写本轮要推进的1到3个原子节拍（慢叙事只写1个），每条用一句话写清本轮结束后必须成立的“客观事实或情报结果”（供写后结算核验）。只写结果底线，严禁写成动作流水账，不得激活窗口未列出的后续故事节。
+2. writingBrief（戏剧张力与潜台词，严禁写成分镜脚本）：只描述本轮的场景处境、在场人物各自的真实意图或隐秘顾虑、以及双方互动的核心戏剧张力。严禁在writingBrief中替故事模型编写具体台词句子、严禁把多个设定关键词打包塞给单一角色念出、严禁规定“先看哪里、停顿几秒、怎么翻东西”等微动作步骤。对于前文已经发生过的日常重复流程（如变身、换装、查验随身证件、刷门禁、洗漱通勤等），若本轮无新意外，必须在writingBrief中指示“一笔带过日常流程，直接切入核心互动”。
+3. creativeSpace（编剧自由度授权）：明确列出本轮交由故事模型自由发挥的空间（例如：如何通过日常琐事或打岔自然带出情报、如何用具体生活化小动作体现人物暗中留意或戒备，而非直白说破或干瞪眼）。
+4. stopBoundary（交互悬置切面）：叙事速度约束的是单回合覆盖的故事时间与场景数量。慢叙事与标准叙事应选择最早且有意义的玩家可介入节点，给后续回合保留反应、对话和后果。stopBoundary必须定义为“将球交还给玩家的戏剧悬置切面”（例如：“停在对方抛出关键追问或做出试探举动、正等待主角回应的瞬间”），严禁规定微动作定格（如“停在先看脸再定住的那一秒”），不得把边界后的动作、事后反应、下一地点或后续安排写入writingBrief。
 若本回合注入了【RANDOM_EVENT_CONTEXT】，randomEvent.planned为true时必须同时给出targetKind（beat|thread|relationship|reconvergence）、targetId（只能取自候选目标）与summary（≤80字）；优先回收列出的旧钩子。严禁无绑定的路人事件、纯氛围插曲或为凑事件新增无关角色。`;
 }
 
@@ -46,18 +48,54 @@ const storyDirectorAgency = `玩家是导演，当前输入是必须执行的故
 
 function buildStorySystem(director: boolean): string {
   return `你是互动小说故事 Agent，只写中文小说正文。
-严格执行权威状态、玩家输入、writingBrief、hardConstraints、forbiddenChanges和stopBoundary。worldFacts与canonicalFacts优先于常见套路和戏剧性补全。
+严格遵循权威状态、玩家输入、writingBrief、hardConstraints、forbiddenChanges和stopBoundary。worldFacts与canonicalFacts优先于常见套路。某一事实域变化时，只改变硬设定明确覆盖的范围，不得自动连带改写人物记忆、关系历史、物品数量或过去经历。
 ${director ? storyDirectorAgency : storyPlayerAgency}
-你写的是这个长篇故事的最新一个片段，会与之前的回合和之后的回合自然连接。不要把本回合当成独立短篇来写。
-某一事实域变化时，只改变硬设定明确覆盖的范围；不得自动连带改写人物记忆、关系历史、物品数量、过去经历或其他事实域。
-允许出现新的普通环境、角色和小插曲，但必须服务当前行动与长期方向，规模克制。
-一回合是连续互动中的一个可回应片段，不是必须独立完整的章节。慢叙事与标准叙事不得为了“写完整”继续补写余波、转场、下一项安排或总结式收束；一旦玩家已有自然的观察、回应、选择或改变行动的机会，就应适时交还控制权。细致不等于堆叠重复感官、心理活动或同义描写。
-结尾处严禁总结、点明主旨、升华、回顾前文、感慨或任何“章节完/本回完”式收束；写完stopBoundary处的动作或反应即停，给后续回合留下自然接口。
-【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：只展开当前幕施工契约允许的内容，上一幕只作因果基线，下一幕只允许埋伏笔，严禁提前兑现。
-【beatsThisTurn】是本轮唯一的节拍清单：只推进列出的1到3个节拍，不得自行激活未列出的故事节，也不得把多个节拍合并成一段概述草草写完。
-【RANDOM_EVENT_CONTEXT】与【RANDOM_EVENT_PLAN】给出随机事件的档位、绑定目标与安排：事件必须自然落在当前场景与玩家行动里，不得让角色瞬移、强行冲突或写成与绑定目标无关的路人事件。
-到达stopBoundary后立即停止，不多写一步，不输出分析或JSON。`;
+允许出现服务于当前行动的普通环境、次要人物与生活插曲。
+【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口权限：只展开当前幕施工契约允许的内容，上一幕只作因果基线，下一幕只允许埋伏笔，严禁提前兑现。
+【beatsThisTurn】是本轮唯一的节拍目标：必须自然兑现列出的1到3个节拍结果，不得自行激活未列出的故事节。
+【RANDOM_EVENT_CONTEXT】与【RANDOM_EVENT_PLAN】给出随机事件安排：必须自然融入当前场景与玩家行动，不得让角色瞬移或写成无关路人事件。
+
+【叙事质感与反AI味核心铁律】
+1. 严禁泄漏状态标签与系统标记：正文是纯粹的文学叙事，严禁将权威状态中的角色功能分类或槽位标签（如“仗义型舍友”“嘴碎舍友”“沉默舍友”“怀疑者”等）直接当作人名写进正文！若角色尚无正式姓名，必须使用符合主角视角的自然指代（如姓氏昵称“老陈”“阿杰”，或当下状态“靠窗那位”“上铺的室友”“抱书的女生”）。正文结尾严禁输出“【stopBoundary】已到达”或任何括号提示、分析、JSON。
+2. 已确立的日常流程必须极简略写：首次出现的新奇体验（如初次身份变化、初次核对证件）可细致描写；一旦某类日常流程（如切换身份体态、开柜取衣换装、核对学生证/手机、刷门禁卡、常规洗漱上下楼）已在前文建立，后续回合再次发生且无新异常时，必须压缩在1句话（30字）以内一笔带过，将笔墨100%集中在新的戏剧互动与人际交锋上，严禁每回合重复清点相同道具与身体变化。
+3. 细节必须推动交互，严禁慢镜头与废动作注水：每个动作或环境细节必须承担“推进场面交锋、暴露人物当下心虚/私心、或改变双方态势”中的一项。严禁把一个瞬间反应拆成慢镜头（禁止写“笔尖停住→留了一个点→隔了两秒→慢慢回头→先看脸→整个人定在那里”）；严禁无意义地反复翻看证件/手机/转笔；严禁每回合堆砌“水管滴水、椅子腿蹭地、感应灯亮灭”等固定声效填充物。
+4. 用具体举动代替心理说明书与“盯视计时器”：人物的戒备、心虚或起疑，必须通过手头事务的变形（如写错笔画、拿错东西、顺手帮人挡一下、借故支开话题）来体现。写出了具体动作，绝不在后面紧跟一句解释其动机的心理旁白；严禁反复使用“视线在他脸上多停了半秒/比刚才那一眼长，又平平收回去”来表现怀疑。
+5. 句式黑名单（硬性禁用）：
+   - 严禁使用“不是A，不是B，而是/是C”的排比否定句式；
+   - 严禁密集使用“先……然后……接着……再……”的机械动作拆解链；
+   - 严禁使用“整个人定在那里/僵在原地”“瞳孔微缩”“空气安静了一瞬”“停了两秒/隔了半拍”等网文套话。
+6. 连续长篇连载感与悬置停笔：起笔直接切入当前动作或对手戏，不写铺垫帽头。结尾严禁总结、升华、感慨或写余波转场；抵达stopBoundary所指的戏剧交互切面（如对手刚抛出追问、或关键状况刚撞破而主角尚未回应的瞬间）时干脆停笔，留出紧绷的现场感交给玩家接手。
+
+【泛化人物声线与潜台词准则（按角色关系与功能区分，不把话说满）】
+活人说话有省文、偏重、打岔、顺手干活时的半截话。严禁任何角色替作者背诵设定摘要，严禁把前因后果、利弊分析一次性说满（要把信息拆碎在两三轮顺手互动中自然漏出来）：
+- 主角/隐藏秘密者：带防御感与临场应变感，尽量少说多看；被问到敏感处时常借手头动作掩饰、用简短反问或含糊应声滑过去，不在心里做长篇学术复盘。
+- 同辈熟人/日常室友：口语短促、接话快、带损友式的调侃或顺口抱怨；注意力分散在吃喝、游戏、逃课等琐事上，话头跳脱，绝不端着架子做严谨的逻辑盘问或长篇情报播报。
+- 事务型前辈/组织者：干练、忙于手头具体活计，说话夹杂行话与现场指令；习惯边使唤人干活边随口甩出半截信息，语气实在，不讲官话套话。
+- 敏锐观察者/起疑熟人：表面保持日常礼貌或平淡分寸，试探时往往借着合情合理的日常由头（如传话、核对名单、顺口提及闲事）搭话，点到即止，留出话尾看主角反应。
+
+【文风正反微示范（只学叙事手法与潜台词节奏，严禁照抄具体剧情与道具）】
+- 示范一：传递背景与规则信息（拆碎进现场活计，不背诵大纲）
+  × 机械说满："今年社团招得格外多，因为前阵子视频火了，小孩一窝蜂就来了。我们什么都缺，最缺肯干活的，报名的多留下的少，周四晚七点半在活动室按道具能力初筛。"（像念工作简报）
+  √ 自然鲜活：学姐拿红笔在名单最底下画了道横线，头也没抬："这礼拜第三拨了。全冲着上个月那条热门视频来的，真问谁周末能早起搬展架，群里立马安静如鸡。"她把登记表往桌沿推了推，笔帽敲了下背面手写的时间，"周四晚七点半过来露个面，会干什么写实在点，别光写喜欢。"
+- 示范二：突发撞破与怀疑反应（用具体失手动作代替慢镜头与秒表计时）
+  × 机械慢镜：那两个字落下时，她的笔尖停住，先在纸上留了一个点。她没立刻动，隔了两秒才慢慢回过头来，先看的是脸，然后整个人就定在那里了。（慢动作拆解凑字数）
+  √ 自然鲜活：那声应答落下的瞬间，前排女生的水笔斜着划出去半寸，在讲义边框上拉出一道歪斜的蓝痕。她捏着笔杆的指节往里收了收，偏过头望过来——目光撞上后排那张面孔的刹那，原本准备客套打招呼的嘴唇微微张开，又无声地抿紧了。`;
 }
+
+/**
+ * story 阶段 user 消息末尾的"近因锚点"。
+ *
+ * 长上下文会稀释 system 里的文风要求（lost in the middle）：把最容易退化的几条规则
+ * 固定在用户消息最后，模型落笔前最后看到的就是它们。放在【CURRENT_TURN_INPUT】之后，
+ * 因此不改变 system / user#1 的前缀，也不影响缓存命中。
+ */
+const writingExecutionAnchor = `【WRITING_EXECUTION_ANCHOR】
+直接从当下动作或对话切入小说正文：
+1. 严禁把状态表里的功能标签（如“XX型舍友”）当人名写进正文，改用自然称呼或外貌方位指代；
+2. 前文已写过的变身、换装、查证件、刷门禁等日常流程一律1句话带过，不重复清点道具；
+3. 角色说话留三分余地，把信息拆在动作与短句里，严禁背诵设定摘要；
+4. 严禁“不是…而是…”“先…然后…”“隔了两秒”“整个人定在那里”及慢镜头注水；
+5. 写到 STOP_BOUNDARY 的交互瞬间立即自然停笔，结尾严禁输出【stopBoundary】标记或任何解释。`;
 
 const plannerPostDirectorAgency = `玩家输入为导演指令，CURRENT_STORY按该指令实际发生；不得因其偏离世界规律或原路线而将其判定为冲突或需要修正。`;
 
@@ -69,13 +107,13 @@ ${director ? plannerPostDirectorAgency : ''}
 destiny.currentActId必须原样回显权威状态中的当前幕，不得自行填写新幕；幕推进只由程序按故事节完成情况判定，模型自报的幕不一致会被忽略并留警告。
 只有本幕剩余故事节因玩家改道确实需要跨幕兑现时，才把actTransition.proposeNextAct置为true，并用actTransition.actExitSummary以不超过2句话概括本幕为何收束；常规推进、只是提到下一幕或想加快节奏时都必须保持false（程序会按终态比例与挂账规则gate）。
 故事节状态含义：pending未到条件；available条件成熟；active正在发生；satisfied核心功能已由正文满足；weakened已满足结果被后续削弱；reframed因路线变化需换实现方式；superseded已由等价故事节承担。
-satisfied不是“提到过标题”或“计划过”的标记，只有当CURRENT_STORY实际实现了该故事节的purpose（叙事功能），并能用正文原句证明时才可使用。只完成了铺垫、绕开、切断、改走其他路径时，不得标记satisfied，应使用active、weakened或reframed，并说明当前实现/缺口。已satisfied的故事节不得无理由回退为active、available或pending；若后续正文确实削弱已实现结果，只能使用weakened或reframed，并提供直接证据和原因。beatChanges只提交本轮发生变化的故事节，不重抄全部。
+satisfied判定准则：当CURRENT_STORY已经通过具体事件、人物行动结果或自然对话实质兑现了该故事节的purpose（叙事功能），并能摘录正文中的关键句作为evidenceQuote证明时，即可标记为satisfied（不要求角色在台词中字面复述故事节标题或概念总结）。若正文仅完成了铺垫、试探、中途打断或改走其他路径，尚未达成核心叙事结果，则不得标记satisfied，应使用active、weakened或reframed，并说明当前实现/缺口。已satisfied的故事节不得无理由回退为active、available或pending；若后续正文确实削弱已实现结果，只能使用weakened或reframed，并提供直接证据和原因。beatChanges只提交本轮发生变化的故事节，不重抄全部。
 玩家改变路线时优先reframed并更新currentPlan，不删除命运功能。不要强行拉回旧地点。
 若CURRENT_WRITE_PLAN中的randomEvent.planned为true，只有CURRENT_STORY已经实际发生了对应安排的事件时randomEvent.handled才为true；计划留到下一回合时保持false。
 randomEvent三态：resolution=resolved表示事件在本回合完整兑现；ongoing_hook表示事件已经起头、留待后续回合回收；interrupted表示被玩家打断或正文里没有真实发生（此时handled必须为false，调度会顺延到下一回合重试）。handled与resolution必须自洽，不得虚报事件已发生。
 随机事件必须落在CURRENT_WRITE_PLAN.randomEvent绑定的targetKind/targetId上；不得在结算时改写成无绑定的路人事件或另开无关新事件。若正文只推进了与绑定目标相邻的内容，记ongoing_hook并在note里说明缺口，不要记resolved。
 characters、relationships、inventory、threads、facts全部是增量Patch，不得重抄完整状态。没有变化必须输出空数组。
-必须复用权威状态中已有ID。新对象ID使用稳定、简短、语义化的小写ASCII ID；同一对象后续永远复用该ID。
+必须复用权威状态中已有ID。新对象ID使用稳定、简短、语义化的小写ASCII ID；同一对象后续永远复用该ID。新增或更新人物description/name时，优先提取正文中出现的自然称呼或特征，避免将纯功能分类词当作人物姓名写入。
 relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityDelta每回合范围-20到20；只有正文出现实际关系变化才提交。
 facts只保存正文新确认、且需要跨回合保持一致的长期硬事实（例如稳定身份、持续关系属性、固定地点/安排、能力边界或已确立的长期设定）。不保存氛围、临时动作、一次性场景细节、短期计划、想法、摘要、推测或已有worldFacts；这类内容即使出现在正文，也不要提交canonical fact。不要把stability写成temporary来绕过筛选，临时事实不进入持久状态。通常每轮只需0到3条，确有多个独立长期设定时才增加；没有新的长期硬事实必须输出空数组。每条必须使用结构化字段；禁止字符串facts，禁止kind/content格式，禁止推测事实。
 fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。
@@ -977,7 +1015,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
         // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
         // story 的 user 消息以【NARRATIVE_PACE】开头）。
-        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}` },
+        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${writingExecutionAnchor}` },
       ],
       onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {

@@ -1553,7 +1553,17 @@ describe('engine.runTurnV2 — 三幕窗口与 beatsThisTurn', () => {
       assert.ok(pre.indexOf('"activeBeatIds":[]') < pre.indexOf('"beatsThisTurn":[]'), 'beatsThisTurn 紧跟 activeBeatIds');
       assert.ok(pre.indexOf('"beatsThisTurn":[]') < pre.indexOf('【AUTHORITATIVE_STATE】'), '模板必须排在可变材料之前');
       assert.ok(systemPromptOf(mock.requests[0]).includes('原子节拍'), 'planner_pre 系统提示应说明原子节拍');
-      assert.ok(systemPromptOf(mock.requests[1]).includes('【beatsThisTurn】是本轮唯一的节拍清单'), 'story 系统提示应说明节拍清单');
+      assert.ok(systemPromptOf(mock.requests[1]).includes('【beatsThisTurn】是本轮唯一的节拍目标'), 'story 系统提示应说明节拍目标');
+      // Prompt Pack v2：story 的 user 消息不再携带工程元字段，并在末尾追加近因锚点。
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyUser.startsWith('【NARRATIVE_PACE】'), 'story user 仍必须以叙事节奏开头（缓存断言）');
+      assert.ok(storyUser.includes('【writingBrief】') && storyUser.includes('【STOP_BOUNDARY】'), 'story 保留核心写作指令');
+      for (const metaField of ['【currentAct】', '【activeBeatIds】', '【destinyProgress】', '【pathChange】', '【reframingNeeded】', '【reconvergencePlan】', '【nextStoryFunction】']) {
+        assert.ok(!storyUser.includes(metaField), `story 不应再注入工程元字段 ${metaField}`);
+      }
+      assert.ok(storyUser.includes('【WRITING_EXECUTION_ANCHOR】'), 'story 末尾应有近因锚点');
+      assert.ok(storyUser.indexOf('【CURRENT_TURN_INPUT】') < storyUser.indexOf('【WRITING_EXECUTION_ANCHOR】'), '近因锚点必须在当前输入之后');
+      assert.ok(storyUser.indexOf('【STOP_BOUNDARY】') < storyUser.indexOf('【AUTHORITATIVE_STATE】'), '停笔边界仍在权威状态之前');
 
       const post = lastUserPromptOf(mock.requests[2]);
       assert.ok(post.includes('"actTransition":{"proposeNextAct":false,"actExitSummary":""}'), 'postShape 应包含 actTransition');
