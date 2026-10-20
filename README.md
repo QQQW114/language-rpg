@@ -47,6 +47,8 @@
 
 V2 使用独立浏览器存储 `lrpg.v2`，不兼容0.3版本以下的旧存档。
 
+> 当前发行版：**0.5.0**（程序权威幕系统 + 长文阅读前端 + Prompt Pack v2.1 + 可选官方联网搜索）。详见 [`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/release-notes-v0.5.0.md`](docs/release-notes-v0.5.0.md)。
+
 存档可在主页「继续旅程」中随时导出为 JSON 备份，也可从备份导入恢复；导入一律生成新旅程，不会覆盖现有存档。
 
 权威状态包括：

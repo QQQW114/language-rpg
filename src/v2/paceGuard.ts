@@ -84,12 +84,21 @@ const TIME_JUMP_PATTERN = new RegExp(
 /**
  * 统计一轮正文里的时间推进词次数（上限 `PACE_TIME_JUMP_LIMIT`）。
  *
+ * 误报控制（20 回合真实长局发现）：
+ * - **先剔除引号内台词**：角色说「明天中午见」「上礼拜老陆替他答到」不是叙事在跨时间；
+ * - **剔除带日期指向的时段词**（今天下午/明天中午/后天晚上/上周…）：它们描述的是同一天内的
+ *   计划或回忆，不是本回合实际推进的时间线。真正的跨日词（第二天/次日/几天后…）仍然计数。
+ *
  * 非字符串输入（旧存档/手改档）按空串处理；空正文返回 0。
  */
+const DAY_SCOPED_TIME_PATTERN = /((?:今天|明天|后天|大后天|昨天|前天|今早|明早|昨晚|上周|上礼拜|下周|周末|次日|第二天|隔天|第三天))(?:的|这)?(?:早上|清晨|中午|下午|傍晚|晚上|深夜|凌晨|夜里)/g;
+
 export function countPaceTimeJumps(story: string): number {
-  const text = typeof story === 'string' ? story : '';
-  if (!text) return 0;
-  const matched = text.match(TIME_JUMP_PATTERN);
+  const source = typeof story === 'string' ? story : '';
+  if (!source) return 0;
+  // 只抹掉“日期指向 + 时段”组合里的时段词，保留真正的跨日词（第二天/次日…）本身。
+  const narration = stripQuotedSegments(source).replace(DAY_SCOPED_TIME_PATTERN, '$1 ');
+  const matched = narration.match(TIME_JUMP_PATTERN);
   return Math.min(PACE_TIME_JUMP_LIMIT, matched?.length ?? 0);
 }
 

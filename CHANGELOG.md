@@ -2,10 +2,19 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
-## [未发布]
+## [0.5.0] - 2026-10-20
+
+> 本版主线：程序权威幕系统（P1–P5）、长文阅读前端、上下文检索与可选联网搜索、双模型提示词重构（Prompt Pack v2.1）。
 
 ### 新增
 
+- **Prompt Pack v2 → v2.1（双模型分工校准，本版核心）**：把「规划写分镜、故事做扩写」改为「规划定结果底线与戏剧切面、故事独占场景与台词」。
+  - `planner_pre`：`beatsThisTurn` 只写必须在本轮落地的客观结果（供写后核验）；`writingBrief` 只写场景处境、彼此隐秘顾虑与戏剧张力，禁止代写台词/微动作；`stopBoundary` 改为「节拍兑现后的交互悬置切面」，并要求单回合包含 2–3 轮实质交锋（自然 800–1200 字）；跨日输入自动作废前一日限时事务。
+  - `story`：重写为「叙事质感与场景纵深准则」——状态标签不得当人名、初见临时指代在正式互动/签名时必须换成真名、已确立日常流程 1 句话带过、动作必须推动交锋、禁止慢镜头/心理说明书/盯视计时器；泛化人物声线（按角色功能而非姓名）与 2 组「坏→好」微示范；黑名单内联收敛，避免对单一模型的过拟合。
+  - `story` 的 user 消息删除 `currentAct/activeBeatIds/destinyProgress/pathChange/reframingNeeded/reconvergencePlan/nextStoryFunction` 7 个工程元字段，末尾追加近因锚点（v2.1 已压缩为一句 68 字，回收思考 token）。
+  - `planner_post`：`satisfied` 允许通过具体事件/行动结果/自然对话实质兑现叙事功能（不要求字面复述标题）；已实质走完的 active 节拍应及时结案，跨日时限事务同步关闭；人物 `name` 必须取真名或固定昵称，禁止把「抱书女生」这类临时描述固化为跨场景人名。
+  - 真实 A/B（同一批 20 条输入、deepseek-flash）：状态标签当人名 48→0、`【stopBoundary】` 泄漏 1→0、慢镜头/秒表词 14→1、盯视计时器 4→0；v2.1 十五回合验证中位字数回到 1193（v2 为 724，短回合 6→0）、T11 进入第三幕、T15 `satisfied=8`、输出 token 总量与 v2 持平但正文多 58%（每字输出 token 下降约 39%）。
+  - 模型分级建议：日常/轻量档固定 `v2.1 + deepseek-flash`；高优品质档可仅把 story 阶段切到 `deepseek-v4-pro`，planner_pre / planner_post 继续用 flash。
 - **回合续跑（失败恢复）**：写后结算（`planner_post`）失败时不再整轮作废。`runTurnV2` 抛携带中间结果的 `TurnPostFailureV2`（正文、写前简报、commitId、已完成的两阶段调用），新增 `runTurnSettlementV2()` 只重跑结算与提交；游戏页显示「正文已生成 · 结算未完成」，提供「仅重试结算」（只发一次结算请求）与「重新生成本回合」两个恢复操作。续跑带 revision/turn 前置校验，提交仍走原有两道 CAS。
 - **存档导出/导入**：主页「继续旅程」可把存档导出为 JSON 备份（信封 `{kind:'lrpg-save',version:1,exportedAt,save}`，与持久化共用裁剪规则、剔除提示词留档），也可从备份导入恢复。导入一律生成新 id 作为新旅程、不覆盖现有存档，名称冲突自动加「（导入）」；版本过高的信封/存档与畸形 JSON 会被拒绝并给出可读原因；复用 hydrate 规范化，缺字段旧档也能导入。
 - **路由级动态分包**：`/game`、`/setup`、`/workshop`、`/settings` 改为按需加载，并把 React 与 Markdown 依赖拆成稳定 vendor chunk——主入口从 548.51 kB 降到 42.57 kB（gzip 181.17 kB → 16.03 kB），500 kB chunk 警告消失。
@@ -22,6 +31,7 @@
 
 ### 修复
 
+- **节奏审计把台词/计划性时间词误判为跨日推进**：20 回合真实长局里，角色台词与心理回忆中的「明天中午」「后天晚上」「下午」被 `paceGuard` 当成正文实际跨日，导致 T4/T7/T12/T13 触发软纠偏。现在统计前先剔除成对引号内台词，并忽略「今天/明天/昨天/上周… + 时段词」这类日期指向组合；真正的跨日词（第二天/次日/几天后…）仍然计数。回归测试 `tests/paceGuard.test.ts`。
 - **hydrate 静默丢失随机事件审计字段**：`sanitizeGameStateV2` 重建 `randomEvent` 时漏了 spread，`lastPlan` / `lastNote` / `lastTriggeredTurn` 在每次刷新页面（以及导入存档）后被丢弃；游戏页「故事脉动」卡片的安排与结果因此消失。现在保留这三个字段并补回归测试。
 - **`turnRecords[].calls` 缺失时写盘/导出抛错**：手改或导入的存档若某个回合记录缺 `calls`，持久化与导出都会抛异常。sanitize 现在把 `calls` 归一化为数组，裁剪函数再加一层防御。
 - **侧边栏更新特效被提前清空、部分块从不播放**：GamePage 的变更列表定时器在 1600ms 就清空，而强化后的五层动画完整时长约 2450ms，星芒与金尘每次都被截断；同时 `scene` / `progress` / `fact` / `item` / `thread` / `randomEvent` 等块漏传 `change`，数据变了却不播特效。现在清空定时器与动画时长对齐，所有可更新块都接到同一份变更列表。
@@ -41,6 +51,8 @@
 - `npm run test:e2e` 43/43、`npm run test:patch`、`npm run test:storage`、`npm run test:story -- --dry-run` 全部通过。
 - **单元测试 515 → 551 条（20 个测试文件）**：上下文检索重构带来 479 → 515（`tests/contextSearch.test.ts` 33 条 + `tests/engine.test.ts` 工具用例 3 条），联网搜索带来 515 → 551（`tests/webSearch.test.ts` 30 条 + engine 联网行为 6 条：默认无工具、开启 + 官方 + Key 挂载、非官方不挂载、结果注入且回合提交、同回合第二次被拒、搜索失败不失败回合）。
 - `test:real` 真实链路：10 回合 10/10，web_search 被模型自发调用一次，官方端点直连返回 3 条并解析成功；20 回合长局 p50 1,135 字、升华收尾 0、自动切幕 2 次、随机事件 19 个全部绑定、缓存预热 pre 17.3% / story 22.0% / post 16.6%（数据与解读见 `docs/cache-prefix-investigation.md` 9.4）。
+- **单元测试 551 → 555 条**（20 个测试文件）：`paceGuard` 新增 4 条，覆盖「引号内台词时间词不计数」「明天/后天/上周等计划性时段词不计数」「真正的叙事跨日仍然计数」「真实长局 T4/T12 误报样本不再触发」。
+- **Prompt Pack v2 / v2.1 真实 A/B（同一批 20 条输入、deepseek-flash）**：v2 使状态标签当人名 48→0、`【stopBoundary】` 泄漏 1→0、慢镜头词 14→1、盯视计时器 4→0；v2.1 把中位字数从 724 拉回 1,193（<650 字回合 6→0），T11 切入第三幕，T15 `satisfied=8`、`active=0~1`；输出 token 与 v2 持平而正文多 58%（每字输出 token 约降 39%）。
 
 ### 文档
 
@@ -52,6 +64,9 @@
 - `README.md` / `AGENTS.md` / `docs/PROJECT_STATUS.md`：同步幕系统、随机事件绑定与钩子、节奏纠偏、阅读导航与新模块位置、测试体系数字。
 - `docs/known-issues.md`：把 N（检索评分被 magic 加权压过）标记为已修，并在「已修复」一节补实现与取舍说明；`AGENTS.md` / `docs/PROJECT_STATUS.md` / `README.md`：同步 `contextSearch.ts` / `webSearch.ts`、规划工具行为矩阵、`plannerWebSearchEnabled` 设置与 `test:real` 的 `LRPG_*` 用法。
 - `docs/cache-prefix-investigation.md`：新增 9.4「20 回合长局实测」，区分「短局看机制、长局看收益」的读法；`docs/act-system-plan.md`：P6 进度注补真实 20 回合长局已跑通，剩余可选 A/B 质量评估。
+- `docs/prompt-list.md`：重写为 Prompt Pack v2.1 结构说明（三阶段职责、user 消息拼装、近因锚点、反 AI 味规则、泛化声线、工具纪律与节奏纠偏注入）。
+- `docs/PROJECT_STATUS.md`：测试体系同步 555 条 / 20 文件，新增 Prompt Pack v2.1 与节奏审计修复说明。
+- 新增 `docs/release-notes-v0.5.0.md`：本版发行说明与升级/模型分级建议。
 
 ## [0.4.0] - 2026-09-27
 

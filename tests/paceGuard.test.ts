@@ -101,6 +101,29 @@ describe('paceGuard — 时间推进词计数', () => {
   it('普通叙述里的模糊词（后来/过了会儿）不计入，避免误报', () => {
     assert.equal(countPaceTimeJumps('后来，他过了会儿才回来。'), 0);
   });
+
+  it('引号内台词里的时间词不计数（角色说“明天中午见”不是叙事跳跃）', () => {
+    const story = '沈童把表推过来：“明天中午来，下午撤得早。”他应了一声：「晚上给你答复。」';
+    assert.equal(countPaceTimeJumps(story), 0);
+  });
+
+  it('带日期指向的时段词（明天中午/后天晚上/上周）按计划或回忆处理，不计数', () => {
+    const story = '明天中午要交表，后天晚上还得去核对；上周借的裤子也该还了。';
+    assert.equal(countPaceTimeJumps(story), 0);
+  });
+
+  it('真正的叙事跨日仍然计数（第二天早上→下午→晚上）', () => {
+    const story = '第二天早上，他出了门。到了下午，雨还没停。晚上，他才回来。';
+    assert.equal(countPaceTimeJumps(story), 3);
+    assert.equal(analyzePace({ story, pace: 'standard' }).needsCorrection, true);
+  });
+
+  it('真实长局的误报样本：T4/T12 这类“对话密集提到时间”不应触发纠偏', () => {
+    const t4 = '“我下午不回楼里，直接去上课。”  “晚上总有回的时候吧？”  “实验课，拖堂说不准。”曦雨说，“衣服我下午自己去洗衣房收。”';
+    assert.equal(countPaceTimeJumps(t4), 0);
+    const t13 = '早上她抱着书站在桌边，目光顺着裤脚滑下去。明天中午还要去阶梯教室。后天晚上再说吧。';
+    assert.ok(countPaceTimeJumps(t13) < PACE_TIME_JUMP_THRESHOLD, '计划/回忆里的时段词不应凑满阈值');
+  });
 });
 
 // ---------------------------------------------------------------------------
