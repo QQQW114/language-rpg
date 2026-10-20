@@ -17,6 +17,7 @@ cmd /c npm run test:e2e   # 端到端 mock 链路（本地 OpenAI 兼容服务�
 cmd /c npm run test:storage # 存档体积与写入可靠性实测
 cmd /c npm run test:story # 故事链路脚本测试（无 Key 时自动 dry-run）
 cmd /c npm run test:patch # Patch/命运状态回归测试
+cmd /c npm run test:real  # 真实链路冒烟（需 LRPG_API_BASE / LRPG_API_KEY / LRPG_MODEL）
 ```
 
 - 只跑部分单元测试：`node scripts/run-unit-tests.mjs --filter=patch`；复用上次产物：`--no-build`。
@@ -33,11 +34,16 @@ src/
   main.tsx / App.tsx          入口与路由表
   v2/                         游戏主链路（唯一回合引擎）
     engine.ts                 三阶段提示词、工具、回合执行 runTurnV2；结算续跑 runTurnSettlementV2
-    patch.ts                  写后 Patch 校验与状态提交 commitTurnPatchV2
+    patch.ts                  写后 Patch 校验与状态提交 commitTurnPatchV2；程序权威幕状态机
     types.ts                  GameStateV2 / TurnPatchV2 / TurnPartialV2 / 活动流类型
+    actWindow.ts              三幕窗口构建、世界书稳定/动态拆分、beatsThisTurn 裁剪（纯函数）
+    randomEvents.ts           随机事件候选目标/绑定校验、滚动历史、智能强度、上下文与指令文本（纯函数）
+    paceGuard.ts              程序侧节奏审计与下轮软纠偏文本（纯函数，只观察不改正文）
     store.ts                  V2 存档（persist -> lrpg.v2）、存档导入与可持久化裁剪
     saveTransfer.ts           存档备份信封（lrpg-save v1）导出/导入解析与版本守卫
     GamePage.tsx / SetupPage.tsx / HomePage.tsx / WorkshopPage.tsx
+    ReadingNavigator.tsx      长文阅读导航：卷宗目录/书签/版式/跨幕题跋/回到最新
+    ModelActivityPanel.tsx    「司辰仪」模型活动控制台：三阶段活动、思考链、usage、patchStats
     workshop/                 命运工坊编辑器与校验（model.ts）
   services/llmClient.ts       模型调用（Chat Completions、工具循环、JSON 回退）
   lib/                        sse 解析、思考链处理、内容库校验、token 用量、通用工具
@@ -63,9 +69,12 @@ src/
 
 | 键 | 写入方 | 内容 |
 |---|---|---|
-| `lrpg.v2` | `src/v2/store.ts` | 存档 `SaveV2`、`GameStateV2`、最近回合回退点 |
+| `lrpg.v2` | `src/v2/store.ts` | 存档 `SaveV2`、`GameStateV2`、最近回合回退点（`SAVE_STORAGE_VERSION` 2） |
 | `lrpg.settings.v2` | `src/store/useSettingsStore.ts` | API、模型、上下文预算、注入、输入视角 |
 | `lrpg.content` | `src/store/useContentStore.ts` | 自定义大纲 / 出身 / 世界书（persist version 3） |
+| `lrpg.draft.<saveId>` | `src/v2/draft.ts` | 未发送的输入草稿（按存档隔离，不进入 `lrpg.v2`） |
+| `lrpg.reader.prefs` | `src/v2/ReadingNavigator.tsx` | 阅读版式偏好（字号 / 行距 / 版心） |
+| `lrpg.bookmarks.<saveId>` | `src/v2/ReadingNavigator.tsx` | 存档级回合书签（最多 100 条） |
 
 ## 核心回合链路
 
@@ -78,13 +87,15 @@ src/
 - 权威状态在程序侧：模型只输出增量 Patch，由 `commitTurnPatchV2` 校验后合并。
 - 提交有两道 CAS 守卫：`patch.baseRevision` 必须等于当前 `revision`；前端 `commitSuccessfulTurn` 再比对一次 revision/turn。
 - 写后结算失败不是整轮作废：`runTurnV2` 抛 `TurnPostFailureV2`（携带 `TurnPartialV2`），`runTurnSettlementV2()` 只重跑 `planner_post`；游戏页据此提供「仅重试结算」与「重新生成本回合」。
+- **三阶段提示词内嵌幕窗口 / 节拍 / 节奏纠偏**：`engine.ts` 在固定输出模板之后的可变区依次注入 `【STAGE_AND_ACT_WINDOW】`（`actWindow.buildStageAndActWindow`）、动态世界书 `【DYNAMIC_WORLD_FACTS】`、`【beatsThisTurn】`（`actWindow.normalizeBeatsThisTurn` 裁剪）与 `【PACE_CORRECTION_ALERT】`（`paceGuard.buildPaceCorrectionAlert`，仅上一轮 `pacing.needsCorrection` 时）；随机事件到期时预置 `【RANDOM_EVENT_CONTEXT】` + 三档指令（`randomEvents.ts`）。story 用户消息必须保持以 `【NARRATIVE_PACE】` 开头，否则前缀缓存回归断言与缓存命中会失效。
 
-修改模型输出协议时，必须**成组**同步这四处：
+修改模型输出协议时，必须**成组**同步这几处：
 
 1. 提示词与输出模板：`src/v2/engine.ts`（`buildPlannerPreSystem` / `buildStorySystem` / `buildPlannerPostSystem` / `postShape`）
-2. 类型：`src/v2/types.ts`（`TurnPatchV2`、`GameStateV2`）
-3. 清洗与提交：`src/v2/patch.ts`
-4. UI 展示：`src/v2/GamePage.tsx`
+2. 窗口 / 事件 / 纠偏文本：`src/v2/actWindow.ts`（三幕窗口、世界书拆分、节拍裁剪）、`src/v2/randomEvents.ts`（绑定、历史、强度、指令）、`src/v2/paceGuard.ts`（审计与纠偏）
+3. 类型：`src/v2/types.ts`（`TurnPatchV2`、`GameStateV2`）
+4. 清洗与提交：`src/v2/patch.ts`（含程序权威幕状态机与随机事件调度）
+5. UI 展示：`src/v2/GamePage.tsx`（含 `ReadingNavigator.tsx` / `ModelActivityPanel.tsx`）
 
 ## 开发注意事项
 
@@ -96,7 +107,7 @@ src/
 - V2 不兼容 0.3 以下旧存档；`useContentStore` 的持久化数据由 `sanitizePersistedContent` 兜底，旧字段会被静默丢弃。
 - **存档体积**：`lrpg.v2` 的持久化会剔除 `turnRecords[].calls[].input`（三阶段完整提示词留档）。这些留档体积极大（实测每回合约 208 KB，30 回合 6 MB 级），写入 localStorage 会在第 26 回合左右撞上 5 MB 配额。出参、思维链与 usage 仍然持久化；提示词明细只在当次页面会话内可导出。改动持久化结构时务必用 `npm run test:storage` 复核增长曲线。
 - **写入失败必须可见**：`src/v2/store.ts` 用自定义 `StateStorage` 捕获 `QuotaExceededError`，写入 `persistError` 供界面渲染，并**继续抛出**异常（不要在这里吞掉异常，否则会把"用户能看到的失败"变成静默丢档）。
-- 世界书条目的 `alwaysActive` / `keywords` / `priority` 由 `engine.ts` 的 `selectWorldFacts` 实现：常驻条目每轮注入，其余只有关键词命中当前输入或最近历史时才进，再按优先级排序截断。改动注入逻辑时不要退回无条件的 `slice`。
+- 世界书条目的 `alwaysActive` / `keywords` / `priority` 由 `src/v2/actWindow.ts` 的 `splitWorldFacts` 实现：常驻条目进逐字节稳定的 `【STABLE_STORY_CONTEXT】`，其余只有关键词命中当前输入或最近历史时才进可变区 `【DYNAMIC_WORLD_FACTS】`，再按优先级排序截断。改动注入逻辑时不要退回无条件的 `slice`，也不要把关键词命中结果塞回稳定块（会让前缀缓存整段失效）。
 - 不要提交 `.env`、`dist/`、`node_modules/`、`test-runs/`、`test-saves/` 或真实 API Key。
 - `.legacy-reference/` 是本地保留的 V1 提示词与架构草稿（已在 `.gitignore` 中），**不参与构建、不要引用**；确认不再需要后可直接删除。
 - `scripts/test-story-flow.mjs` 通过环境变量读取配置：`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_PLANNER_MODEL` / `LRPG_STORY_MODEL`。
@@ -107,5 +118,6 @@ src/
 
 1. 每次改动至少跑 `cmd /c npm run build` 与 `cmd /c npm test`；
 2. 改动 `engine.ts` / `patch.ts` 时跑 `cmd /c npm run test:patch`；
-3. 涉及模型协议或 UI 流程的改动，配置真实 API 后做一次浏览器冒烟：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景 / 手动输入 / 完结评分；
-4. 改动提示词结构或打包配置后跑 `cmd /c npm run test:e2e`（断言请求形状、缓存前缀结构与落盘状态）。
+3. 涉及模型协议或 UI 流程的改动，配置真实 API 后做一次浏览器冒烟：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景 / 手动输入 / 完结评分；UI 改动还要确认阅读导航（卷宗目录 / 书签 / 版式）、司辰仪活动面板、侧边栏更新特效与结算失败恢复态；
+4. 改动提示词结构或打包配置后跑 `cmd /c npm run test:e2e`（断言请求形状、缓存前缀结构与落盘状态）；
+5. 有真实 API 时可用 `cmd /c npm run test:real` 跑 1–2 回合真实链路（`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，可选 `LRPG_TURNS` / `LRPG_MAX_TOKENS` / `LRPG_RETRIES`；产物 `test-runs/real-chain-report.json`）。它检查链路与落盘，不评估写作质量。

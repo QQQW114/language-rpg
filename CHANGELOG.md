@@ -9,19 +9,30 @@
 - **回合续跑（失败恢复）**：写后结算（`planner_post`）失败时不再整轮作废。`runTurnV2` 抛携带中间结果的 `TurnPostFailureV2`（正文、写前简报、commitId、已完成的两阶段调用），新增 `runTurnSettlementV2()` 只重跑结算与提交；游戏页显示「正文已生成 · 结算未完成」，提供「仅重试结算」（只发一次结算请求）与「重新生成本回合」两个恢复操作。续跑带 revision/turn 前置校验，提交仍走原有两道 CAS。
 - **存档导出/导入**：主页「继续旅程」可把存档导出为 JSON 备份（信封 `{kind:'lrpg-save',version:1,exportedAt,save}`，与持久化共用裁剪规则、剔除提示词留档），也可从备份导入恢复。导入一律生成新 id 作为新旅程、不覆盖现有存档，名称冲突自动加「（导入）」；版本过高的信封/存档与畸形 JSON 会被拒绝并给出可读原因；复用 hydrate 规范化，缺字段旧档也能导入。
 - **路由级动态分包**：`/game`、`/setup`、`/workshop`、`/settings` 改为按需加载，并把 React 与 Markdown 依赖拆成稳定 vendor chunk——主入口从 548.51 kB 降到 42.57 kB（gzip 181.17 kB → 16.03 kB），500 kB chunk 警告消失。
+- **程序权威幕状态机**：`destiny.currentActId` 不再由模型自报——模型提交的当前幕与程序权威不一致（未知幕、跳幕、倒退）一律忽略并按 `act_current_id_rejected` 写活动流警告，幕推进只由故事节完成情况决定。常规轨：本幕原生故事节全部 `satisfied`/`superseded` 时自动进入下一幕。改道轨：结算模型显式提议 `destiny.actTransition.proposeNextAct`，程序按三道 gate 判定（终态 ≥1 条且占比 ≥50%；非终态节全部为 `reframed`/`weakened` 且写明 `currentPlan`；非终态 ≤2 条），通过后携节挂账进入下一幕。`actId` 永不变更，挂账节用 `carriedFromActId` 标记来源且不视为完成——结局门槛不放宽；新增 `currentActIndex` / `actHistory`（`enteredTurn` / `exitedTurn` / `exitSummary` / `carriedBeatIds`）/ `lastActTransitionTurn`。`SAVE_STORAGE_VERSION` 1 → 2：旧档 hydrate 时按大纲反查补齐 `beats[].actId`、纠正自由文本 `currentActId`、补空 `actHistory`，不伪造历史。
+- **工坊幕级可选字段**：故事幕新增 `entryBrief`（开幕引子，≤200 字）/ `stageContract`（写作契约与禁令，≤200 字）/ `exitCriteriaNote`（幕完成叙事标志，≤120 字），编辑器、内容库校验、保存与 JSON 导入导出全链路支持；留空时退化为「只用 purpose + 通用过渡指令」。工坊保存对契约中的强线性词给非阻断警告。运行时 `entryBrief` 只在切幕后 1~2 回合注入，`exitCriteriaNote` 作为阶段完成标志全程保留。
+- **三幕窗口与本轮节拍**：新增 `【STAGE_AND_ACT_WINDOW】` 可变区注入（上一幕只读因果基线 / 当前幕施工契约 / 下一幕只许埋伏笔 / 最终命运锚 / 阶段红线），总长 ≤900 字，超预算按 6 级降级；规划输出新增 `beatsThisTurn`，程序裁成 1~3 条（慢叙事只留第 1 条）作为本轮唯一节拍清单。世界书拆成稳定/动态两块：`alwaysActive` 条目进逐字节稳定的 `【STABLE_STORY_CONTEXT】`，关键词命中条目改走 `【DYNAMIC_WORLD_FACTS】`，修掉稳定上下文随玩家输入变化导致前缀缓存失效的隐患。
+- **随机事件 D7（目的绑定 + 滚动钩子 + 三态 + 智能强度）**：写前规划安排事件时必须给出 `targetKind`（beat/thread/relationship/reconvergence）、`targetId`（只能取自程序提供的候选目标）与 `summary`（≤80 字），无绑定或越界绑定只记 `lastPlan` 并留警告；新增滚动 `history`（上限 8，裁剪时优先保留最近 3 条 `ongoing_hook`）。结算三态 `resolved` / `ongoing_hook` / `interrupted`（interrupted 保留绑定并把调度顺延到下一回合）。强度改由程序按「改道/挂账 → destiny、刚切幕或节拍停滞 → progress、否则 related」智能选择；切幕回合若下次事件排在两回合之后，自动拉近并升为推进/命运档。
+- **节奏审计与下轮软纠偏**：新增 `src/v2/paceGuard.ts`，对每回合正文做确定性检测——尾 220 字五类升华/收束模式、时间推进词计数、慢/标准叙事 >5000 字，结果写入 `TurnRecordV2.pacing`。只观察、不回滚也不改写正文；上一轮越界时，下一轮 planner_pre 与 story 注入 `【PACE_CORRECTION_ALERT】`（≤220 字），要求只推进 1 个节拍、到点停笔。检测刻意保守：只检查剔除对白后的叙述尾段，时间词阈值 3，快叙事/时间跨越不判篇幅。
+- **长文前端精修（Gemini 方案集成）**：新增 `src/v2/ReadingNavigator.tsx`——顶栏阅读导航、卷宗目录抽屉与回合跳转、存档级回合书签（`lrpg.bookmarks.<saveId>`）、字号/行距/版心偏好（`lrpg.reader.prefs`）、右下角「回到最新」罗盘，以及切幕时的「卷首题跋」与「前卷回响 · 幕间纪要」。`ModelActivityPanel.tsx` 从 GamePage 抽出并升级为「司辰仪」控制台（三阶段活动、思考链复制、工具与警告、token/缓存命中、`patchStats` 对账）。`UpdateGlow` 升级为五层金线编排（SVG 双轨描边 + 四角星铆、副刃残影、七曜星芒、金尘）；路由切换补「延伸金线」。
+- **预设《错位青春》5 幕改造**：由 3 幕 16 节改为 5 幕 15 节（拆出「第四幕 · 故人重逢与错位试探」与「第五幕 · 真相与共生日常」），并补齐每幕 `entryBrief` / `stageContract` / `exitCriteriaNote`；世界书的幕序引用同步。旧存档持有自己的 outline 副本，不受预设改造影响。
 
 ### 修复
 
 - **hydrate 静默丢失随机事件审计字段**：`sanitizeGameStateV2` 重建 `randomEvent` 时漏了 spread，`lastPlan` / `lastNote` / `lastTriggeredTurn` 在每次刷新页面（以及导入存档）后被丢弃；游戏页「故事脉动」卡片的安排与结果因此消失。现在保留这三个字段并补回归测试。
 - **`turnRecords[].calls` 缺失时写盘/导出抛错**：手改或导入的存档若某个回合记录缺 `calls`，持久化与导出都会抛异常。sanitize 现在把 `calls` 归一化为数组，裁剪函数再加一层防御。
+- **侧边栏更新特效被提前清空、部分块从不播放**：GamePage 的变更列表定时器在 1600ms 就清空，而强化后的五层动画完整时长约 2450ms，星芒与金尘每次都被截断；同时 `scene` / `progress` / `fact` / `item` / `thread` / `randomEvent` 等块漏传 `change`，数据变了却不播特效。现在清空定时器与动画时长对齐，所有可更新块都接到同一份变更列表。
 
 ### 变更
 
 - 单元测试运行器按 `--filter` 隔离产物与报告目录（`test-runs/unit/<scope>/`），支持多个 agent 并行跑不同过滤条件的测试。
+- **提示词可变区重排**：planner_pre 的固定输出模板之后依次注入三幕窗口、动态世界书与节奏纠偏，再接 `【AUTHORITATIVE_STATE】`；story 的用户消息仍以 `【NARRATIVE_PACE】` 开头（前缀缓存回归断言依赖该结构），三幕窗口与 `beatsThisTurn` 排在叙事节奏之后。
 
 ### 测试
 
 - 单元测试 304 → **338 条**（15 个测试文件）：新增结算失败续跑 7 条、存档导出/导入 21 条、store 导入与 hydrate 加固 6 条。
+- **单元测试 338 → 479 条（18 个测试文件）**：新增 `actWindow` / `randomEvent` / `paceGuard` 三个测试文件，覆盖窗口降级与稳定块字节不变、`beatsThisTurn` 裁剪、事件历史裁剪与绑定校验、三态闭环与智能强度、切幕平滑、节奏审计与纠偏文本；`patch` 补幕状态机全部 gate 分支，`store` 补旧档幕迁移。
+- 新增 `npm run test:real`（`scripts/real-chain-smoke.mjs`）：用真实 engine 打真实 OpenAI 兼容端点跑 1~2 回合，内置请求级重试；需 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，产物 `test-runs/real-chain-report.json`。
 - `npm run test:e2e` 43/43、`npm run test:patch`、`npm run test:storage`、`npm run test:story -- --dry-run` 全部通过。
 
 ### 文档
@@ -30,6 +41,8 @@
 - `docs/PROJECT_STATUS.md`：核心文件表补 `saveTransfer.ts` 与续跑 API，测试体系与用例数同步，已知边界更新。
 - `README.md`、`AGENTS.md`：补存档备份/失败恢复说明与新模块位置。
 - 合并 `[0.4.0]` 中重复的「新增」小节。
+- 新增 `docs/story-framework-brief.md`（给外部模型的自包含评估简报）与 `docs/act-system-plan.md`（幕系统决议、数据模型增量、P1–P6 步骤与验收口径）；`docs/README.md` 同步收录。
+- `README.md` / `AGENTS.md` / `docs/PROJECT_STATUS.md`：同步幕系统、随机事件绑定与钩子、节奏纠偏、阅读导航与新模块位置、测试体系数字。
 
 ## [0.4.0] - 2026-09-27
 

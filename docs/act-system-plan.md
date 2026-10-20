@@ -83,15 +83,17 @@ interface RandomEventStateV2 {
 
 | 步骤 | 内容 | 依赖 | 状态 |
 |---|---|---|---|
-| **P1** | 幕状态机底座：types/patch/store 迁移与推进逻辑、测试 | 无 | 队友实施中（task-4） |
-| **P2** | 工坊幕级字段：类型/内容库校验/工坊编辑器/测试 | 无 | 队友实施中（task-5） |
-| **P2.5** | 《错位青春》5 幕改造 + 世界书幕序同步 | P2 | Lead 实施（等类型落地） |
-| **P3** | 窗口注入与提示词：`【STAGE_AND_ACT_WINDOW】`、`beatsThisTurn`、防收尾红线、世界书稳定/动态拆分、snapshot 暴露幕状态 | P1/P2 | 待开始 |
-| **P4** | 随机事件强化：history/绑定/三态/智能强度/切幕冷却 | P3 | 待开始 |
-| **P5** | 观测与纠偏：程序侧收尾检测、下轮软纠偏、命运卡"幕 N/M + 挂账节"、活动流警告 | P3/P4 | 待开始 |
-| **P6** | 文档与验收：CHANGELOG/PROJECT_STATUS/本文件同步、全量测试、真实长局（需用户 Key） | P5 | 待开始 |
+| **P1** | 幕状态机底座：types/patch/store 迁移与推进逻辑、测试 | 无 | ✅ 已完成 |
+| **P2** | 工坊幕级字段：类型/内容库校验/工坊编辑器/测试 | 无 | ✅ 已完成 |
+| **P2.5** | 《错位青春》5 幕改造 + 世界书幕序同步 | P2 | ✅ 已完成 |
+| **P3** | 窗口注入与提示词：`【STAGE_AND_ACT_WINDOW】`、`beatsThisTurn`、防收尾红线、世界书稳定/动态拆分、snapshot 暴露幕状态 | P1/P2 | ✅ 已完成 |
+| **P4** | 随机事件强化：history/绑定/三态/智能强度/切幕冷却 | P3 | ✅ 已完成 |
+| **P5** | 观测与纠偏：程序侧收尾检测、下轮软纠偏、命运卡"幕 N/M + 挂账节"、活动流警告 | P3/P4 | ✅ 已完成 |
+| **P6** | 文档与验收：CHANGELOG/PROJECT_STATUS/本文件同步、全量测试、真实长局（需用户 Key） | P5 | 🚧 进行中 |
 
-每次改动遵循 `AGENTS.md`：`cmd /c npm run build` + `npm test` + 相关 `test:*`；协议改动四处同步（engine/types/patch/UI）。
+> 进度（2026-10-20）：P1–P5 已全部落地并提交；离线验证为单测 479 条 / 18 个测试文件、e2e 43/43、`test:patch` / `test:storage` 通过、build 通过。P6 正在做文档同步；「真实长局（20+ 回合 A/B）」仍需用户提供 API Key 后按第四节口径执行。
+
+每次改动遵循 `AGENTS.md`：`cmd /c npm run build` + `npm test` + 相关 `test:*`；协议改动成组同步（engine / actWindow+randomEvents+paceGuard / types / patch / UI，清单见 `AGENTS.md`）。
 
 ---
 
@@ -102,7 +104,7 @@ interface RandomEventStateV2 {
 - P1：新增 patch/store 用例覆盖自动切幕、挂账 gate 全部分支、非法 currentActId 拦截、旧档迁移、挂账不放宽 ending。
 - P3：断言同一幕内 `system` 与 `【STABLE_STORY_CONTEXT】` 字节不变（含常驻世界书）；断言切幕回合窗口切换且含 `entryBrief`；断言 `beatsThisTurn` 按叙事速度裁剪。
 - P4：断言 history 上限与 `ongoing_hook` 保留、未兑现顺延不丢绑定、切幕冷却调整。
-- 全量：338 条现有测试不得回归；`test:patch`、`test:e2e`（含缓存前缀结构断言）全绿。
+- 全量：479 条现有测试不得回归；`test:patch`、`test:e2e`（含缓存前缀结构断言）全绿。
 
 ### 真实长局（需用户 API Key，20+ 回合 A/B）
 
