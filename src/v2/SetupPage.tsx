@@ -45,10 +45,19 @@ export default function SetupPageV2() {
 
   const firstOutline = outlines[0];
   const firstBackground = backgrounds[0];
+  // 故事可以通过 backgroundIds 指定推荐出身；未指定时展示全部出身。
+  const initialBackgroundId = (() => {
+    const preferred = firstOutline?.backgroundIds;
+    if (preferred?.length) {
+      const found = backgrounds.find((item) => preferred.includes(item.id));
+      if (found) return found.id;
+    }
+    return firstBackground?.id ?? '';
+  })();
   const [step, setStep] = useState<SetupStep>('outline');
   const [mode, setMode] = useState<JourneyModeV2>('author');
   const [outlineId, setOutlineId] = useState(firstOutline?.id ?? '');
-  const [backgroundId, setBackgroundId] = useState(firstBackground?.id ?? '');
+  const [backgroundId, setBackgroundId] = useState(initialBackgroundId);
   const [worldBookIds, setWorldBookIds] = useState<string[]>(firstOutline?.worldBookIds ?? []);
   const [journeyName, setJourneyName] = useState(firstOutline?.title ?? '');
   const [randomEventEnabled, setRandomEventEnabled] = useState(true);
@@ -63,6 +72,12 @@ export default function SetupPageV2() {
     () => backgrounds.find((item) => item.id === backgroundId),
     [backgroundId, backgrounds],
   );
+  const linkedBackgrounds = useMemo(() => {
+    const ids = outline?.backgroundIds ?? [];
+    if (!ids.length) return backgrounds;
+    const linked = backgrounds.filter((item) => ids.includes(item.id));
+    return linked.length ? linked : backgrounds;
+  }, [backgrounds, outline]);
   const selectedBooks = useMemo(
     () => worldBooks.filter((book) => worldBookIds.includes(book.id)),
     [worldBookIds, worldBooks],
@@ -79,6 +94,12 @@ export default function SetupPageV2() {
     if (next) {
       setJourneyName(next.title);
       setWorldBookIds(next.worldBookIds ?? []);
+      const preferred = next.backgroundIds?.length
+        ? backgrounds.filter((item) => next.backgroundIds!.includes(item.id))
+        : backgrounds;
+      if (preferred.length && !preferred.some((item) => item.id === backgroundId)) {
+        setBackgroundId(preferred[0].id);
+      }
     }
   };
 
@@ -258,7 +279,7 @@ export default function SetupPageV2() {
           )}
 
           <div className="mt-7 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {backgrounds.map((item) => {
+            {linkedBackgrounds.map((item) => {
               const selected = item.id === backgroundId;
               return (
                 <Card
@@ -298,7 +319,7 @@ export default function SetupPageV2() {
               );
             })}
 
-            {!backgrounds.length && (
+            {!linkedBackgrounds.length && (
               <EmptyState>当前没有可用的角色出身。</EmptyState>
             )}
           </div>

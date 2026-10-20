@@ -135,6 +135,7 @@ export function validateStoryOutline(input: unknown): ContentValidationResult<St
       acts,
       tone: cleanOptionalText(input.tone),
       worldBookIds: cleanStrings(input.worldBookIds),
+      backgroundIds: cleanStrings(input.backgroundIds),
       coverEmoji: cleanOptionalText(input.coverEmoji),
     },
   };

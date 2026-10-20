@@ -64,6 +64,8 @@ export interface StoryOutline {
   acts: StoryAct[];           // 有顺序的命运阶段与必要故事节
   tone?: string;              // 文风提示
   worldBookIds?: string[];    // 默认挂载
+  /** 推荐出身：填写后启程页只展示这些出身（缺省=不限制，展示全部）。 */
+  backgroundIds?: string[];
   coverEmoji?: string;        // 卡片上的装饰符号
 }
 

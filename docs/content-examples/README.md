@@ -7,7 +7,7 @@
 | `misplaced-youth.outline.json` | 内置预设《错位青春》的完整 `StoryOutline`（5 幕 15 节，含幕级可选字段），黄金参考 |
 | `misplaced-youth.worldbook.json` | 配套 `WorldBook`（7 个条目，含 alwaysActive 与关键词条目） |
 | `freshman-xiyu.background.json` | 出身 `Background` 示例（全局出身，不绑定故事） |
-| `gemini-presets-2026-10-20.json` | 外部模型生成的原始 `ImportBundle`（2 个故事 + 2 本世界书 + 2 个未导入的故事专属出身），保留作来源记录 |
+| `gemini-presets-2026-10-20.json` | 外部模型生成的原始 `ImportBundle`（2 个故事 + 2 本世界书 + 2 个故事专属出身），保留作来源记录；两个出身已导入并分别绑定到对应故事的 `backgroundIds` |
 
 导入格式：
 

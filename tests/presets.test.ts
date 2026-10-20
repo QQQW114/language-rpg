@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { PRESET_OUTLINES, getOutlineById } from '@/presets/outlines';
 import { PRESET_WORLDBOOKS, getWorldBookById } from '@/presets/worldbooks';
+import { PRESET_BACKGROUNDS } from '@/presets/backgrounds';
 import { validateStoryOutline, validateWorldBook } from '@/lib/contentLibrary';
 
 describe('内置预设故事与世界书', () => {
@@ -54,5 +55,23 @@ describe('内置预设故事与世界书', () => {
       assert.equal(outline.worldBookIds?.length, 1);
       assert.ok(getWorldBookById(outline.worldBookIds[0])?.book);
     }
+  });
+
+  it('故事推荐的出身都存在，且每个内置故事绑定自己的主角出身', () => {
+    const backgroundIds = new Set(PRESET_BACKGROUNDS.map((background) => background.id));
+    for (const outline of PRESET_OUTLINES) {
+      for (const id of outline.backgroundIds ?? []) {
+        assert.ok(backgroundIds.has(id), `${outline.id} 引用了不存在的出身 ${id}`);
+      }
+    }
+    assert.deepEqual(getOutlineById('outline_misplaced_youth')?.backgroundIds, ['bg_freshman_xiyu']);
+    assert.deepEqual(getOutlineById('outline_borrowed_ember')?.backgroundIds, ['bg_apprentice_linche']);
+    assert.deepEqual(getOutlineById('outline_forged_provenance')?.backgroundIds, ['bg_restorer_suyan']);
+  });
+
+  it('Gemini 包里两个故事专属主角已作为内置出身导入', () => {
+    const find = (id: string) => PRESET_BACKGROUNDS.find((background) => background.id === id);
+    assert.ok(find('bg_apprentice_linche')?.name.includes('林澈'));
+    assert.ok(find('bg_restorer_suyan')?.name.includes('苏砚'));
   });
 });

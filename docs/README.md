@@ -18,6 +18,7 @@
 - [`content-examples/`](content-examples/README.md)：预设大纲、世界书、出身与外部生成 `ImportBundle` 的示例文件。
 - [`release-notes-v0.5.0.md`](release-notes-v0.5.0.md)：v0.5.0 发行说明（Prompt Pack v2.1、幕系统、阅读前端）。
 - [`release-notes-v0.5.1.md`](release-notes-v0.5.1.md)：v0.5.1 发行说明（新增两个内置预设与文档整理）。
+- [`release-notes-v0.5.2.md`](release-notes-v0.5.2.md)：v0.5.2 发行说明（故事推荐出身 + 两个预设主角）。
 - [`release-notes-v0.3.0.md`](release-notes-v0.3.0.md)：v0.3.0 发布说明。
 
 仓库根目录另有：

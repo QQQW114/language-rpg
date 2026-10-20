@@ -88,6 +88,7 @@ export const PRESET_OUTLINES: StoryOutline[] = [
     ],
     tone: '校园日常 / 轻松治愈 / 主角成长 · 校园日常 ≥75%、恋爱 <25%；纯现实社会，仅主角拥有异能；不要转向悬疑/惊悚/玄幻',
     worldBookIds: ['wb_misplaced_youth'],
+    backgroundIds: ['bg_freshman_xiyu'],
   },
   {
     "id": "outline_borrowed_ember",
@@ -97,6 +98,9 @@ export const PRESET_OUTLINES: StoryOutline[] = [
     "tone": "近未来市井科幻 / 悬疑潜行 · 市井日常与试探 ≥70%、查案 <30%；重生活质感与潜台词，不写太空歌剧",
     "worldBookIds": [
       "wb_borrowed_ember"
+    ],
+    "backgroundIds": [
+      "bg_apprentice_linche"
     ],
     "acts": [
       {
@@ -234,6 +238,9 @@ export const PRESET_OUTLINES: StoryOutline[] = [
     "tone": "都市古玩悬疑 / 手艺日常 · 作坊与古玩街日常 ≥70%、悬疑 <30%；重器物细节与人情机锋，不写玄幻",
     "worldBookIds": [
       "wb_forged_provenance"
+    ],
+    "backgroundIds": [
+      "bg_restorer_suyan"
     ],
     "acts": [
       {
