@@ -13,7 +13,9 @@ import { extractJSON, genId } from '@/lib/utils';
 import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
+import type { WorldBookEntry } from '@/types/content';
 import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
+import { buildStageAndActWindow, DYNAMIC_WORLD_FACT_LIMIT, normalizeBeatsThisTurn, splitWorldFacts, STABLE_WORLD_FACT_LIMIT } from './actWindow';
 import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
@@ -28,7 +30,9 @@ ${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 偏离只影响抵达速度和路径，不取消长期命运。不要为了拉回大纲而立刻强塞关键角色；本轮只安排自然、可信的一步。
 允许补全资料空白，但只补本回合必要内容。不得预先决定玩家下一步，不得把“考虑、可能、打算”写成已完成决定。
 叙事速度约束的是单回合覆盖的故事时间、主要动作和场景数量，不是要求凑够篇幅。慢叙事与标准叙事应选择最早且有意义的玩家可介入节点，给后续回合保留反应、对话和后果；不得把一次输入扩展成自带开端、发展、结尾的完整短篇。
-stopBoundary必须是本轮正文最后一个允许发生的动作；不得把边界后的动作、事后反应、下一地点或后续安排写入writingBrief。`;
+stopBoundary必须是本轮正文最后一个允许发生的动作；不得把边界后的动作、事后反应、下一地点或后续安排写入writingBrief。
+【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：上一幕只作只读因果基线，当前幕是唯一可展开的施工区，下一幕只允许埋自然伏笔，更远的幕不得提前兑现；窗口未列出的字段表示大纲未提供，不得臆造。
+beatsThisTurn只写本轮要推进的1到3个原子节拍（慢叙事只写1个），每条一句话写清本轮该发生的小事件；不得写成整段剧情清单，不得把尚未发生的事写成已完成，也不得激活窗口未列出的后续故事节。`;
 }
 
 const storyPlayerAgency = `玩家是共同作者，应真实承接其行动。世界书决定行动在这个世界里如何实现，而不是用来机械拒绝玩家。玩家改变路线时，可以迁移舞台与事件，但必须保持世界规律，并让长期命运通过新的合理路径继续发展。`;
@@ -44,6 +48,8 @@ ${director ? storyDirectorAgency : storyPlayerAgency}
 允许出现新的普通环境、角色和小插曲，但必须服务当前行动与长期方向，规模克制。
 一回合是连续互动中的一个可回应片段，不是必须独立完整的章节。慢叙事与标准叙事不得为了“写完整”继续补写余波、转场、下一项安排或总结式收束；一旦玩家已有自然的观察、回应、选择或改变行动的机会，就应适时交还控制权。细致不等于堆叠重复感官、心理活动或同义描写。
 结尾处严禁总结、点明主旨、升华、回顾前文、感慨或任何“章节完/本回完”式收束；写完stopBoundary处的动作或反应即停，给后续回合留下自然接口。
+【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：只展开当前幕施工契约允许的内容，上一幕只作因果基线，下一幕只允许埋伏笔，严禁提前兑现。
+【beatsThisTurn】是本轮唯一的节拍清单：只推进列出的1到3个节拍，不得自行激活未列出的故事节，也不得把多个节拍合并成一段概述草草写完。
 到达stopBoundary后立即停止，不多写一步，不输出分析或JSON。`;
 }
 
@@ -54,6 +60,8 @@ function buildPlannerPostSystem(director: boolean): string {
 摘要、进度和Patch必须是CURRENT_STORY已经明确发生的内容；“准备、考虑、计划、可能”不能记为已完成行动。
 ${director ? plannerPostDirectorAgency : ''}
 每轮必须更新destiny，但只更新实际变化的故事节。故事完成度是当前全部事件与人物状态距离预设结尾的综合估值，可上升也可下降，不是累计积分。completionEstimate直接输出0到100的当前估值，并用completionReason说明已满足和仍缺少的核心结尾条件。
+destiny.currentActId必须原样回显权威状态中的当前幕，不得自行填写新幕；幕推进只由程序按故事节完成情况判定，模型自报的幕不一致会被忽略并留警告。
+只有本幕剩余故事节因玩家改道确实需要跨幕兑现时，才把actTransition.proposeNextAct置为true，并用actTransition.actExitSummary以不超过2句话概括本幕为何收束；常规推进、只是提到下一幕或想加快节奏时都必须保持false（程序会按终态比例与挂账规则gate）。
 故事节状态含义：pending未到条件；available条件成熟；active正在发生；satisfied核心功能已由正文满足；weakened已满足结果被后续削弱；reframed因路线变化需换实现方式；superseded已由等价故事节承担。
 satisfied不是“提到过标题”或“计划过”的标记，只有当CURRENT_STORY实际实现了该故事节的purpose（叙事功能），并能用正文原句证明时才可使用。只完成了铺垫、绕开、切断、改走其他路径时，不得标记satisfied，应使用active、weakened或reframed，并说明当前实现/缺口。已satisfied的故事节不得无理由回退为active、available或pending；若后续正文确实削弱已实现结果，只能使用weakened或reframed，并提供直接证据和原因。beatChanges只提交本轮发生变化的故事节，不重抄全部。
 玩家改变路线时优先reframed并更新currentPlan，不删除命运功能。不要强行拉回旧地点。
@@ -140,7 +148,7 @@ const postShape = `{
   "facts":[{"op":"create|replace","subjectId":"stable-subject-id","predicate":"stable-predicate","value":"跨回合长期明确值","scope":"character|relationship|location|world|schedule|identity|custom","stability":"core|stable","confidence":"explicit","keywords":[],"evidenceQuote":"正文原句","reason":"replace时必填"}],
   "scene":{"id":"stable-scene-id","name":"地点名","description":"","time":"","weather":""},
   "actions":[{"id":"stable-action-id","label":"行动选项","hint":"可选提示"}],
-  "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
+  "destiny":{"completionEstimate":0,"completionReason":"当前事件与最终结尾的距离依据","currentActId":"","actTransition":{"proposeNextAct":false,"actExitSummary":""},"currentStage":"","currentPath":"","nextMilestone":"","convergencePlan":"","endingReached":false,"reason":"本轮正文如何影响预设命运","beatChanges":[{"beatId":"existing-beat-id","status":"pending|available|active|satisfied|weakened|reframed|superseded","currentPlan":"当前路径下的实现方式或尚缺条件","evidenceSummary":"正文如何实现故事节purpose，而非只提到标题","evidenceQuote":"状态变化的正文原句","replacementBeatId":"","reason":"状态变化理由"}]},
   "randomEvent":{"handled":false,"note":""}
 }`;
 
@@ -403,13 +411,20 @@ function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) 
     completionEstimate: p.state.destiny.completionEstimate,
     completionReason: p.state.destiny.completionReason,
     currentActId: p.state.destiny.currentActId,
+    currentActIndex: p.state.destiny.currentActIndex,
     currentStage: p.state.destiny.currentStage,
     currentPath: p.state.destiny.currentPath,
     nextMilestone: p.state.destiny.nextMilestone,
     convergencePlan: p.state.destiny.convergencePlan,
+    // 幕切换只发生在切幕那一回合，且只追加：放在 beats（每轮都可能变）之前，
+    // 能让「同幕内」的这段结构化状态保持最长前缀。
+    lastActTransitionTurn: p.state.destiny.lastActTransitionTurn,
     endingReached: p.state.destiny.endingReached,
-    beats: (p.state.destiny.beats ?? []).map(({ beatId, status, currentPlan, evidenceSummary, replacementBeatId }) => ({
-      beatId, status, currentPlan, evidenceSummary, replacementBeatId,
+    actHistory: (p.state.destiny.actHistory ?? []).slice(-6).map(({ actId, enteredTurn, exitedTurn, exitSummary, carriedBeatIds }) => ({
+      actId, enteredTurn, exitedTurn, exitSummary, carriedBeatIds,
+    })),
+    beats: (p.state.destiny.beats ?? []).map(({ beatId, status, currentPlan, evidenceSummary, replacementBeatId, carriedFromActId }) => ({
+      beatId, status, currentPlan, evidenceSummary, replacementBeatId, carriedFromActId,
     })),
   };
   // 顺序即缓存顺序：稳定字段在前，每回合必变的字段与 recent 放到最后，
@@ -435,49 +450,21 @@ function snapshot(p: TurnRequestV2, recent?: TurnRequestV2['state']['history']) 
   });
 }
 
-const STABLE_WORLD_FACT_LIMIT = 20;
-/** 关键词命中判定使用的近期上下文条数（与规划模型近期窗口同源）。 */
-const WORLD_FACT_MATCH_HISTORY = 6;
-
 /**
- * 按世界书的既有约定挑选本回合注入的长期设定：
- *   1. alwaysActive 条目每轮必进；
- *   2. 其余条目只有关键词命中当前输入或近期正文时才进（否则未命中的设定会每回合
- *      无条件注入，既浪费预算，也会把仍未发生的伏笔直接摊给模型）；
- *   3. 按 priority 降序、同级保持原顺序，最后按上限截断。
+ * 逐字节稳定的故事上下文。
  *
- * 这里只负责"稳定上下文"这一份注入；被截断的内容仍可通过规划模型的
- * search_story_context 工具按需检索，因此不会真正丢失。
+ * D4/D5：这里只放「整个存档生命周期都几乎不变」的材料——大纲、出身、常驻世界书。
+ * 关键词命中的世界书条目改走可变区 `【DYNAMIC_WORLD_FACTS】`：旧实现把它们塞进这个
+ * JSON，导致玩家输入一变、稳定块就从第二个字节起整段失效，前缀缓存形同虚设。
+ * 注意 JSON 结构与 key 不变（`worldFacts`），只是内容收窄为 alwaysActive。
  */
-function selectWorldFacts(p: TurnRequestV2) {
-  const facts = p.worldFacts ?? [];
-  if (facts.length <= STABLE_WORLD_FACT_LIMIT && facts.every((fact) => fact.alwaysActive)) {
-    return { facts, truncated: false };
-  }
-  const haystack = `${p.input}\n${p.state.history.slice(-WORLD_FACT_MATCH_HISTORY).map((message) => message.content).join('\n')}`.toLowerCase();
-  const matched = facts.filter((fact) => {
-    if (fact.alwaysActive) return true;
-    const keywords = Array.isArray(fact.keywords) ? fact.keywords : [];
-    if (!keywords.length) return false;
-    return keywords.some((keyword) => {
-      const needle = String(keyword ?? '').trim().toLowerCase();
-      return !!needle && haystack.includes(needle);
-    });
-  });
-  const ordered = matched
-    .map((fact, index) => ({ fact, index }))
-    .sort((a, b) => (b.fact.priority ?? 0) - (a.fact.priority ?? 0) || a.index - b.index)
-    .map((item) => item.fact);
-  return {
-    facts: ordered.slice(0, STABLE_WORLD_FACT_LIMIT),
-    truncated: ordered.length > STABLE_WORLD_FACT_LIMIT,
-    matchedCount: matched.length,
-    totalCount: facts.length,
-  };
+function stableStoryContext(p: TurnRequestV2, alwaysActiveWorldFacts: WorldBookEntry[]) {
+  return JSON.stringify({ outline: p.outline, background: p.background, worldFacts: alwaysActiveWorldFacts });
 }
 
-function stableStoryContext(p: TurnRequestV2, selection: ReturnType<typeof selectWorldFacts>) {
-  return JSON.stringify({ outline: p.outline, background: p.background, worldFacts: selection.facts });
+/** 可变区里的动态世界书：关键词命中的条目只在这里出现，稳定块保持逐字节不变。 */
+function dynamicWorldFactsLine(facts: WorldBookEntry[]) {
+  return `【DYNAMIC_WORLD_FACTS】${JSON.stringify(facts)}`;
 }
 
 function paceInstruction(p: TurnRequestV2) {
@@ -922,19 +909,23 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   // 该快照由 runPostAndCommitV2 统一生成（续跑时也用它，保证两次结算看到的权威状态一致）。
   // 故事模型保持原有、稳定的最近四回合窗口，不跟随规划上下文设置缩放。
   const storyAuthority = snapshot(p, p.state.history.slice(-STORY_RECENT_MESSAGE_COUNT));
-  // 世界书按 alwaysActive + 关键词命中筛选后再注入；被截断时明确告知，避免静默丢失。
-  const worldFactSelection = selectWorldFacts(p);
-  if (worldFactSelection.truncated) {
+  // 世界书拆成「常驻（稳定区）」与「关键词命中（可变区）」：只有常驻条目进稳定上下文，
+  // 否则稳定块会随玩家输入变化，前缀缓存从第二条消息起整段失效（D5）。
+  const worldFacts = splitWorldFacts({ input: p.input, history: p.state.history, worldFacts: p.worldFacts });
+  if (worldFacts.truncatedStatic || worldFacts.truncatedDynamic) {
     emitActivity(p, {
       type: 'warning',
       phase: 'planner_pre',
       model: plannerModel,
       code: 'world_facts_truncated',
       path: 'worldFacts',
-      message: `本回合命中 ${worldFactSelection.matchedCount} 条长期设定，只注入优先级最高的 ${STABLE_WORLD_FACT_LIMIT} 条（共 ${worldFactSelection.totalCount} 条）；其余可由 search_story_context 检索。`,
+      message: `本回合世界书共 ${worldFacts.totalCount} 条：常驻已注入 ${worldFacts.alwaysActive.length} 条（上限 ${STABLE_WORLD_FACT_LIMIT}），关键词命中已注入 ${worldFacts.dynamic.length} 条（上限 ${DYNAMIC_WORLD_FACT_LIMIT}，本回合命中 ${worldFacts.matchedCount} 条）；超出上限的条目未注入，可由 search_story_context 检索。`,
     });
   }
-  const stableContext = stableStoryContext(p, worldFactSelection);
+  const stableContext = stableStoryContext(p, worldFacts.alwaysActive);
+  // 三幕聚焦窗口只进可变区（D4）：system 与【STABLE_STORY_CONTEXT】必须逐字节稳定。
+  const stageActWindow = buildStageAndActWindow({ outline: p.outline, destiny: p.state.destiny, turn: p.state.turn });
+  const dynamicWorldFacts = dynamicWorldFactsLine(worldFacts.dynamic);
   // 提示词结构对缓存命中至关重要：供应商（DeepSeek / Anthropic / OpenAI）的前缀缓存
   // 只认"从第一个字节开始、逐字节相同的部分"。因此每条消息都按
   //   固定指令与输出模板（每回合逐字节相同） → 本回合可变的状态与输入
@@ -943,7 +934,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   const preMessages: ChatMessage[] = [
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"summary":""}}\n【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}` },
+    // 固定输出模板行仍排在最前（可复用前缀）；三幕窗口与动态世界书只出现在模板之后。
+    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   let pre;
@@ -984,6 +976,13 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   }
   const brief = requireJSONObject(pre.text, phaseLabels.planner_pre) as any;
   const randomEventPlanForStory = randomEventPlanToText(brief?.randomEvent) ?? '本回合无随机事件安排';
+  // 规划模型可能漏写或写多节拍：统一裁剪后再交给故事模型（慢叙事只保留 1 个，D8）。
+  const beatsThisTurn = normalizeBeatsThisTurn(brief?.beatsThisTurn, p.state.narrativePace);
+  const storyVariablePrelude = [
+    stageActWindow,
+    dynamicWorldFacts,
+    `【beatsThisTurn】${JSON.stringify(beatsThisTurn)}`,
+  ].filter(Boolean).join('\n');
 
   emitPhase(p, 'story', storyModel, 'started');
   let story;
@@ -999,7 +998,10 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         { role: 'system', content: storyPrompt },
         { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
         // 固定写作要求在前、可变材料在后（理由同 planner_pre 的注释）。
-        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}` },
+        // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
+        // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
+        // story 的 user 消息以【NARRATIVE_PACE】开头）。
+        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventInstruction(p)}\n${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【currentAct】${brief.currentAct || ''}\n【activeBeatIds】${JSON.stringify(brief.activeBeatIds ?? [])}\n【destinyProgress】${brief.destinyProgress || ''}\n【pathChange】${brief.pathChange || ''}\n【reframingNeeded】${JSON.stringify(brief.reframingNeeded ?? [])}\n【reconvergencePlan】${brief.reconvergencePlan || ''}\n【nextStoryFunction】${brief.nextStoryFunction || ''}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}` },
       ],
       onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {

@@ -160,6 +160,35 @@ function allPromptTextOf(request: RecordedRequest): string {
   return '';
 }
 
+/** 取【STABLE_STORY_CONTEXT】那条 user 消息：缓存保证要求它逐字节稳定。 */
+function stableContextOf(request: RecordedRequest): string {
+  const messages = request.body?.messages;
+  if (!Array.isArray(messages)) return '';
+  const found = messages.find((m: any) => m?.role === 'user' && String(m?.content ?? '').includes('【STABLE_STORY_CONTEXT】'));
+  return String(found?.content ?? '');
+}
+
+/** 解析可变区里的动态世界书行（`【DYNAMIC_WORLD_FACTS】[...]`）。 */
+function dynamicWorldFactsOf(request: RecordedRequest): Array<{ id: string }> {
+  const match = /【DYNAMIC_WORLD_FACTS】([^\n]*)/.exec(allPromptTextOf(request));
+  if (!match) return [];
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 截取【STAGE_AND_ACT_WINDOW】块（到动态世界书行为止）。 */
+function windowTextOf(request: RecordedRequest): string {
+  const prompt = lastUserPromptOf(request);
+  const start = prompt.indexOf('【STAGE_AND_ACT_WINDOW】');
+  if (start < 0) return '';
+  const end = prompt.indexOf('【DYNAMIC_WORLD_FACTS】', start);
+  return end > start ? prompt.slice(start, end) : prompt.slice(start);
+}
+
 const phaseOf = (request: RecordedRequest): ModelPhaseV2 => {
   const system = systemPromptOf(request);
   if (system.includes('写前规划 Agent')) return 'planner_pre';
@@ -457,7 +486,7 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
     });
   });
 
-  it('世界书条目按 alwaysActive + 关键词命中筛选，并按优先级排序（回归：关键词门控曾完全失效）', async () => {
+  it('世界书按稳定/动态拆分：常驻进稳定块，命中进动态块，未命中不注入（回归：关键词门控曾完全失效）', async () => {
     const worldFacts = [
       { id: 'wf-always', name: '世界基调', keywords: [], content: '常年阴雨。', alwaysActive: true, priority: 10 },
       { id: 'wf-hit', name: '门廊线索', keywords: ['门廊'], content: '门廊下有个修表铺。', alwaysActive: false, priority: 5 },
@@ -466,30 +495,36 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
     const request = makeRequest({ hooks: { worldFacts } });
     await withFetchMock(phaseHandler(), async (mock) => {
       await runTurnV2(request);
-      // 注意：STABLE_STORY_CONTEXT 在 planner 的第一条 user 消息里，lastUserPromptOf 取的是最后一条。
-      const planner = allPromptTextOf(mock.requests[0]);
-      const story = allPromptTextOf(mock.requests[1]);
-      assert.ok(planner.includes('常年阴雨'), 'alwaysActive 条目必须注入');
-      for (const [label, prompt] of [['planner', planner], ['story', story]] as const) {
-        assert.ok(!prompt.includes('第三幕才揭示的真相'), `${label}：未命中的关键词条目不应注入（否则等于提前摊开伏笔）`);
-        assert.ok(!prompt.includes('门廊下有个修表铺'), `${label}：未命中的关键词条目不应注入`);
+      for (const [label, call] of [['planner_pre', mock.requests[0]], ['story', mock.requests[1]]] as const) {
+        const stable = stableContextOf(call);
+        assert.ok(stable.includes('常年阴雨'), `${label}：常驻条目必须进稳定块`);
+        assert.ok(!stable.includes('门廊下有个修表铺'), `${label}：未命中的关键词条目不得进稳定块`);
+        assert.ok(dynamicWorldFactsOf(call).length === 0, `${label}：本回合没有命中时动态块应为空数组`);
+        assert.ok(!allPromptTextOf(call).includes('第三幕才揭示的真相'), `${label}：未命中的伏笔不应注入（否则等于提前摊开）`);
+        assert.ok(!allPromptTextOf(call).includes('门廊下有个修表铺'), `${label}：未命中的关键词条目不应注入`);
       }
     });
   });
 
-  it('关键词命中当前输入时，该世界书条目会被注入', async () => {
+  it('关键词命中当前输入时只进可变区动态块，稳定块保持逐字节不变', async () => {
     const worldFacts = [
+      { id: 'wf-always', name: '世界基调', keywords: ['雨'], content: '常年阴雨。', alwaysActive: true, priority: 10 },
       { id: 'wf-hit', name: '门廊线索', keywords: ['门廊'], content: '门廊下有个修表铺。', alwaysActive: false, priority: 5 },
     ];
     const request = makeRequest({ input: '我走到门廊下面躲雨，顺便看看有没有人。', hooks: { worldFacts } });
     await withFetchMock(phaseHandler(), async (mock) => {
       await runTurnV2(request);
-      assert.ok(allPromptTextOf(mock.requests[0]).includes('门廊下有个修表铺'), '命中的关键词条目应注入 planner');
-      assert.ok(allPromptTextOf(mock.requests[1]).includes('门廊下有个修表铺'), '命中的关键词条目应注入 story');
+      for (const [label, call] of [['planner_pre', mock.requests[0]], ['story', mock.requests[1]]] as const) {
+        const stable = stableContextOf(call);
+        assert.ok(stable.includes('常年阴雨'), `${label}：常驻条目在稳定块`);
+        assert.ok(!stable.includes('门廊下有个修表铺'), `${label}：命中的动态条目不得进稳定块（否则稳定块随输入变化，前缀缓存失效）`);
+        assert.deepEqual(dynamicWorldFactsOf(call).map((fact) => fact.id), ['wf-hit'], `${label}：命中条目必须进动态块`);
+        assert.ok(allPromptTextOf(call).includes('门廊下有个修表铺'), `${label}：命中条目应注入`);
+      }
     });
   });
 
-  it('世界书命中条目按 priority 降序排列；超过上限时只保留前 20 条', async () => {
+  it('常驻世界书超过上限时只保留优先级最高的 20 条，并发出分别说明常驻/动态数量的警告', async () => {
     const worldFacts = Array.from({ length: 25 }, (_, index) => ({
       id: `wf-${index}`,
       name: `设定${index}`,
@@ -498,17 +533,24 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
       alwaysActive: true,
       priority: index,
     }));
-    const request = makeRequest({ hooks: { worldFacts } });
+    const activity: ModelActivityV2[] = [];
+    const request = makeRequest({ hooks: { worldFacts, onModelActivity: (item) => activity.push(item) } });
     await withFetchMock(phaseHandler(), async (mock) => {
       await runTurnV2(request);
-      const planner = allPromptTextOf(mock.requests[0]);
-      const start = planner.indexOf('【STABLE_STORY_CONTEXT】');
-      const context = planner.slice(start, start + 6000);
-      // priority 最大的 5 条（20..24）应进入，priority 最小的 5 条（0..4）应被截断
+      const context = stableContextOf(mock.requests[0]);
+      // priority 最大的 20 条（5..24）应进入，priority 最小的 5 条（0..4）应被截断
       assert.ok(context.includes('设定正文24'), '最高优先级条目应注入');
       assert.ok(!context.includes('设定正文0'), '最低优先级条目应被上限截断');
       const kept = context.match(/设定正文(\d+)/g) ?? [];
       assert.equal(new Set(kept).size, 20, `应恰好保留 20 条，实际 ${new Set(kept).size}`);
+      assert.ok(!context.includes('【STAGE_AND_ACT_WINDOW】'), '窗口属于可变区，不得进稳定块');
+      assert.deepEqual(dynamicWorldFactsOf(mock.requests[0]), [], '常驻条目不得重复进动态块');
+      const warning = activity.find((item) => item.type === 'warning' && (item as any).code === 'world_facts_truncated');
+      assert.ok(warning, '截断时必须发出可观察警告');
+      const message = (warning as Extract<ModelActivityV2, { type: 'warning' }>).message;
+      assert.ok(message.includes('常驻已注入 20 条') && message.includes('上限 20'), `警告应说明常驻数量与上限：${message}`);
+      assert.ok(message.includes('上限 10'), `警告应同时说明动态数量与上限：${message}`);
+      assert.ok(message.includes('共 25 条'), `警告应给出总数：${message}`);
     });
   });
 
@@ -1207,5 +1249,217 @@ describe('engine.runTurnV2 / runTurnSettlementV2 — 结算失败续跑', () => 
         assert.equal(mock.requests.length, 0, '拒绝续跑时不应发出任何模型请求');
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G. 三幕聚焦窗口注入、beatsThisTurn 与幕状态机协议（D4 / D8）
+// ---------------------------------------------------------------------------
+
+/** 五幕大纲：包含幕级高级字段（entryBrief / stageContract / exitCriteriaNote）与远端幕。 */
+const FIVE_ACT_OUTLINE = makeOutline({
+  acts: [
+    {
+      id: 'act-1', title: '第一幕·雨夜', purpose: '建立日常',
+      beats: [{ id: 'beat-1-1', title: '开场', purpose: '建立主角的日常状态' }],
+    },
+    {
+      id: 'act-2', title: '第二幕·逃离', purpose: '推进冲突',
+      entryBrief: '离开熟悉的街区', stageContract: '只写逃离的第一夜', exitCriteriaNote: '抵达外省',
+      beats: [{ id: 'beat-2-1', title: '决断', purpose: '主角决定离开' }],
+    },
+    {
+      id: 'act-3', title: '第三幕·扎根', purpose: '在新城市立足',
+      entryBrief: '外省旧城在雨季显得陌生',
+      stageContract: '允许展开新生活，禁止提前写穿身世真相',
+      exitCriteriaNote: '第一次主动争取',
+      beats: [
+        { id: 'beat-3-1', title: '落脚', purpose: '找到能待下去的地方' },
+        { id: 'beat-3-2', title: '试探', purpose: '试探新环境的态度' },
+      ],
+    },
+    {
+      id: 'act-4', title: '第四幕·回望', purpose: '必须回头面对旧关系',
+      beats: [{ id: 'beat-4-1', title: '回望', purpose: '旧人重新出现' }],
+    },
+    {
+      id: 'act-5', title: '第五幕·道别', purpose: '在旧车站完成最终告别',
+      beats: [{ id: 'beat-5-1', title: '道别', purpose: '完成最终告别' }],
+    },
+  ],
+});
+
+/** 处于第三幕第 1 回合的权威状态：前两幕有 exitSummary，一个节从第二幕挂账进来。 */
+function fiveActState(overrides: Record<string, unknown> = {}) {
+  return makeState({
+    turn: 9,
+    revision: 12,
+    summary: '此前发生过一些事。',
+    latestProgress: '外省旧城的出租屋',
+    history: [{ id: 'msg-1', role: 'user', content: '我搬进了出租屋', turn: 1, createdAt: 1 }],
+    destiny: {
+      completionEstimate: 46,
+      completionReason: '仍在第三幕',
+      currentActId: 'act-3',
+      currentActIndex: 2,
+      currentStage: '第三幕',
+      currentPath: '改道离城',
+      nextMilestone: '在旧车站与阿黎道别',
+      convergencePlan: '让旧关系在车站自然汇合',
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        {
+          beatId: 'beat-2-1', actId: 'act-2', status: 'reframed', currentPlan: '改道离开城市',
+          carriedFromActId: 'act-2', evidenceTurns: [8], updatedAtTurn: 8,
+        },
+        { beatId: 'beat-3-1', actId: 'act-3', status: 'available', evidenceTurns: [], updatedAtTurn: 8 },
+        { beatId: 'beat-3-2', actId: 'act-3', status: 'active', currentPlan: '先从房东试探', evidenceTurns: [9], updatedAtTurn: 9 },
+      ],
+      actHistory: [
+        { actId: 'act-1', enteredTurn: 0, exitedTurn: 5, exitSummary: '第一幕在雨夜争执里收束' },
+        { actId: 'act-2', enteredTurn: 5, exitedTurn: 8, exitSummary: '第二幕改道离城' },
+      ],
+      lastActTransitionTurn: 8,
+      endingReached: false,
+      updatedAtTurn: 9,
+    },
+    ...overrides,
+  });
+}
+
+describe('engine.runTurnV2 — 三幕窗口与 beatsThisTurn', () => {
+  it('planner_pre 与 story 都注入三幕窗口；切幕后含上一幕 exitSummary 与当前幕 entryBrief/stageContract', async () => {
+    const request = makeRequest({ state: fiveActState(), hooks: { outline: FIVE_ACT_OUTLINE } });
+    let thirdActWindow = '';
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      for (const [phase, call] of [['planner_pre', mock.requests[0]], ['story', mock.requests[1]]] as const) {
+        const window = windowTextOf(call);
+        assert.ok(window.startsWith('【STAGE_AND_ACT_WINDOW】'), `${phase} 应注入三幕窗口`);
+        assert.ok(window.length <= 900, `${phase} 窗口应 ≤ 900 字符，实际 ${window.length}`);
+        assert.ok(window.includes('- 命运进度：第 3 / 5 幕《第三幕·扎根》'), window.slice(0, 200));
+        assert.ok(window.includes('新幕开启（进入本幕第 1 回合）'), '切幕后第一回合应标记新幕开启');
+        assert.ok(window.includes('《第二幕·逃离》（已收束）：第二幕改道离城'), '上一幕只读因果基线');
+        assert.ok(window.includes('允许展开新生活，禁止提前写穿身世真相'), '当前幕施工契约');
+        assert.ok(window.includes('外省旧城在雨季显得陌生'), '当前幕开幕引子');
+        assert.ok(window.includes('  * [active] beat-3-2（试探）'), '本幕待推进节拍');
+        assert.ok(window.includes('原属《第二幕·逃离》'), '跨幕挂账节应标出原属幕');
+        assert.ok(window.includes('- 下一幕《第四幕·回望》：必须回头面对旧关系'), '下一幕远景');
+        assert.ok(window.includes('- 后续未展开阶段：第5幕《第五幕·道别》'), '更远幕只列标题');
+        assert.ok(window.includes('- 在旧车站与阿黎道别'), '最终命运锚');
+        assert.ok(window.includes('[阶段红线]'));
+        assert.ok(window.includes('5. 【下一幕】核心事件不得提前兑现'), '红线必须完整保留');
+        assert.ok(!stableContextOf(call).includes('【STAGE_AND_ACT_WINDOW】'), `${phase}：窗口只进可变区`);
+      }
+      // 两阶段看到同一份窗口：窗口只由权威状态决定，与阶段无关。
+      assert.equal(windowTextOf(mock.requests[0]), windowTextOf(mock.requests[1]));
+      thirdActWindow = windowTextOf(mock.requests[0]);
+    });
+
+    // 切幕前（第二幕）的窗口必须不同：上一幕变成只读复盘、当前幕契约换成第二幕。
+    const secondActState = fiveActState({
+      destiny: {
+        ...fiveActState().destiny,
+        currentActId: 'act-2',
+        currentActIndex: 1,
+        lastActTransitionTurn: 5,
+        actHistory: [{ actId: 'act-1', enteredTurn: 0, exitedTurn: 5, exitSummary: '第一幕在雨夜争执里收束' }],
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'active', evidenceTurns: [], updatedAtTurn: 5 },
+        ],
+      },
+    });
+    const secondActRequests: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: secondActState, hooks: { outline: FIVE_ACT_OUTLINE } }));
+      secondActRequests.push(...mock.requests);
+    });
+    const secondActWindow = windowTextOf(secondActRequests[0]);
+    assert.ok(secondActWindow.includes('- 命运进度：第 2 / 5 幕《第二幕·逃离》'), secondActWindow.slice(0, 160));
+    assert.ok(secondActWindow.includes('《第一幕·雨夜》（已收束）：第一幕在雨夜争执里收束'));
+    assert.ok(!secondActWindow.includes('允许展开新生活'), '尚未进入的幕只给远景标题，不得提前给出施工契约');
+    assert.notEqual(secondActWindow, thirdActWindow, '切幕后的窗口内容必须变化');
+  });
+
+  it('同幕两回合（换输入关键词）：system 与稳定上下文逐字节相同，只有动态世界书变化', async () => {
+    const worldFacts = [
+      { id: 'wf-static', name: '世界基调', keywords: [], content: '常年阴雨。', alwaysActive: true, priority: 10 },
+      { id: 'wf-a', name: '门廊线索', keywords: ['门廊'], content: '门廊下有个修表铺。', priority: 5 },
+      { id: 'wf-b', name: '钟楼线索', keywords: ['钟楼'], content: '钟楼整点报时。', priority: 4 },
+    ];
+    const state = makeState({ turn: 2, revision: 4, history: [] });
+    const first: RecordedRequest[] = [];
+    const second: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state, input: '我走到门廊下躲雨。', hooks: { worldFacts } }));
+      first.push(...mock.requests);
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state, input: '我听见钟楼报时。', hooks: { worldFacts } }));
+      second.push(...mock.requests);
+    });
+    for (const [phase, index] of [['planner_pre', 0], ['story', 1], ['planner_post', 2]] as const) {
+      assert.equal(systemPromptOf(first[index]), systemPromptOf(second[index]), `${phase}：system 必须逐字节相同`);
+      if (stableContextOf(first[index])) {
+        assert.equal(stableContextOf(first[index]), stableContextOf(second[index]), `${phase}：稳定上下文必须逐字节相同`);
+      }
+    }
+    // 稳定块只含常驻条目；两个关键词命中的差异只出现在动态块里。
+    assert.ok(stableContextOf(first[0]).includes('常年阴雨'));
+    assert.ok(!stableContextOf(first[0]).includes('修表铺'));
+    assert.ok(!stableContextOf(first[0]).includes('钟楼整点报时'));
+    assert.deepEqual(dynamicWorldFactsOf(first[0]).map((fact) => fact.id), ['wf-a']);
+    assert.deepEqual(dynamicWorldFactsOf(second[0]).map((fact) => fact.id), ['wf-b']);
+    // 同幕同回合：窗口本身逐字节相同（玩家输入不改变窗口）。
+    assert.equal(windowTextOf(first[0]), windowTextOf(second[0]));
+  });
+
+  it('story 注入经裁剪的 beatsThisTurn：标准最多 3 条，慢叙事只留第 1 条', async () => {
+    const brief = { ...BRIEF, beatsThisTurn: ['敲响门', '门内有人回应', '对方开门', '第 4 条应被裁掉'] };
+    await withFetchMock(phaseHandler({ brief: () => jsonStream(brief) }), async (mock) => {
+      await runTurnV2(makeRequest());
+      const storyPrompt = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyPrompt.includes('【beatsThisTurn】["敲响门","门内有人回应","对方开门"]'), storyPrompt.slice(0, 160));
+      assert.ok(!storyPrompt.includes('第 4 条应被裁掉'));
+      assert.ok(!lastUserPromptOf(mock.requests[0]).includes('【beatsThisTurn】['), 'planner_pre 只输出该字段，不注入清单（窗口红线里只有标签引用）');
+    });
+
+    await withFetchMock(phaseHandler({ brief: () => jsonStream(brief) }), async (mock) => {
+      await runTurnV2(makeRequest({ state: { narrativePace: 'slow' } }));
+      const storyPrompt = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyPrompt.includes('【beatsThisTurn】["敲响门"]'), '慢叙事只保留第 1 条');
+      assert.ok(!storyPrompt.includes('门内有人回应'));
+    });
+
+    // 坏输入（不是数组）退回空清单，不影响回合。
+    await withFetchMock(phaseHandler({ brief: () => jsonStream({ ...BRIEF, beatsThisTurn: '一整段剧情' }) }), async (mock) => {
+      await runTurnV2(makeRequest());
+      assert.ok(lastUserPromptOf(mock.requests[1]).includes('【beatsThisTurn】[]'));
+    });
+  });
+
+  it('planner_pre 模板新增 beatsThisTurn；planner_post 模板新增 actTransition，权威状态暴露幕状态机', async () => {
+    const request = makeRequest({ state: fiveActState(), hooks: { outline: FIVE_ACT_OUTLINE } });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      const pre = lastUserPromptOf(mock.requests[0]);
+      assert.ok(pre.startsWith('只输出 '), 'planner_pre 可变消息仍以固定输出模板开头');
+      assert.ok(pre.includes('"beatsThisTurn":[]'), 'planner_pre 输出模板应包含 beatsThisTurn');
+      assert.ok(pre.indexOf('"activeBeatIds":[]') < pre.indexOf('"beatsThisTurn":[]'), 'beatsThisTurn 紧跟 activeBeatIds');
+      assert.ok(pre.indexOf('"beatsThisTurn":[]') < pre.indexOf('【AUTHORITATIVE_STATE】'), '模板必须排在可变材料之前');
+      assert.ok(systemPromptOf(mock.requests[0]).includes('原子节拍'), 'planner_pre 系统提示应说明原子节拍');
+      assert.ok(systemPromptOf(mock.requests[1]).includes('【beatsThisTurn】是本轮唯一的节拍清单'), 'story 系统提示应说明节拍清单');
+
+      const post = lastUserPromptOf(mock.requests[2]);
+      assert.ok(post.includes('"actTransition":{"proposeNextAct":false,"actExitSummary":""}'), 'postShape 应包含 actTransition');
+      assert.ok(systemPromptOf(mock.requests[2]).includes('原样回显'), 'planner_post 应要求回显权威当前幕');
+      assert.ok(systemPromptOf(mock.requests[2]).includes('不超过2句话'), 'actExitSummary 应限 2 句');
+      const authority = post.slice(post.indexOf('【AUTHORITATIVE_STATE_BEFORE_TURN】'), post.indexOf('【CURRENT_TURN_INPUT】'));
+      assert.ok(authority.includes('"currentActIndex":2'), '权威状态应暴露 currentActIndex');
+      assert.ok(authority.includes('"actHistory":[{"actId":"act-1"'), '权威状态应暴露最近幕历史');
+      assert.ok(authority.includes('"lastActTransitionTurn":8'), '权威状态应暴露最近切幕回合');
+      assert.ok(authority.includes('"carriedFromActId":"act-2"'), 'beats 应暴露挂账来源');
+    });
   });
 });
