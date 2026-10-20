@@ -39,6 +39,8 @@ src/
     actWindow.ts              三幕窗口构建、世界书稳定/动态拆分、beatsThisTurn 裁剪（纯函数）
     randomEvents.ts           随机事件候选目标/绑定校验、滚动历史、智能强度、上下文与指令文本（纯函数）
     paceGuard.ts              程序侧节奏审计与下轮软纠偏文本（纯函数，只观察不改正文）
+    contextSearch.ts          规划上下文检索 search_story_context 的纯函数实现（分词/候选/证据切片/评分）
+    webSearch.ts              DeepSeek 官方联网搜索 web_search 封装（默认关；请求/解析/降级/官方端点判定）
     store.ts                  V2 存档（persist -> lrpg.v2）、存档导入与可持久化裁剪
     saveTransfer.ts           存档备份信封（lrpg-save v1）导出/导入解析与版本守卫
     GamePage.tsx / SetupPage.tsx / HomePage.tsx / WorkshopPage.tsx
@@ -92,7 +94,7 @@ src/
 修改模型输出协议时，必须**成组**同步这几处：
 
 1. 提示词与输出模板：`src/v2/engine.ts`（`buildPlannerPreSystem` / `buildStorySystem` / `buildPlannerPostSystem` / `postShape`）
-2. 窗口 / 事件 / 纠偏文本：`src/v2/actWindow.ts`（三幕窗口、世界书拆分、节拍裁剪）、`src/v2/randomEvents.ts`（绑定、历史、强度、指令）、`src/v2/paceGuard.ts`（审计与纠偏）
+2. 窗口 / 事件 / 纠偏 / 工具文本：`src/v2/actWindow.ts`（三幕窗口、世界书拆分、节拍裁剪）、`src/v2/randomEvents.ts`（绑定、历史、强度、指令）、`src/v2/paceGuard.ts`（审计与纠偏）、`src/v2/contextSearch.ts`（检索工具返回结构）、`src/v2/webSearch.ts`（联网搜索工具定义与纪律）
 3. 类型：`src/v2/types.ts`（`TurnPatchV2`、`GameStateV2`）
 4. 清洗与提交：`src/v2/patch.ts`（含程序权威幕状态机与随机事件调度）
 5. UI 展示：`src/v2/GamePage.tsx`（含 `ReadingNavigator.tsx` / `ModelActivityPanel.tsx`）
@@ -102,6 +104,7 @@ src/
 - **不要收窄 `tsconfig.json` 的 `include`**。历史上它只列了 4 个路径，导致被排除的文件在无类型保护的情况下腐坏（`src/types/game.ts` 被删除后仍被十余个文件 import 而无人察觉）。现在 include 是 `["src"]`。
 - 删除模块前先做一次反向引用检查（全仓库搜索模块名），再跑 `npx tsc --noEmit` 确认没有悬空引用。
 - `src/lib/sse.ts` 与 `llmClient.ts` 是供应商差异的集中点：新增兼容分支时优先放这里，不要污染 `engine.ts`。
+- **规划工具的两个边界**：`search_story_context` 由 `src/v2/contextSearch.ts` 纯函数实现（证据默认 500 字、同来源 ≤2、返回 `matchedTerms/score`）；`web_search` 由 `src/v2/webSearch.ts` 封装官方 DeepSeek `POST /v1/tools/search`，设置项 `plannerWebSearchEnabled` **默认关**，只有「工具开启 + 联网开关 + 官方 DeepSeek base + 有 API Key」同时满足时 planner_pre 才挂载（每回合最多 1 次，故事 / 结算阶段恒无工具）；查询与 `ori_question` 会发送给 DeepSeek，按成功请求计费（约 `$0.75/1000`，≈¥5.4）。搜索失败一律降级为工具错误文本，不得因此打掉回合。
 - 提示词没有独立的 `src/prompts/` 目录，全部内嵌在 `engine.ts`；改提示词前先读 `docs/destiny-driven-story-core.md`（最高层产品约束），并检查 `docs/known-issues.md` 是否已有相关登记。
 - 发现可疑但未确认是 bug 的行为，先登记到 `docs/known-issues.md` 再决定是否修改；确认是 bug 的（解析/合并丢数据一类）直接修复并补回归测试。
 - V2 不兼容 0.3 以下旧存档；`useContentStore` 的持久化数据由 `sanitizePersistedContent` 兜底，旧字段会被静默丢弃。
@@ -120,4 +123,4 @@ src/
 2. 改动 `engine.ts` / `patch.ts` 时跑 `cmd /c npm run test:patch`；
 3. 涉及模型协议或 UI 流程的改动，配置真实 API 后做一次浏览器冒烟：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景 / 手动输入 / 完结评分；UI 改动还要确认阅读导航（卷宗目录 / 书签 / 版式）、司辰仪活动面板、侧边栏更新特效与结算失败恢复态；
 4. 改动提示词结构或打包配置后跑 `cmd /c npm run test:e2e`（断言请求形状、缓存前缀结构与落盘状态）；
-5. 有真实 API 时可用 `cmd /c npm run test:real` 跑 1–2 回合真实链路（`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，可选 `LRPG_TURNS` / `LRPG_MAX_TOKENS` / `LRPG_RETRIES`；产物 `test-runs/real-chain-report.json`）。它检查链路与落盘，不评估写作质量。
+5. 有真实 API 时可用 `cmd /c npm run test:real` 跑真实链路（`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`；可选 `LRPG_TURNS`（1–40，默认 2）、`LRPG_MAX_TOKENS`（0 = 不限输出）、`LRPG_RETRIES`、`LRPG_TOOLS=1` 启用上下文检索、`LRPG_WEB_SEARCH=1` 启用官方联网搜索（仅官方 DeepSeek base 生效）、`LRPG_INPUTS_FILE` 指定每行一条玩家输入的文本文件；产物 `test-runs/real-chain-report.json`，含 `cacheSummary` 与长局 `evaluation`）。它检查链路、落盘与缓存统计，不评估写作质量。

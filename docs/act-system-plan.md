@@ -91,7 +91,7 @@ interface RandomEventStateV2 {
 | **P5** | 观测与纠偏：程序侧收尾检测、下轮软纠偏、命运卡"幕 N/M + 挂账节"、活动流警告 | P3/P4 | ✅ 已完成 |
 | **P6** | 文档与验收：CHANGELOG/PROJECT_STATUS/本文件同步、全量测试、真实长局（需用户 Key） | P5 | 🚧 进行中 |
 
-> 进度（2026-10-20）：P1–P5 已全部落地并提交；离线验证为单测 479 条 / 18 个测试文件、e2e 43/43、`test:patch` / `test:storage` 通过、build 通过。P6 正在做文档同步；「真实长局（20+ 回合 A/B）」仍需用户提供 API Key 后按第四节口径执行。
+> 进度（2026-10-20）：P1–P5 已全部落地并提交；离线验证为单测 551 条 / 20 个测试文件、e2e 43/43、`test:patch` / `test:storage` 通过、build 通过。P6 正在做文档同步；**真实 20 回合长局已跑通**（无需模型 API Key 之外的额外配置），剩余可选 A/B 质量评估（拿到用户 Key 后按第四节口径做对照）。
 
 每次改动遵循 `AGENTS.md`：`cmd /c npm run build` + `npm test` + 相关 `test:*`；协议改动成组同步（engine / actWindow+randomEvents+paceGuard / types / patch / UI，清单见 `AGENTS.md`）。
 
@@ -104,7 +104,7 @@ interface RandomEventStateV2 {
 - P1：新增 patch/store 用例覆盖自动切幕、挂账 gate 全部分支、非法 currentActId 拦截、旧档迁移、挂账不放宽 ending。
 - P3：断言同一幕内 `system` 与 `【STABLE_STORY_CONTEXT】` 字节不变（含常驻世界书）；断言切幕回合窗口切换且含 `entryBrief`；断言 `beatsThisTurn` 按叙事速度裁剪。
 - P4：断言 history 上限与 `ongoing_hook` 保留、未兑现顺延不丢绑定、切幕冷却调整。
-- 全量：479 条现有测试不得回归；`test:patch`、`test:e2e`（含缓存前缀结构断言）全绿。
+- 全量：551 条现有测试不得回归；`test:patch`、`test:e2e`（含缓存前缀结构断言）全绿。
 
 ### 真实长局（需用户 API Key，20+ 回合 A/B）
 

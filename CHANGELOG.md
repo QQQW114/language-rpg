@@ -16,12 +16,16 @@
 - **节奏审计与下轮软纠偏**：新增 `src/v2/paceGuard.ts`，对每回合正文做确定性检测——尾 220 字五类升华/收束模式、时间推进词计数、慢/标准叙事 >5000 字，结果写入 `TurnRecordV2.pacing`。只观察、不回滚也不改写正文；上一轮越界时，下一轮 planner_pre 与 story 注入 `【PACE_CORRECTION_ALERT】`（≤220 字），要求只推进 1 个节拍、到点停笔。检测刻意保守：只检查剔除对白后的叙述尾段，时间词阈值 3，快叙事/时间跨越不判篇幅。
 - **长文前端精修（Gemini 方案集成）**：新增 `src/v2/ReadingNavigator.tsx`——顶栏阅读导航、卷宗目录抽屉与回合跳转、存档级回合书签（`lrpg.bookmarks.<saveId>`）、字号/行距/版心偏好（`lrpg.reader.prefs`）、右下角「回到最新」罗盘，以及切幕时的「卷首题跋」与「前卷回响 · 幕间纪要」。`ModelActivityPanel.tsx` 从 GamePage 抽出并升级为「司辰仪」控制台（三阶段活动、思考链复制、工具与警告、token/缓存命中、`patchStats` 对账）。`UpdateGlow` 升级为五层金线编排（SVG 双轨描边 + 四角星铆、副刃残影、七曜星芒、金尘）；路由切换补「延伸金线」。
 - **预设《错位青春》5 幕改造**：由 3 幕 16 节改为 5 幕 15 节（拆出「第四幕 · 故人重逢与错位试探」与「第五幕 · 真相与共生日常」），并补齐每幕 `entryBrief` / `stageContract` / `exitCriteriaNote`；世界书的幕序引用同步。旧存档持有自己的 outline 副本，不受预设改造影响。
+- **上下文检索工具重构**：`search_story_context` 的分词、候选构建、证据切片与排序下沉到 `src/v2/contextSearch.ts`（纯函数，engine 净删约 172 行；工具名与参数 schema 不变）。查询改为 CJK 整段 + bigram 展开（单字人名也可查）、停用词过滤、全角转半角、最多 12 个检索词；证据默认 900 → **500 字**，命中点落在截断点之后时以命中位置为中心切片；排序改为「整串命中 +100 → 覆盖率 ×60 → 逐词长度小权重」，取消 facts / 非 history 的 magic 加权（已知问题 N）；同一来源最多 2 条、按来源 / 标签 / 证据去重并截到 limit；返回保持 `query/scope/resultCount/results/note` 兼容，新增 `matchedTerms/score`，0 结果时给出更具体的下一步提示。
+- **规划模型可选联网搜索（默认关）**：新增 `src/v2/webSearch.ts`，封装 DeepSeek 官方 `POST {apiBase}/tools/search`。设置新增 `plannerWebSearchEnabled`（默认 false）；只有「工具开启 + 联网开关 + 官方 DeepSeek 地址 + 有 API Key」同时满足时，planner_pre 才挂载 `web_search` 并注入工具纪律——每回合最多 1 次，故事 / 结算阶段恒无工具。请求支持 `ori_question`（玩家原始输入，≤128 字）与 `need_content:false`，返回条数夹 1~5；响应按 `rerank_score` 降序、过滤坏数据与超量结果并截断，**低置信度回退**（没有 ≥1.5 的高分结果时退到 ≥0.5 并标 `lowConfidence`）；429 / 5xx / 网络错误 / 超时 / 坏 JSON 全部降级为工具错误文本，绝不抛异常打掉回合。设置页「上下文与工具」新增开关与说明（默认关、仅官方 DeepSeek 生效、计费约 `$0.75/1000` 成功请求（≈¥5.4）、查询内容会发给 DeepSeek、外部结果不得覆盖世界书与正史）。
+- **真实链路冒烟支持长局评测与分阶段缓存统计**：`scripts/real-chain-smoke.mjs` 新增 `LRPG_INPUTS_FILE`（外部输入列表）、`LRPG_TOOLS=1`（上下文检索工具）、`LRPG_WEB_SEARCH=1`（联网搜索）、`LRPG_TURNS` 上限从 5 扩到 40、`LRPG_MAX_TOKENS=0` 表示不限输出；回合记录新增三阶段 usage / 缓存命中，报告新增 `cacheSummary`（不含首回合冷启动的命中率）与 `evaluation`（篇幅 min/p50/p90/max、升华收尾 / 时间跳跃 / 超预算 / 纠偏触发、随机事件三态、幕切换次数、token 合计）。
 
 ### 修复
 
 - **hydrate 静默丢失随机事件审计字段**：`sanitizeGameStateV2` 重建 `randomEvent` 时漏了 spread，`lastPlan` / `lastNote` / `lastTriggeredTurn` 在每次刷新页面（以及导入存档）后被丢弃；游戏页「故事脉动」卡片的安排与结果因此消失。现在保留这三个字段并补回归测试。
 - **`turnRecords[].calls` 缺失时写盘/导出抛错**：手改或导入的存档若某个回合记录缺 `calls`，持久化与导出都会抛异常。sanitize 现在把 `calls` 归一化为数组，裁剪函数再加一层防御。
 - **侧边栏更新特效被提前清空、部分块从不播放**：GamePage 的变更列表定时器在 1600ms 就清空，而强化后的五层动画完整时长约 2450ms，星芒与金尘每次都被截断；同时 `scene` / `progress` / `fact` / `item` / `thread` / `randomEvent` 等块漏传 `change`，数据变了却不播特效。现在清空定时器与动画时长对齐，所有可更新块都接到同一份变更列表。
+- **切幕后 `currentStage` 空白**：幕状态机的 `advanceAct` 旧实现直接清空阶段文本，切幕后 1~2 回合命运卡与幕窗口没有阶段描述（20 回合真实长局里 T5/T6/T12 复现）。现在写入程序侧兜底「本幕开篇」，等模型下一轮写出具体阶段后覆盖；回归测试 `tests/patch.test.ts`。
 
 ### 变更
 
@@ -32,9 +36,11 @@
 
 - 单元测试 304 → **338 条**（15 个测试文件）：新增结算失败续跑 7 条、存档导出/导入 21 条、store 导入与 hydrate 加固 6 条。
 - **单元测试 338 → 479 条（18 个测试文件）**：新增 `actWindow` / `randomEvent` / `paceGuard` 三个测试文件，覆盖窗口降级与稳定块字节不变、`beatsThisTurn` 裁剪、事件历史裁剪与绑定校验、三态闭环与智能强度、切幕平滑、节奏审计与纠偏文本；`patch` 补幕状态机全部 gate 分支，`store` 补旧档幕迁移。
-- 新增 `npm run test:real`（`scripts/real-chain-smoke.mjs`）：用真实 engine 打真实 OpenAI 兼容端点跑 1~2 回合，内置请求级重试；需 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，产物 `test-runs/real-chain-report.json`。
+- 新增 `npm run test:real`（`scripts/real-chain-smoke.mjs`）：用真实 engine 打真实 OpenAI 兼容端点跑真实回合（默认 2 回合，可指定 1~40），内置请求级重试；需 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，产物 `test-runs/real-chain-report.json`。
 - **真实链路与缓存实测（2026-10-20）**：DeepSeek 官方 `deepseek-flash` 连跑 3 回合，第 2 回合起前缀缓存稳定命中，相邻回合命中 token 恒定（planner_pre 3,328 / story 3,200 / planner_post 1,536），预热回合命中率约 42.0% / 36.8% / 30.3%；同时验证随机事件真实闭环（`T2 resolved related→thread`）。数据与解读见 [`docs/cache-prefix-investigation.md`](docs/cache-prefix-investigation.md) 第九节。
 - `npm run test:e2e` 43/43、`npm run test:patch`、`npm run test:storage`、`npm run test:story -- --dry-run` 全部通过。
+- **单元测试 515 → 551 条（20 个测试文件）**：上下文检索重构带来 479 → 515（`tests/contextSearch.test.ts` 33 条 + `tests/engine.test.ts` 工具用例 3 条），联网搜索带来 515 → 551（`tests/webSearch.test.ts` 30 条 + engine 联网行为 6 条：默认无工具、开启 + 官方 + Key 挂载、非官方不挂载、结果注入且回合提交、同回合第二次被拒、搜索失败不失败回合）。
+- `test:real` 真实链路：10 回合 10/10，web_search 被模型自发调用一次，官方端点直连返回 3 条并解析成功；20 回合长局 p50 1,135 字、升华收尾 0、自动切幕 2 次、随机事件 19 个全部绑定、缓存预热 pre 17.3% / story 22.0% / post 16.6%（数据与解读见 `docs/cache-prefix-investigation.md` 9.4）。
 
 ### 文档
 
@@ -44,6 +50,8 @@
 - 合并 `[0.4.0]` 中重复的「新增」小节。
 - 新增 `docs/story-framework-brief.md`（给外部模型的自包含评估简报）与 `docs/act-system-plan.md`（幕系统决议、数据模型增量、P1–P6 步骤与验收口径）；`docs/README.md` 同步收录。
 - `README.md` / `AGENTS.md` / `docs/PROJECT_STATUS.md`：同步幕系统、随机事件绑定与钩子、节奏纠偏、阅读导航与新模块位置、测试体系数字。
+- `docs/known-issues.md`：把 N（检索评分被 magic 加权压过）标记为已修，并在「已修复」一节补实现与取舍说明；`AGENTS.md` / `docs/PROJECT_STATUS.md` / `README.md`：同步 `contextSearch.ts` / `webSearch.ts`、规划工具行为矩阵、`plannerWebSearchEnabled` 设置与 `test:real` 的 `LRPG_*` 用法。
+- `docs/cache-prefix-investigation.md`：新增 9.4「20 回合长局实测」，区分「短局看机制、长局看收益」的读法；`docs/act-system-plan.md`：P6 进度注补真实 20 回合长局已跑通，剩余可选 A/B 质量评估。
 
 ## [0.4.0] - 2026-09-27
 

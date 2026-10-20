@@ -28,6 +28,8 @@
 | `src/v2/actWindow.ts` | 三幕聚焦窗口（≤900 字、6 级降级）、世界书稳定 / 动态拆分、`beatsThisTurn` 裁剪（纯函数） |
 | `src/v2/randomEvents.ts` | 随机事件候选目标与绑定校验、滚动历史（≤8）、智能强度、上下文与三档指令文本（纯函数） |
 | `src/v2/paceGuard.ts` | 程序侧节奏审计（篇幅 / 时间推进 / 收尾模式）与下轮软纠偏文本，只观察不回写正文（纯函数） |
+| `src/v2/contextSearch.ts` | 规划上下文检索 `search_story_context` 的纯函数实现：分词、候选构建、证据切片（500 字）、评分（整串/覆盖率）与结果选择 |
+| `src/v2/webSearch.ts` | 官方 DeepSeek 联网搜索 `web_search` 封装：请求构造（`ori_question`）、响应解析（低置信度回退）、失败降级、工具定义与纪律、官方端点判定 |
 | `src/v2/store.ts` | 存档创建、回合提交、最近回合回退、存档导入（`importSave`）、hydrate 迁移（幕字段反查补齐、旧档随机事件归一化）与可持久化裁剪（`toPortableSaveV2`）；`SAVE_STORAGE_VERSION` 2 |
 | `src/v2/saveTransfer.ts` | 存档备份信封（`lrpg-save` v1）的导出/导入解析、版本守卫、文件名安全化 |
 | `src/v2/GamePage.tsx` | 游戏主界面、侧边栏（含幕 N/M 与挂账徽标、故事脉动三态历史）、队列；结算失败时显示「正文已生成 · 结算未完成」与两个恢复操作 |
@@ -125,6 +127,30 @@
 
 解析失败会直接报错，不会静默提交空补丁。每回合提交后程序还会用 `paceGuard.analyzePace` 生成 `TurnRecordV2.pacing`（只留档、不改正文、不进模型上下文）。
 
+### 3.3 规划工具与联网搜索
+
+planner_pre 的工具由程序按设置决定是否挂载（故事 / 写后结算阶段恒无工具）：
+
+| 工具 | 参数 | 返回 | 说明 |
+|---|---|---|---|
+| `search_story_context` | `query` / `scope`（all·history·characters·relationships·facts·threads）/ `limit`（1~8） | `query/scope/resultCount/results/note` + 每条 `matchedTerms/score` | 本地检索；证据默认 500 字、同来源最多 2 条、去重后截到 limit；实现见 `contextSearch.ts` |
+| `web_search` | 仅 `query`（≤128 字） | `tool/ok/query/resultCount/results/note`（失败时 `error`；0 结果 `retryHint`；低置信度 `lowConfidence`） | 官方 DeepSeek `POST {apiBase}/tools/search`；`ori_question` 由程序带玩家原始输入；每次返回最多 5 条，`rerank_score` 排序，无 ≥1.5 高分时退到 ≥0.5 |
+
+联网搜索行为矩阵（`webSearchAllowed` 的判定：`plannerToolsEnabled && plannerWebSearchEnabled && isOfficialDeepSeekEndpoint(apiBaseUrl) && apiKey`）：
+
+| 条件 | planner_pre 工具 | 是否注入联网纪律 |
+|---|---|---|
+| 工具关闭（无论联网开关） | 无工具 | 否 |
+| 工具开启 + 联网关闭 | 仅 `search_story_context` | 否 |
+| 工具开启 + 联网开启 + 官方 DeepSeek 地址 + 有 Key | `search_story_context` + `web_search` | 是 |
+| 工具开启 + 联网开启 + 非官方地址 或无 Key | 仅 `search_story_context` | 否 |
+| story / planner_post 阶段 | 无工具 | — |
+
+- 每回合 `web_search` 最多成功调用 **1 次**（与玩家设置的阶段工具总轮数无关）；重复调用直接返回工具错误文本。
+- 失败降级：429（账号级 QPS，本回合不重试）/ 5xx / 网络错误 / 超时（默认 8s）/ 非法 JSON 都返回 `{ok:false,...}` 工具消息，**不抛异常、不打掉回合**。
+- 低置信度回退：没有任何结果达到 `rerank_score ≥ 1.5` 时，退到 `≥ 0.5` 并在结果里标 `lowConfidence`，同时附「只能当弱参考」的提示（官方对长尾查询常给 0.7~0.8）。
+- 查询内容与 `ori_question` 会发送给 DeepSeek；外部结果只作为参考证据，工具返回固定 `note` 要求不得覆盖 worldFacts / 正史 / 人物设定。
+
 ## 4. 已移除的协议字段
 
 - `uncertainties`：已从输出模板、类型、解析中移除。
@@ -191,7 +217,7 @@
 - 模型：`storyModel / plannerModel`
 - 生成：`temperatureStory / storyMaxTokens`
 - 规划上下文：`plannerContextPreset / plannerContextTokens`
-- 工具：`plannerToolsEnabled / plannerToolMaxCalls`
+- 工具：`plannerToolsEnabled / plannerToolMaxCalls / plannerWebSearchEnabled`（联网搜索默认关，仅官方 DeepSeek 地址 + API Key 生效，按成功请求计费）
 - DeepSeek：`plannerJsonMode / thinkingMode / reasoningEffort`
 - 高优先级注入：`roleInjects.planner / story / post`
 - 输入视角：`inputPerspective`
@@ -245,9 +271,9 @@
 
 ## 9. 测试体系
 
-- 单元测试：离线（esbuild 打包 + `node:test`，模型调用 mock `fetch`），当前 **479 条用例 / 18 个测试文件**；
+- 单元测试：离线（esbuild 打包 + `node:test`，模型调用 mock `fetch`），当前 **551 条用例 / 20 个测试文件**；
 - 脚本测试：Patch/命运状态回归、引擎端到端 mock 链路（e2e 43 条断言）、存档体积与写入可靠性、故事链路脚本（无 Key 自动 dry-run）；
-- 真实链路冒烟：`npm run test:real`（需外部 API，见下）。
+- 真实链路冒烟：`npm run test:real`（需外部 API，支持 1–40 回合长局与分阶段缓存统计，见下）。
 
 ```bash
 cmd /c npm test                              # 单元测试（esbuild 打包 + node:test）
@@ -258,10 +284,11 @@ cmd /c npm run test:story -- --dry-run       # 故事链路脚本（无 Key 自�
 cmd /c npm run test:real                     # 真实链路冒烟（需 LRPG_API_BASE / LRPG_API_KEY / LRPG_MODEL）
 ```
 
+- `test:real` 可选环境变量：`LRPG_TURNS`（1–40，默认 2）、`LRPG_MAX_TOKENS`（0 = 不限输出）、`LRPG_RETRIES`、`LRPG_TOOLS=1`（上下文检索工具）、`LRPG_WEB_SEARCH=1`（官方联网搜索）、`LRPG_INPUTS_FILE`（每行一条玩家输入）；报告 `test-runs/real-chain-report.json` 含 `cacheSummary`（预热回合分阶段命中率）与 `evaluation`（篇幅 p50/p90、升华收尾/时间跳跃/超预算/纠偏次数、随机事件三态、幕切换、token 合计）。
 - 单元测试源码位于 `tests/`，由 `scripts/run-unit-tests.mjs` 用 esbuild 以 `@ -> src` 别名打包到被 gitignore 的 `test-runs/unit/<scope>/` 后再运行，因此测试可以像产品代码一样使用 `@/` 导入。`--filter` 按 scope 隔离产物与报告目录，支持并行跑不同过滤条件。
 - 模型调用一律 mock `globalThis.fetch`，不产生真实网络请求。
-- 覆盖范围：通用工具与 JSON 提取（含括号平衡扫描与病态输入性能）、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支（含幕状态机自动推进/三条挂账 gate/非法 `currentActId`）、`runTurnV2` 三阶段端到端与失败路径（含工具循环、视角、注入、幕窗口/动态世界书/节拍/纠偏注入）、结算失败续跑与 `runTurnSettlementV2`、随机事件绑定校验/历史裁剪/三态闭环/智能强度/切幕平滑、`actWindow` 窗口降级与稳定块字节不变、`paceGuard` 节奏审计与纠偏文本、`useGameStoreV2` 存档与回合回退/存档导入/hydrate 加固（含旧档幕字段迁移）、存档备份信封导出与导入解析、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆（含幕级字段）。
-- 未覆盖：React 组件与浏览器行为（含阅读导航、司辰仪面板、金线特效）、`llmClient` 的非 2xx 与 `stream_options` 重试分支、真实供应商 SSE 分块边界、真实模型输出质量——这些仍需配置 API 后人工冒烟（`npm run test:real` 只跑 1–2 回合链路与落盘，不评估写作质量）。
+- 覆盖范围：通用工具与 JSON 提取（含括号平衡扫描与病态输入性能）、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支（含幕状态机自动推进/三条挂账 gate/非法 `currentActId`/切幕后 `currentStage` 兜底）、`runTurnV2` 三阶段端到端与失败路径（含工具循环、视角、注入、幕窗口/动态世界书/节拍/纠偏注入、联网搜索挂载矩阵与失败降级）、结算失败续跑与 `runTurnSettlementV2`、随机事件绑定校验/历史裁剪/三态闭环/智能强度/切幕平滑、`actWindow` 窗口降级与稳定块字节不变、`paceGuard` 节奏审计与纠偏文本、`contextSearch` 分词/覆盖排序/证据切片/结果选择（33 条）、`webSearch` 请求与响应解析/低置信度回退/各类失败降级/官方端点判定（30 条）、`useGameStoreV2` 存档与回合回退/存档导入/hydrate 加固（含旧档幕字段迁移）、存档备份信封导出与导入解析、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆（含幕级字段）。
+- 未覆盖：React 组件与浏览器行为（含阅读导航、司辰仪面板、金线特效）、`llmClient` 的非 2xx 与 `stream_options` 重试分支、真实供应商 SSE 分块边界、真实模型输出质量——这些仍需配置 API 后人工冒烟（`test:real` 可跑长局链路与缓存统计，但不评估写作质量）。
 
 ## 10. 已移除的遗留部分
 
@@ -283,7 +310,9 @@ V1 多 Agent 版本的代码已在接手清理中删除（共 37 个文件：36 
 - 结算续跑的中间结果只存在当前页面会话：刷新后未提交正文与「仅重试结算」入口会丢失（见 `known-issues.md` O）；
 - 存档导入复用 hydrate 规范化；高版本只读存档若被导出，会按当前结构裁剪、不保留未来版本的未知字段；
 - **节奏检测是保守启发式**：只覆盖固定收束句式与时间词表（尾 220 字叙述部分），意象式升华、换一种说法点题等写法会漏报；宁可漏报也不做"剧情警察"，检测结果只影响下一轮提示词，不回滚正文；
-- **真实链路依赖外部供应商**：`npm run test:real` 需要可用的 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，脚本内置请求级重试与退避（网关按出口 IP 门禁、429、5xx）；供应商额度或网络不可用时无法离线复现；
+- **真实链路依赖外部供应商**：`npm run test:real` 需要可用的 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，脚本内置请求级重试与退避（网关按出口 IP 门禁、429、5xx），可跑 1–40 回合长局并输出分阶段缓存统计（`cacheSummary`）与长局评测（`evaluation`）；供应商额度或网络不可用时无法离线复现；
+- **联网搜索默认关闭且仅官方端点可用**：需要「工具开启 + `plannerWebSearchEnabled` + 官方 DeepSeek 地址 + 有 API Key」同时满足（非官方服务没有 `/tools/search` 接口）；查询与 `ori_question` 会发送给 DeepSeek，按成功请求计费（约 `$0.75/1000`）；外部网页可能过时或不准确，工具返回强制要求不得覆盖 worldFacts / 正史 / 人物设定；
+- **上下文检索的证据长度是有意取舍**：单条证据默认 500 字（原 900）、同一来源最多 2 条——优先保证相关性与来源多样性；被截断或挤掉的内容仍可用更小 `scope` 或更短关键词再查，不会真正丢失；
 - **前端新增两组件仍属 GamePage 生态**：`ReadingNavigator.tsx` 与 `ModelActivityPanel.tsx` 未拆独立路由，React 组件行为不在单测覆盖内，需配置真实 API 后浏览器冒烟；
 - 阅读版式与回合书签独立存 `lrpg.reader.prefs` / `lrpg.bookmarks.<saveId>`，不进入 `lrpg.v2` 存档，也不随存档导出备份；
 - 旧文档已归档至 `docs/archive/`；`.legacy-reference/` 为本地 V1 草稿，不参与构建。

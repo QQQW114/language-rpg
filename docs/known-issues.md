@@ -92,7 +92,7 @@
 - 现象：`"晴 在哪里"` 因 `晴` 长度 < 2 被丢弃，检索返回 0 条；单字中文人名检索不到。
 - 建议：CJK 单字保留，或对 CJK 做 bigram 展开。
 
-### N. 检索评分里的 magic 加权可能压过最相关的正文证据
+### N. 检索评分里的 magic 加权可能压过最相关的正文证据 ✅ 已修（见"已修复"一节）
 
 - 位置：`src/v2/engine.ts` 的 `searchStoryContext` 排序（`facts` +4、非 history +2）
 - 现象：内容恰好等于查询词的正文消息会排在结构化 facts 之后。
@@ -147,6 +147,14 @@
 同时把工具描述改成面向操作的说明（列出适用场景与不适用场景），`scope` 参数补上每个取值的含义，"查不到"的提示改为建议改用更短的人名/地点/事件词。
 
 回归测试：`tests/engine.test.ts`（单字检索命中、长正文窗口切片必须包含查询词）。
+
+### ✅ 检索评分：结构化来源的 magic 加权压过更相关正文（已知问题 N）
+
+- 位置：原 `src/v2/engine.ts` 的 `searchStoryContext` 排序（`facts` +4、非 history +2），现为 `src/v2/contextSearch.ts`。
+- 现象：内容恰好等于查询词的正文消息会排在结构化 facts 之后——不是"查不到"，而是更相关的证据被来源类型压过。
+- 修复：评分改为「整串命中 +100 → 命中覆盖率 ×60 → 逐词长度小权重」，来源加成压到 facts +3、其他非 history +1，只在命中强度接近时做次级倾向；分词、候选构建、证据切片与结果选择同时下沉为纯函数（`parseSearchQuery` / `buildContextCandidates` / `clipContextEvidence` / `scoreContextCandidate` / `selectContextResults` / `buildSearchResponse`），工具名与返回顶层字段保持兼容。
+- 有意的取舍：证据从 900 字截到 **500 字**、同一来源最多 **2 条**——宁可给得少，也要给得更相关、来源更分散；被截掉的内容仍可用更小 scope 或更短关键词再查一次。
+- 回归测试：`tests/contextSearch.test.ts`（33 条）、`tests/engine.test.ts`（整串命中优先于散词、单字检索、证据必须包含查询词）。
 
 ### ✅ `superseded` 缺少有效替代者时虚增结局完成度
 

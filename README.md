@@ -21,6 +21,8 @@
 - **故事主线**：重演世界书设定故事，由Agent驱动的故事进度推进与随机事件。
 - **幕系统**：当前幕由程序权威维护（模型自报乱报会被忽略）；本幕故事节完成后自动进入下一幕，玩家改道时可通过挂账 gate 携节跨幕，挂账节不视为完成、不放宽结局门槛。
 - **随机事件钩子**：每个随机事件都必须绑定故事节 / 线程 / 关系 / 最终命运之一，并带滚动历史与三态结算（兑现 / 留钩子 / 被打断），后续回合可以回收之前埋下的钩子。
+- **上下文检索**：规划模型可按需检索旧正文、人物、关系、正史事实与故事线程；先整串命中再按关键词覆盖率排序，返回结果带命中词与评分，证据附命中位置而不是一段无关开头。
+- **可选联网搜索**：默认关闭，仅在官方 DeepSeek 地址 + API Key 且玩家显式开启时生效；只用于现实世界事实（制度、地理、机构、专业知识），虚构设定、世界书与正史始终优先，外部结果不得覆盖既有设定。
 - **节奏纠偏**：程序检测升华式收尾、单轮时间跨度与篇幅超预算，只对下一轮做软纠偏，不改写或回滚已生成的正文。
 - **长文阅读导航**：卷宗目录与回合跳转、存档级书签、字号 / 行距 / 版心调节、跨幕题跋与「回到最新」。
 - **故事工坊**：自行编写幕、故事节和世界书；内容保存在浏览器，可用 JSON 导入导出。
@@ -106,16 +108,24 @@ npm run test:story -- --mode=author
 
 可使用 `--inputs=inputs.txt` 提供每行一条玩家输入，测试报告保存到被 Git 忽略的 `test-runs/`。
 
-真实链路冒烟（用真实 engine/store 打真实 API，跑 1~2 回合并检查落盘；未配置环境变量时直接退出）：
+真实链路冒烟（用真实 engine/store 打真实 API，跑 1~40 回合并检查落盘与缓存命中；未配置环境变量时直接退出）：
 
 ```bash
-LRPG_API_BASE=https://your-api.example/v1
+LRPG_API_BASE=https://api.deepseek.com/v1
 LRPG_API_KEY=your-key
-LRPG_MODEL=your-model
+LRPG_MODEL=deepseek-flash
+LRPG_TURNS=3
 npm run test:real
 ```
 
-可选 `LRPG_TURNS`（1~5，默认 2）、`LRPG_MAX_TOKENS`、`LRPG_RETRIES`；报告写入 `test-runs/real-chain-report.json`。脚本内置了针对网关门禁、429 与 5xx 的请求级重试。
+可选环境变量：
+
+- `LRPG_TURNS`（1~40，默认 2）、`LRPG_MAX_TOKENS`（`0` 表示不限输出，默认 `0`）、`LRPG_RETRIES`；
+- `LRPG_INPUTS_FILE`：外部输入列表，每行一条玩家输入（空行与 `#` 开头忽略）；
+- `LRPG_TOOLS=1`：启用规划模型上下文检索工具；
+- `LRPG_WEB_SEARCH=1`：启用官方 DeepSeek 联网搜索（仅官方 API Base 生效；查询会发给 DeepSeek，按成功请求计费）。
+
+报告写入 `test-runs/real-chain-report.json`，含逐回合分阶段缓存命中、`cacheSummary`（预热回合命中率）与长局 `evaluation`（篇幅分布、升华收尾 / 时间跳跃 / 超预算次数、随机事件三态、幕切换、token 合计）。脚本内置了针对网关门禁、429 与 5xx 的请求级重试。
 
 ## 开发文档
 
