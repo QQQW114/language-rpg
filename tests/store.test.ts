@@ -3,7 +3,7 @@ import { clearPersisted, memoryStorage, readPersisted, seedPersisted } from './h
 
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { useGameStoreV2, SAVE_STORAGE_VERSION, type CommitSuccessfulTurnV2, type SaveV2 } from '@/v2/store';
+import { useGameStoreV2, SAVE_STORAGE_VERSION, toPortableSaveV2, type CommitSuccessfulTurnV2, type SaveV2 } from '@/v2/store';
 import { makeBackground, makeOutline, makeState } from './helpers/fixtures';
 
 const store = () => useGameStoreV2.getState();
@@ -125,6 +125,71 @@ describe('useGameStoreV2 — 存档格式版本与迁移', () => {
   it('清空版本提示后不再阻塞', async () => {
     useGameStoreV2.setState({ stateVersionIssue: undefined });
     assert.equal(useGameStoreV2.getState().stateVersionIssue, undefined);
+  });
+
+  // 回归：randomEvent 分支原先没有 spread 原始对象，hydrate 时会把审计字段静默丢掉，
+  // 「故事脉动」卡片在刷新后变空（save-engineer 在 task-2 导入链路里发现，Lead 复核实锤）。
+  it('hydrate 保留 randomEvent 的审计字段（lastPlan / lastNote / lastTriggeredTurn）', async () => {
+    seedPersisted('lrpg.v2', {
+      saves: {
+        'save-pulse': brokenSave({
+          randomEvent: {
+            enabled: true,
+            nextTriggerTurn: 9,
+            pending: true,
+            intensity: 'destiny',
+            lastTriggeredTurn: 6,
+            triggerIntervalMin: 2,
+            triggerIntervalMax: 8,
+            lastPlan: '安排一场雨夜偶遇',
+            lastNote: '事件已发生：旧信被找到',
+          },
+        }),
+      },
+      activeId: 'save-pulse',
+    }, 0);
+    await persistApi().rehydrate();
+    const randomEvent = useGameStoreV2.getState().saves['save-pulse'].state.randomEvent;
+    assert.equal(randomEvent.lastPlan, '安排一场雨夜偶遇');
+    assert.equal(randomEvent.lastNote, '事件已发生：旧信被找到');
+    assert.equal(randomEvent.lastTriggeredTurn, 6);
+    // 显式兜底仍然生效，不被 spread 破坏
+    assert.equal(randomEvent.enabled, true);
+    assert.equal(randomEvent.pending, true);
+    assert.equal(randomEvent.intensity, 'destiny');
+    assert.equal(randomEvent.nextTriggerTurn, 9);
+    assert.equal(randomEvent.triggerIntervalMin, 2);
+    assert.equal(randomEvent.triggerIntervalMax, 8);
+  });
+
+  // 回归：turnRecords[].calls 缺失/非数组时，持久化与导出裁剪（toPortableSaveV2 里 calls.map）
+  // 原本会抛错；sanitize 先归一化为空数组。
+  it('turnRecords[].calls 缺失或非数组时归一化为空数组，写盘与导出裁剪不抛错', async () => {
+    seedPersisted('lrpg.v2', {
+      saves: {
+        'save-records': brokenSave({
+          turnRecords: [
+            { turn: 1, input: '输入', story: '正文' }, // 缺 calls
+            { turn: 2, input: '输入2', story: '正文2', calls: 'not-an-array' }, // calls 类型错误
+            { turn: 3, input: '输入3', story: '正文3', calls: [{ phase: 'story', model: 'm', output: 'ok' }, 'broken', null] },
+          ],
+        }),
+      },
+      activeId: 'save-records',
+    }, 0);
+    await persistApi().rehydrate();
+    const records = useGameStoreV2.getState().saves['save-records'].state.turnRecords;
+    assert.equal(records?.length, 3);
+    assert.deepEqual(records?.[0].calls, []);
+    assert.deepEqual(records?.[1].calls, []);
+    assert.equal(records?.[2].calls.length, 1, '数组内的坏元素被过滤');
+    assert.equal(records?.[2].calls[0].output, 'ok');
+
+    // 触发一次持久化写入：partialize → toPortableSaveV2 不应因 calls 缺失抛错。
+    assert.doesNotThrow(() => useGameStoreV2.setState({ activeId: 'save-records' }));
+    // 导出裁剪同样不崩（「导出存档」直接调用它）。
+    const portable = toPortableSaveV2(useGameStoreV2.getState().saves['save-records']);
+    assert.deepEqual(portable.state.turnRecords?.map((record) => record.calls), [[], [], [{ phase: 'story', model: 'm', output: 'ok' }]]);
   });
 });
 
@@ -414,5 +479,81 @@ describe('useGameStoreV2 — remove / setActive / update', () => {
     const saves = structuredClone(store().saves);
     store().update('save-missing', (save) => ({ ...save, name: '不会生效' }));
     assert.deepEqual(store().saves, saves);
+  });
+});
+
+describe('useGameStoreV2 — importSave（存档导入）', () => {
+  /** 一份来自"其他设备"的存档对象（结构与 SaveV2 一致）。 */
+  const importedSave = (overrides: Partial<SaveV2> = {}): SaveV2 => ({
+    id: 'save-from-file',
+    name: '导入的旅程',
+    createdAt: 100,
+    updatedAt: 200,
+    worldFacts: [],
+    state: makeState({ turnRecords: [] }),
+    ...overrides,
+  });
+
+  it('以新 id 写入 saves 与 localStorage，保留名称/创建时间，刷新 updatedAt', () => {
+    const active = store().create({ name: '已有旅程', mode: 'author' });
+    const id = store().importSave(importedSave());
+
+    assert.notEqual(id, 'save-from-file', '导入必须分配新 id，不能沿用文件里的 id');
+    const save = saveOf(id);
+    assert.ok(save);
+    assert.equal(save.name, '导入的旅程');
+    assert.equal(save.createdAt, 100, 'createdAt 保留备份里的原始创建时间');
+    assert.ok(save.updatedAt > 200, '导入视为用户操作，应刷新 updatedAt');
+    assert.equal(store().activeId, active, '导入不应切换 activeId（由调用方决定是否进入）');
+    assert.ok(saveOf(active), '已有存档保留');
+    assert.equal(Object.keys(store().saves).length, 2, '与已有存档共存');
+
+    const persisted = readPersisted('lrpg.v2') as { state?: { saves?: Record<string, SaveV2> } };
+    assert.ok(persisted?.state?.saves?.[id], '导入的存档应写入 localStorage');
+    assert.equal('lastTurnCheckpoint' in persisted.state.saves[id], false);
+  });
+
+  it('文件里的 id 与已有存档冲突时不会覆盖已有存档', () => {
+    const existing = store().create({ name: '一号', mode: 'author' });
+    const imported = store().importSave(importedSave({ id: existing, name: '同名文件' }));
+
+    assert.notEqual(imported, existing);
+    assert.equal(saveOf(existing)!.name, '一号', '已有存档内容不变');
+    assert.equal(saveOf(imported)!.name, '同名文件');
+  });
+
+  it('缺字段的旧档经 sanitize 兜底后导入，不抛错', () => {
+    const id = store().importSave({
+      id: 'save-legacy-import',
+      name: '旧档导入',
+      createdAt: 1,
+      updatedAt: 2,
+      state: {
+        schemaVersion: 2,
+        revision: 1,
+        turn: 2,
+        phase: 'input',
+        mode: 'author',
+        history: [],
+        summary: '旧摘要',
+      },
+    } as unknown as SaveV2);
+    const save = saveOf(id)!;
+    assert.deepEqual(save.state.storyThreads, []);
+    assert.deepEqual(save.state.turnRecords, []);
+    assert.deepEqual(save.state.inventory, []);
+    assert.equal(save.state.randomEvent.enabled, true);
+    assert.equal(save.state.destiny.completionEstimate, 0);
+    assert.equal(save.state.turn, 2, '已有字段原样保留');
+  });
+
+  it('结构坏到没有 state 时抛错且不写入任何状态', () => {
+    store().create({ name: '一号', mode: 'author' });
+    const savesBefore = structuredClone(store().saves);
+    assert.throws(
+      () => store().importSave({ id: 'save-broken', name: '坏档' } as unknown as SaveV2),
+      /state/,
+    );
+    assert.deepEqual(store().saves, savesBefore);
   });
 });

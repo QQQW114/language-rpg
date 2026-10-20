@@ -1,20 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
   BookPlus,
   Compass,
+  Download,
   PlayCircle,
   ScrollText,
   Settings,
   Trash2,
+  Upload,
+  X,
 } from 'lucide-react';
 import { TextStarfield } from '@/components/TextStarfield';
 import { Button } from '@/components/ui/Button';
 import { confirmDialog } from '@/components/ui/ConfirmDialog';
 import { Dialog } from '@/components/ui/Dialog';
 import { CornerFiligree, OrnateDivider } from '@/components/ui/Ornaments';
-import { useGameStoreV2 } from './store';
+import { useGameStoreV2, type SaveV2 } from './store';
+import { downloadSaveBackup, parseSaveImport, readSaveFileText } from './saveTransfer';
 
 // Keep this flag in module memory rather than component state. A full browser
 // reload evaluates the module again and restores the entrance animation, while
@@ -26,7 +30,11 @@ export default function HomePageV2() {
   const saves = useGameStoreV2((state) => state.saves);
   const setActive = useGameStoreV2((state) => state.setActive);
   const remove = useGameStoreV2((state) => state.remove);
+  const importSave = useGameStoreV2((state) => state.importSave);
   const [showSaves, setShowSaves] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const playEntranceAnimation = !hasPlayedHomeEntrance;
 
   useEffect(() => {
@@ -35,6 +43,69 @@ export default function HomePageV2() {
 
   const saveList = Object.values(saves).sort((a, b) => b.updatedAt - a.updatedAt);
   const hasSaves = saveList.length > 0;
+
+  const pickImportFile = () => {
+    setNotice(null);
+    fileInputRef.current?.click();
+  };
+
+  /** 导出可恢复存档（不是游戏页的剧情留档）。 */
+  const exportSave = (save: SaveV2) => {
+    try {
+      downloadSaveBackup(save);
+      setNotice({
+        tone: 'success',
+        text: `已导出《${save.name}》的存档备份，可在其他设备用「导入存档」恢复。`,
+      });
+    } catch (error) {
+      setNotice({ tone: 'error', text: `导出失败：${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
+
+  const importFile = async (file: File | undefined) => {
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await readSaveFileText(file);
+      const parsed = parseSaveImport(text, { existingSaves: useGameStoreV2.getState().saves });
+      if (!parsed.ok || !parsed.save) {
+        const reason = parsed.issues.length
+          ? parsed.issues.map((item) => item.message).join('；')
+          : '无法读取这个存档文件。';
+        setNotice({ tone: 'error', text: reason });
+        return;
+      }
+      const imported = parsed.save;
+      const id = importSave(imported);
+      setShowSaves(false);
+      // 导入成功必须给可见反馈；是否立刻进入由玩家决定（存档本身已经落盘）。
+      const enterGame = await confirmDialog({
+        title: '导入成功',
+        message: `旅程《${imported.name}》已保存到当前浏览器（第 ${imported.state.turn} 回合）。`
+          + '现在进入这段旅程吗？',
+        confirmText: '进入旅程',
+        cancelText: '留在主页',
+      });
+      if (enterGame) {
+        setImporting(false);
+        setActive(id);
+        nav('/game');
+        return;
+      }
+      setNotice({ tone: 'success', text: `已导入《${imported.name}》，可在「继续旅程」中打开。` });
+    } catch (error) {
+      // 写入 localStorage 失败（配额）时 store 会把原因放进 persistError，优先展示可操作建议。
+      const persistError = useGameStoreV2.getState().persistError;
+      setNotice({
+        tone: 'error',
+        text: persistError?.message ?? `导入失败：${error instanceof Error ? error.message : String(error)}`,
+      });
+    } finally {
+      setImporting(false);
+      // 清空 value，允许连续选择同一个文件（change 只在 value 变化时触发）。
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   return (
     <div className="relative flex min-h-full items-center justify-center overflow-hidden px-6 py-12">
@@ -98,6 +169,12 @@ export default function HomePageV2() {
           你可以改变道路，而故事会记住方向，陪你完整走到预设的结尾。
         </div>
 
+        {notice && !showSaves && (
+          <div className="mx-auto mb-6 max-w-xl">
+            <NoticeBar notice={notice} onClose={() => setNotice(null)} />
+          </div>
+        )}
+
         <div className="flex flex-col items-center gap-3">
           <Button
             size="lg"
@@ -128,6 +205,9 @@ export default function HomePageV2() {
                 : undefined
             }
           >
+            <Button variant="ghost" loading={importing} onClick={pickImportFile}>
+              <Upload size={16} /> 导入存档
+            </Button>
             <Button variant="ghost" onClick={() => nav('/workshop')}>
               <BookPlus size={16} /> 故事与世界书工坊
             </Button>
@@ -138,6 +218,17 @@ export default function HomePageV2() {
         </div>
       </div>
 
+      {/* 导入存档：hidden file input，主页与存档对话框共用。 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(event) => {
+          void importFile(event.target.files?.[0]);
+        }}
+      />
+
       <Dialog
         open={showSaves}
         onClose={() => setShowSaves(false)}
@@ -145,6 +236,7 @@ export default function HomePageV2() {
         widthClass="max-w-3xl"
       >
         <div className="flex flex-col gap-3">
+          {notice && <NoticeBar notice={notice} onClose={() => setNotice(null)} />}
           {saveList.map((save) => (
             <div
               key={save.id}
@@ -179,6 +271,15 @@ export default function HomePageV2() {
               </Button>
               <Button
                 size="sm"
+                variant="outline"
+                title="导出存档（JSON 备份，可在其他设备导入）"
+                aria-label={`导出存档 ${save.name}`}
+                onClick={() => exportSave(save)}
+              >
+                <Download size={14} />
+              </Button>
+              <Button
+                size="sm"
                 variant="danger"
                 title="删除旅程"
                 aria-label={`删除旅程 ${save.name}`}
@@ -202,6 +303,15 @@ export default function HomePageV2() {
               暂无旅程。
             </div>
           )}
+
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-3 border-t border-parchment-600/30 pt-3">
+            <span className="max-w-md text-left text-[11px] leading-relaxed text-parchment-200/50">
+              导出的 JSON 是可恢复存档，不是游戏页的剧情留档；导入会作为新旅程加入，不会覆盖现有旅程。
+            </span>
+            <Button size="sm" variant="outline" loading={importing} onClick={pickImportFile}>
+              <Upload size={14} /> 导入存档
+            </Button>
+          </div>
         </div>
       </Dialog>
     </div>
@@ -215,4 +325,31 @@ function formatSaveTime(timestamp: number): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(timestamp);
+}
+
+interface Notice {
+  tone: 'success' | 'error';
+  text: string;
+}
+
+/** 与工坊页同款的轻量提示条：只用于导出/导入这类一次性反馈。 */
+function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void }) {
+  return (
+    <div
+      role="status"
+      className={`flex items-start gap-3 rounded-md border px-4 py-3 text-left text-sm text-parchment-100 ${
+        notice.tone === 'error' ? 'border-ember/50 bg-ember/10' : 'border-moss/50 bg-moss/10'
+      }`}
+    >
+      <span className="min-w-0 flex-1 font-serif leading-relaxed">{notice.text}</span>
+      <button
+        type="button"
+        onClick={onClose}
+        className="shrink-0 text-parchment-200/55 transition-colors hover:text-parchment-50"
+        aria-label="关闭提示"
+      >
+        <X size={15} />
+      </button>
+    </div>
+  );
 }

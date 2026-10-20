@@ -2,6 +2,35 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
+## [未发布]
+
+### 新增
+
+- **回合续跑（失败恢复）**：写后结算（`planner_post`）失败时不再整轮作废。`runTurnV2` 抛携带中间结果的 `TurnPostFailureV2`（正文、写前简报、commitId、已完成的两阶段调用），新增 `runTurnSettlementV2()` 只重跑结算与提交；游戏页显示「正文已生成 · 结算未完成」，提供「仅重试结算」（只发一次结算请求）与「重新生成本回合」两个恢复操作。续跑带 revision/turn 前置校验，提交仍走原有两道 CAS。
+- **存档导出/导入**：主页「继续旅程」可把存档导出为 JSON 备份（信封 `{kind:'lrpg-save',version:1,exportedAt,save}`，与持久化共用裁剪规则、剔除提示词留档），也可从备份导入恢复。导入一律生成新 id 作为新旅程、不覆盖现有存档，名称冲突自动加「（导入）」；版本过高的信封/存档与畸形 JSON 会被拒绝并给出可读原因；复用 hydrate 规范化，缺字段旧档也能导入。
+- **路由级动态分包**：`/game`、`/setup`、`/workshop`、`/settings` 改为按需加载，并把 React 与 Markdown 依赖拆成稳定 vendor chunk——主入口从 548.51 kB 降到 42.57 kB（gzip 181.17 kB → 16.03 kB），500 kB chunk 警告消失。
+
+### 修复
+
+- **hydrate 静默丢失随机事件审计字段**：`sanitizeGameStateV2` 重建 `randomEvent` 时漏了 spread，`lastPlan` / `lastNote` / `lastTriggeredTurn` 在每次刷新页面（以及导入存档）后被丢弃；游戏页「故事脉动」卡片的安排与结果因此消失。现在保留这三个字段并补回归测试。
+- **`turnRecords[].calls` 缺失时写盘/导出抛错**：手改或导入的存档若某个回合记录缺 `calls`，持久化与导出都会抛异常。sanitize 现在把 `calls` 归一化为数组，裁剪函数再加一层防御。
+
+### 变更
+
+- 单元测试运行器按 `--filter` 隔离产物与报告目录（`test-runs/unit/<scope>/`），支持多个 agent 并行跑不同过滤条件的测试。
+
+### 测试
+
+- 单元测试 304 → **338 条**（15 个测试文件）：新增结算失败续跑 7 条、存档导出/导入 21 条、store 导入与 hydrate 加固 6 条。
+- `npm run test:e2e` 43/43、`npm run test:patch`、`npm run test:storage`、`npm run test:story -- --dry-run` 全部通过。
+
+### 文档
+
+- `docs/known-issues.md`：补登记 hydrate 丢字段与 `calls` 加固的已修复条目，新增「续跑中间结果只存内存」待决策项；标注 L/M 检索问题已修。
+- `docs/PROJECT_STATUS.md`：核心文件表补 `saveTransfer.ts` 与续跑 API，测试体系与用例数同步，已知边界更新。
+- `README.md`、`AGENTS.md`：补存档备份/失败恢复说明与新模块位置。
+- 合并 `[0.4.0]` 中重复的「新增」小节。
+
 ## [0.4.0] - 2026-09-27
 
 ### 移除
@@ -19,6 +48,11 @@
 - **未发送输入的草稿保留**：输入框内容按存档存入 `lrpg.draft.<saveId>`，打开设置页、返回主页或刷新后重新进入对话时仍在。刻意不写进 `lrpg.v2`——草稿是易失的界面状态，不该参与存档体积与写入可靠性机制。输入变化 250ms 防抖写入，`pagehide` 时补一次；每个存档只恢复一次，不覆盖玩家后续输入。
 - **发送消息时自动滚动到底部**：文献卡内、输入框之前放零高度锚点，用 `scrollIntoView` 跟随（位置由浏览器按真实布局计算，不需要维护像素常量；锚点在输入框之前，所以滚到底时输入框自然贴住它）。玩家主动往上翻读时不打断，滚回底部或发送新行动后恢复跟随。
 - **常驻 mock 供应商 `scripts/mock-provider.mjs`**：供浏览器手动冒烟用。按轮次稳定改变侧边栏内容（第 1 轮新增人物与线程、第 2 轮改人物状态并推进线程、第 3 轮新增道具与事实），一次点完即可观察四种更新特效。
+- **自动化测试系统**：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 304 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
+- **端到端 mock 链路测试**：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，43 条断言覆盖完整回合、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）、store 落盘与缓存前缀结构。
+- **存档体积与写入可靠性实测**：`npm run test:storage` 测量每回合字节增长、距 localStorage 配额的剩余回合数，并注入 `QuotaExceededError` 验证失败可见性。
+- **`tests/llmClient.test.ts`**：补齐此前零覆盖的模型客户端（工具循环两个 HARD 缺陷的回归测试）。
+- **`docs/known-issues.md`**：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。
 
 ### 修复
 
@@ -61,15 +95,6 @@
 - `docs/cost-analysis.md`：一次真实三回合游玩的成本实测与优化优先级（输出占 82% 费用、时段差价 2 倍、缓存优化上限约 16%）。
 - `docs/multiround-generation-evaluation.md`、`docs/planner-multiround-evaluation.md`：两次"要不要多轮"的评估（含 29 个真实回合的量化证据与被证伪的假设）。
 - `docs/frontend-interaction-polish.md`：四项前端交互优化的成因与实现。
-
-### 新增
-
-- 自动化测试系统：`npm test` 使用 esbuild 打包 + Node 内置 `node:test` 运行，完全离线（模型调用 mock `fetch`），当前 304 条用例；`npm run test:patch` 保留为 Patch/命运状态回归脚本。
-- 端到端 mock 链路测试：`npm run test:e2e` 用本地 OpenAI 兼容 mock 服务器驱动真实 engine/store，43 条断言覆盖完整回合、工具调用轮、失败路径（截断、非法 JSON、HTTP 429）、store 落盘与缓存前缀结构。
-- 存档体积与写入可靠性实测：`npm run test:storage` 测量每回合字节增长、距 localStorage 配额的剩余回合数，并注入 `QuotaExceededError` 验证失败可见性。
-- `scripts/mock-provider.mjs`：常驻的 OpenAI 兼容 mock 供应商，供浏览器手动冒烟使用（按轮次稳定改变侧边栏内容，一次点完即可观察四种更新特效）。
-- `tests/llmClient.test.ts`：补齐此前零覆盖的模型客户端（工具循环两个 HARD 缺陷的回归测试）。
-- `docs/known-issues.md`：登记审查与测试中发现、尚未修复的问题（含严重度、影响路径与处理建议）。
 
 ## [0.3.0] - 2026-07-16
 

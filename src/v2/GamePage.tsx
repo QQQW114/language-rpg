@@ -10,9 +10,9 @@ import { diffSidePanelChanges, toChangeMap, type SidePanelChangeKind } from './s
 import { UPDATE_TIMELINE, UpdateGlow } from '@/components/ui/UpdateGlow';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { runTurnV2 } from './engine';
+import { runTurnSettlementV2, runTurnV2, TurnPostFailureV2 } from './engine';
 import { useActiveSaveV2, useGameStoreV2 } from './store';
-import type { CharacterV2, DestinyProgressV2, GameStateV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnRecordV2 } from './types';
+import type { CharacterV2, DestinyProgressV2, GameStateV2, MessageV2, ModelActivityV2, ModelPhaseV2, NarrativePaceV2, PatchStatsV2, RelationshipV2, StoryBeatRuntimeV2, StoryThreadV2, TurnPartialV2, TurnRecordV2 } from './types';
 import type { LlmUsage } from '@/types/llm';
 import { formatCacheHitRate } from '@/lib/llmUsage';
 
@@ -489,6 +489,11 @@ export default function GamePageV2() {
   const [busy, setBusy] = useState(false);
   const [stream, setStream] = useState('');
   const [failedDraft, setFailedDraft] = useState('');
+  /**
+   * 正文已生成、仅结算失败时的中间结果。存在它就意味着当前回合可以“只重试结算”：
+   * 正文完整保留，重试不会重新调用 planner_pre / story。
+   */
+  const [failedPartial, setFailedPartial] = useState<TurnPartialV2>();
   const [error, setError] = useState('');
   const [queue, setQueue] = useState<QueuedTurn[]>([]);
   const [activeQueueId, setActiveQueueId] = useState<string>();
@@ -624,6 +629,7 @@ export default function GamePageV2() {
     setError('');
     setStream('');
     setFailedDraft('');
+    setFailedPartial(undefined);
     streamBufferRef.current = '';
     setActivities([]);
     setThinking({ planner_pre: '', story: '', planner_post: '' });
@@ -661,6 +667,13 @@ export default function GamePageV2() {
         if (controller.signal.aborted) {
           setQueuePaused(true);
           setError('已取消当前模型请求；后续行动队列已暂停。');
+        } else if (cause instanceof TurnPostFailureV2) {
+          // 正文与写前规划都已成功，只有写后结算失败：不再把整轮作废。
+          // 保留完整正文与续跑所需的中间结果，由玩家选择「仅重试结算」或「重新生成本回合」；
+          // 不把输入重新入队，避免误触「重试模型请求」时又从头浪费两次调用。
+          setFailedPartial(cause.partial);
+          setError(`结算失败，正文已保留：\n${cleanError(cause)}`);
+          setQueuePaused(true);
         } else {
           // 失败项保留在队首，避免后续行动在缺少本轮上下文时被自动发送。
           if (streamBufferRef.current.trim()) setFailedDraft(streamBufferRef.current);
@@ -739,7 +752,108 @@ export default function GamePageV2() {
     setError('');
     setQueuePaused(false);
   };
-  const canReviseLastTurn = !busy && queue.length === 0 && !editingLastTurn && !!save.lastTurnCheckpoint;
+  // ---------------------------------------------------------------------------
+  // 回合续跑：正文已生成、仅结算失败
+  //
+  // 结算失败不等于整轮作废：正文与写前规划都已成功，只有 planner_post 没完成。
+  // 因此提供两条不同的恢复路径：
+  //   · 仅重试结算：复用 failedPartial，只发一次 planner_post，不重跑 pre/story；
+  //   · 重新生成本回合：丢弃正文，把原输入放回队首，从头再跑三阶段。
+  // 两者都必须走与正常回合相同的 abort / runId 并发守卫。
+  // ---------------------------------------------------------------------------
+  const retrySettlementOnly = async () => {
+    if (!failedPartial || processingRef.current) return;
+    const partial = failedPartial;
+    const saveId = save.id;
+    const controller = new AbortController();
+    const runId = ++runIdRef.current;
+    processingRef.current = true;
+    abortRef.current = controller;
+    setBusy(true);
+    setError('');
+    setActiveQueueId(undefined);
+    // 复用「正在处理」卡片：让玩家看到重试的是哪一回合并可随时终止。
+    setActiveTurn({ id: `settle-${partial.commitId}`, input: partial.input, pace: partial.narrativePace, createdAt: Date.now() });
+    try {
+      const latestSave = useGameStoreV2.getState().saves[saveId];
+      if (!latestSave) throw new Error('当前存档已不存在。');
+      const latestSettings = useSettingsStore.getState().settings;
+      // 只结算：state 原样传入（不做“开始生成”时的 phase/narrativePace 改写），
+      // 引擎会用 partial.state 做 CAS 与权威状态快照。
+      const result = await runTurnSettlementV2({
+        state: latestSave.state,
+        input: partial.input,
+        settings: latestSettings,
+        outline: latestSave.outline,
+        background: latestSave.background,
+        worldFacts: latestSave.worldFacts,
+        signal: controller.signal,
+        onModelActivity: (activity) => {
+          if (runIdRef.current === runId && (activity.type === 'phase' || activity.type === 'tool' || activity.type === 'usage' || activity.type === 'warning')) setActivities((current) => [...current, activity]);
+        },
+        onModelThinkingDelta: (phase, text) => { if (runIdRef.current === runId) setThinking((current) => ({ ...current, [phase]: current[phase] + text })); },
+      }, partial);
+      if (controller.signal.aborted || runIdRef.current !== runId) return;
+      const committed = useGameStoreV2.getState().commitSuccessfulTurn(saveId, {
+        stateBeforeTurn: latestSave.state,
+        input: partial.input,
+        narrativePace: partial.narrativePace,
+        nextState: { ...result.state, narrativePace: useGameStoreV2.getState().saves[saveId]?.state.narrativePace ?? partial.narrativePace },
+      });
+      if (!committed) throw new Error('存档在生成期间发生变化，本轮结果未提交。请检查当前故事后重试。');
+      setFailedPartial(undefined);
+      setFailedDraft('');
+      // 结算补上了缺失的上下文，按「重试模型请求」的既有语义恢复后续队列；
+      // 页面在后台时仍保持暂停（与 visibilitychange 的既有约定一致，避免后台连续请求）。
+      if (queue.length > 0 && document.visibilityState !== 'visible') {
+        setQueuePaused(true);
+        setError('结算已完成并提交；页面处于后台，后续行动队列保持暂停，返回后请手动继续。');
+      } else {
+        setError('');
+        setQueuePaused(false);
+      }
+    } catch (cause) {
+      if (runIdRef.current !== runId) return;
+      if (controller.signal.aborted) {
+        // 取消不销毁续跑入口：正文与 partial 都还在，可以再次点击「仅重试结算」。
+        setError('已取消本次结算请求；正文与「仅重试结算」入口仍然保留。');
+      } else if (cause instanceof TurnPostFailureV2) {
+        // 再次失败仍可继续重试，partial 已更新为最新快照。
+        setFailedPartial(cause.partial);
+        setError(`结算失败，正文已保留：\n${cleanError(cause)}`);
+        setQueuePaused(true);
+      } else {
+        // 例如 CAS 冲突：存档已推进，当前正文不能再续跑。
+        // 保留正文作为草稿提示，并把原输入放回队首，让「重试模型请求」能整轮重跑。
+        setFailedPartial(undefined);
+        setFailedDraft(partial.story);
+        setError(cleanError(cause));
+        setQueuePaused(true);
+        setQueue((current) => current.some((queued) => queued.input === partial.input)
+          ? current
+          : [{ id: createQueueId(), input: partial.input, pace: partial.narrativePace, createdAt: Date.now() }, ...current]);
+      }
+    } finally {
+      if (runIdRef.current !== runId) return;
+      if (abortRef.current === controller) abortRef.current = undefined;
+      processingRef.current = false;
+      setActiveTurn(undefined);
+      setBusy(false);
+    }
+  };
+  /** 丢弃已生成的正文，从 planner_pre 重新生成本回合（原输入放回队首）。 */
+  const regenerateFailedTurn = () => {
+    if (!failedPartial || processingRef.current) return;
+    const partial = failedPartial;
+    setFailedPartial(undefined);
+    setFailedDraft('');
+    setError('');
+    setQueuePaused(false);
+    // 同一输入可能仍在 500ms 去重窗口内，清掉记录以允许立刻重新入队。
+    lastEnqueueRef.current = undefined;
+    setQueue((current) => [{ id: createQueueId(), input: partial.input, pace: partial.narrativePace, createdAt: Date.now() }, ...current]);
+  };
+  const canReviseLastTurn = !busy && queue.length === 0 && !editingLastTurn && !failedPartial && !!save.lastTurnCheckpoint;
   const retryLastTurn = async () => {
     if (!canReviseLastTurn) return;
     const confirmed = await confirmDialog({ title: '重新生成最近回合', message: '将撤销最近一轮已经生成的故事和状态，并使用原输入重新请求模型。确定继续吗？', confirmText: '撤销并重新生成', variant: 'danger' });
@@ -795,7 +909,19 @@ export default function GamePageV2() {
           {busy && activeItem && <article className="my-6 border-l-2 border-gold/55 pl-4"><div className="mb-1 flex items-center gap-2 text-[10px] tracking-[.28em] text-gold/65"><span>正在处理 · 第 {save.state.turn + 1} 回合</span><span className="rounded bg-gold/10 px-1.5 py-0.5 tracking-normal text-gold/70">{PACE_OPTIONS.find((option) => option.id === activeItem.pace)?.label}</span><button type="button" onClick={stopCurrentTurn} className="ml-auto rounded border border-blood/40 px-2 py-1 tracking-normal text-blood hover:bg-blood/10"><X size={11} className="mr-1 inline" />终止本轮</button></div><div className="whitespace-pre-wrap font-serif text-[15px] italic leading-8 text-parchment-200/90">{activeItem.input}</div></article>}
           <ModelActivityPanel activities={activities} thinking={thinking} busy={busy} patchStats={save.state.turnRecords?.[save.state.turnRecords.length - 1]?.patchStats} />
           {stream && <StoryArticle turn={save.state.turn} content={stream} writing />}
-          {!busy && failedDraft && <article className="prose-story prose-story--settled my-8 rounded-lg border border-blood/30 bg-blood/5 p-4"><div className="mb-3 text-[10px] tracking-[.22em] text-blood">未提交的故事草稿 · 重试后将被替换</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{failedDraft}</ReactMarkdown></article>}
+          {!busy && failedDraft && !failedPartial && <article className="prose-story prose-story--settled my-8 rounded-lg border border-blood/30 bg-blood/5 p-4"><div className="mb-3 text-[10px] tracking-[.22em] text-blood">未提交的故事草稿 · 重试后将被替换</div><ReactMarkdown remarkPlugins={[remarkGfm]}>{failedDraft}</ReactMarkdown></article>}
+          {failedPartial && <article className="prose-story prose-story--settled my-8 rounded-lg border border-gold/35 bg-gold/5 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[10px] tracking-[.22em] text-gold">正文已生成 · 结算未完成</span>
+              <span className="text-[10px] text-parchment-200/45">正文已保留；仅重试结算不会重新调用写前规划与故事模型</span>
+            </div>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{failedPartial.story}</ReactMarkdown>
+            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gold/15 pt-3">
+              <Button size="xs" disabled={busy} onClick={() => void retrySettlementOnly()}>{busy ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}仅重试结算</Button>
+              <Button size="xs" variant="ghost" disabled={busy} onClick={regenerateFailedTurn}><RotateCcw size={13} />重新生成本回合</Button>
+              {busy && <span className="text-[11px] text-parchment-200/45">正在重试结算，只重跑写后结算…</span>}
+            </div>
+          </article>}
           {/* 滚动锚点：发送后滚到这里即"到底"。放在文献卡内部、输入框之前。
               必须留出滚动边距：输入框是 sticky 在底部的，锚点紧贴它之前会被它盖住，
               而 `scrollIntoView` 一旦认为锚点"已在视口内"就不再滚动，于是正文会停在
@@ -805,7 +931,7 @@ export default function GamePageV2() {
           <div ref={storyEndRef} style={{ scrollMarginBottom: 280 }} className="h-px w-full" aria-hidden />
         </div>
         {save.lastTurnCheckpoint && <div className="mt-3 flex flex-wrap justify-end gap-2"><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={retryLastTurn}><RotateCcw size={13} />重新生成最近回合</Button><Button size="xs" variant="ghost" disabled={!canReviseLastTurn} onClick={editLastTurn}><Pencil size={13} />修改最近输入</Button></div>}
-        {error && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-blood/50 bg-blood/10 px-4 py-3 text-sm text-blood"><span className="whitespace-pre-wrap">{error}</span>{queuePaused && queue.length > 0 && <Button size="xs" variant="outline" onClick={retryQueue}><RotateCcw size={13} />重试模型请求</Button>}</div>}
+        {error && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-blood/50 bg-blood/10 px-4 py-3 text-sm text-blood"><span className="whitespace-pre-wrap">{error}</span>{queuePaused && queue.length > 0 && !failedPartial && <Button size="xs" variant="outline" onClick={retryQueue}><RotateCcw size={13} />重试模型请求</Button>}</div>}
         {persistError && <div className="mt-4 rounded-lg border border-amber-400/45 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
           <div className="flex items-start gap-2">
             <AlertCircle size={16} className="mt-0.5 shrink-0" />

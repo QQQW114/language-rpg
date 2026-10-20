@@ -1,7 +1,8 @@
 # tests/ — 单元测试
 
 无网络、无 API Key、无新增依赖。源码是 TS/TSX，Node 不能直接执行，因此统一用
-`esbuild` 打包到 `test-runs/unit/`，再用 `node:test` 逐文件（独立子进程）运行。
+`esbuild` 打包到 `test-runs/unit/<scope>/`（scope 由 `--filter` 决定，未过滤时为 `all`，
+用于并行跑不同过滤条件时互不覆盖），再用 `node:test` 逐文件（独立子进程）运行。
 
 ## 运行
 
@@ -14,7 +15,7 @@ node scripts/run-unit-tests.mjs --no-build       # 复用上次打包产物
 运行器行为：
 
 - esbuild 参数：`bundle: true`、`platform: 'node'`、`format: 'esm'`、`alias: { '@': '<repo>/src' }`、`logLevel: 'silent'`；
-- `node --test --test-force-exit`，spec 报告写入 `test-runs/unit-reports/spec.txt` 后回显，
+- `node --test --test-force-exit`，spec 报告写入 `test-runs/unit-reports/<scope>/spec.txt` 后回显，
   TAP 报告用于统计；失败时以非零码退出并打印失败用例名；
 - 子进程统一 `stdio: 'inherit'`（沙箱下管道 stdio 可能 EPERM）；
 - 每个测试文件在独立进程里运行，单个文件失败/求值期崩溃不影响其他文件（已用临时探针验证）。
@@ -39,8 +40,9 @@ node scripts/run-unit-tests.mjs --no-build       # 复用上次打包产物
 | `llmUsage.test.ts` | DeepSeek 与 OpenAI 缓存字段归一化、`mergeLlmUsage` 逐字段保留、缓存展示辅助 |
 | `sse.test.ts` | chat/responses 两种 SSE、`<think>` 跨帧拆分、`thinkingFallback`、tool_calls 聚合、usage 合并、`length`/错误帧 |
 | `patch.test.ts` | `commitTurnPatchV2` 全部守卫与增量合并（人物/关系/库存/线程/事实/故事节/结局/随机事件/actions） |
-| `engine.test.ts` | `normalizeDestinyPatch`、`runTurnV2` 三阶段端到端（mock fetch）、失败路径、工具循环、视角与注入 |
-| `store.test.ts` | `useGameStoreV2` 的 create / commitSuccessfulTurn / restoreLastTurn / remove / persist |
+| `engine.test.ts` | `normalizeDestinyPatch`、`runTurnV2` 三阶段端到端（mock fetch）、失败路径、工具循环、视角与注入、结算失败续跑 `TurnPostFailureV2` / `runTurnSettlementV2` |
+| `store.test.ts` | `useGameStoreV2` 的 create / commitSuccessfulTurn / restoreLastTurn / importSave / remove / persist / hydrate 字段兜底 |
+| `saveTransfer.test.ts` | 存档备份信封构造与序列化、导入解析与版本守卫、新 id/重名策略、文件名、与 `importSave` 的集成 |
 | `contentLibrary.test.ts` | 大纲、世界书、导入包校验与导出/导入往返 |
 | `contentStore.test.ts` | `useContentStore` 增删改、预设保护、导入导出、v3 与旧版持久化兼容 |
 | `workshopModel.test.ts` | 工坊校验分级、克隆换 id、保存前归一化、`safeFilename`、导出封装与下载 |

@@ -22,16 +22,16 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/v2/engine.ts` | 三阶段提示词、工具、随机事件指令、Patch 组装、回合执行 |
+| `src/v2/engine.ts` | 三阶段提示词、工具、随机事件指令、Patch 组装、回合执行；结算失败抛 `TurnPostFailureV2`，`runTurnSettlementV2` 只重跑结算 |
 | `src/v2/patch.ts` | 写后 Patch 校验、增量合并、状态提交 |
-| `src/v2/types.ts` | V2 游戏状态与 Patch 类型 |
-| `src/v2/store.ts` | 存档创建、回合提交、最近回合回退 |
-| `src/v2/GamePage.tsx` | 游戏主界面、侧边栏、队列与活动面板 |
+| `src/v2/types.ts` | V2 游戏状态、Patch 类型与续跑中间结果 `TurnPartialV2` |
+| `src/v2/store.ts` | 存档创建、回合提交、最近回合回退、存档导入（`importSave`）、hydrate 迁移与可持久化裁剪（`toPortableSaveV2`） |
+| `src/v2/saveTransfer.ts` | 存档备份信封（`lrpg-save` v1）的导出/导入解析、版本守卫、文件名安全化 |
+| `src/v2/GamePage.tsx` | 游戏主界面、侧边栏、队列与活动面板；结算失败时显示「正文已生成 · 结算未完成」与两个恢复操作 |
 | `src/services/llmClient.ts` | Chat Completions 流式调用、工具循环、JSON 回退 |
 | `src/lib/sse.ts` | SSE 解析、`<think>` 拆分、思考通道 JSON 回退 |
 | `src/pages/SettingsPage.tsx` | 模型、上下文、注入、输入视角、展示详情设置 |
 | `src/store/useSettingsStore.ts` | 设置持久化与 normalize |
-| `src/lib/sse.ts` | SSE 解析、`<think>` 拆分、思考通道 JSON 回退 |
 | `src/lib/contentLibrary.ts` | 故事 / 世界书 / 出身的校验与导入导出包 |
 | `src/store/useContentStore.ts` | 自定义内容库（persist `lrpg.content`，version 3） |
 | `src/v2/workshop/model.ts` | 命运工坊的校验、克隆、规范化 |
@@ -176,6 +176,16 @@
 - 当前完成度说明（折叠）；
 - 故事节状态（展开；开启 `stateEditingEnabled` 时显示全部故事节与下一里程碑/收敛计划）。
 
+主页「继续旅程」：
+
+- 每个存档可「导出存档」为 JSON 备份（与 localStorage 持久化共用裁剪规则）；
+- 无存档时也可「导入存档」；导入作为新旅程加入，成功后提示是否进入。
+
+游戏页结算失败态：
+
+- 「正文已生成 · 结算未完成」卡片保留完整正文，结算失败不再让整轮作废；
+- 「仅重试结算」只调用 `planner_post`；「重新生成本回合」丢弃正文重新跑三阶段。
+
 ## 9. 测试体系
 
 三层，全部可离线运行：
@@ -186,9 +196,9 @@ cmd /c npm run test:patch                    # Patch / 命运状态回归（scri
 cmd /c npm run test:story -- --dry-run       # 故事链路脚本（无 Key 自动 dry-run）
 ```
 
-- 单元测试源码位于 `tests/`，由 `scripts/run-unit-tests.mjs` 用 esbuild 以 `@ -> src` 别名打包到被 gitignore 的 `test-runs/unit/` 后再运行，因此测试可以像产品代码一样使用 `@/` 导入。当前 242 条用例。
+- 单元测试源码位于 `tests/`，由 `scripts/run-unit-tests.mjs` 用 esbuild 以 `@ -> src` 别名打包到被 gitignore 的 `test-runs/unit/<scope>/` 后再运行，因此测试可以像产品代码一样使用 `@/` 导入。当前 **338 条用例**（15 个测试文件）；`--filter` 按 scope 隔离产物与报告目录，支持并行跑不同过滤条件。
 - 模型调用一律 mock `globalThis.fetch`，不产生真实网络请求。
-- 覆盖范围：通用工具与 JSON 提取（含括号平衡扫描与病态输入性能）、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支、`runTurnV2` 三阶段端到端与失败路径（含工具循环、视角、注入）、`useGameStoreV2` 存档与回合回退、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆。
+- 覆盖范围：通用工具与 JSON 提取（含括号平衡扫描与病态输入性能）、SSE 帧解析与思考链拆分、`commitTurnPatchV2` 全部校验分支、`runTurnV2` 三阶段端到端与失败路径（含工具循环、视角、注入）、结算失败续跑与 `runTurnSettlementV2`、`useGameStoreV2` 存档与回合回退/存档导入/hydrate 加固、存档备份信封导出与导入解析、内容库校验与 `useContentStore` 冲突处理、工坊校验与克隆。
 - 未覆盖：React 组件与浏览器行为、`llmClient` 的非 2xx 与 `stream_options` 重试分支、真实供应商 SSE 分块边界——这些仍需配置 API 后人工冒烟。
 
 ## 10. 已移除的遗留部分
@@ -204,8 +214,10 @@ V1 多 Agent 版本的代码已在接手清理中删除（共 37 个文件：36 
 
 ## 11. 已知边界
 
-- V2 旧存档没有显式迁移层，靠运行时默认值兜底；
+- V2 存档有持久化版本（`SAVE_STORAGE_VERSION`）与迁移入口：读旧档时补齐缺失字段、丢弃无法修复的条目；由更高版本写入的存档进入只读提示，不重新解读后写回；
 - `useContentStore` 持久化版本为 3：旧数据中的 `customEvents` / `customWorkspaceTemplates` 会被 `sanitizePersistedContent` 静默丢弃；
 - 活动面板不展示规划/结算模型原始 JSON 输出；
-- 主包仍为 500 kB 级单 chunk，`/workshop` 与 `react-markdown` 未做动态分包；
+- 路由级动态分包 + vendor 拆分后，主入口约 43 kB（gzip 16 kB），最大页面 chunk 为 GamePage（约 108 kB）；`/workshop` 与 `react-markdown` 均按需加载；
+- 结算续跑的中间结果只存在当前页面会话：刷新后未提交正文与「仅重试结算」入口会丢失（见 `known-issues.md` O）；
+- 存档导入复用 hydrate 规范化；高版本只读存档若被导出，会按当前结构裁剪、不保留未来版本的未知字段；
 - 旧文档已归档至 `docs/archive/`；`.legacy-reference/` 为本地 V1 草稿，不参与构建。

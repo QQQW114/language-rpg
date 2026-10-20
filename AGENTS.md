@@ -32,10 +32,11 @@ cmd /c npm run test:patch # Patch/命运状态回归测试
 src/
   main.tsx / App.tsx          入口与路由表
   v2/                         游戏主链路（唯一回合引擎）
-    engine.ts                 三阶段提示词、工具、回合执行 runTurnV2
+    engine.ts                 三阶段提示词、工具、回合执行 runTurnV2；结算续跑 runTurnSettlementV2
     patch.ts                  写后 Patch 校验与状态提交 commitTurnPatchV2
-    types.ts                  GameStateV2 / TurnPatchV2 / 活动流类型
-    store.ts                  V2 存档（persist -> lrpg.v2）
+    types.ts                  GameStateV2 / TurnPatchV2 / TurnPartialV2 / 活动流类型
+    store.ts                  V2 存档（persist -> lrpg.v2）、存档导入与可持久化裁剪
+    saveTransfer.ts           存档备份信封（lrpg-save v1）导出/导入解析与版本守卫
     GamePage.tsx / SetupPage.tsx / HomePage.tsx / WorkshopPage.tsx
     workshop/                 命运工坊编辑器与校验（model.ts）
   services/llmClient.ts       模型调用（Chat Completions、工具循环、JSON 回退）
@@ -76,6 +77,7 @@ src/
 - 解析失败直接抛错，不静默提交空补丁；`finish_reason` 为 `length`/`content_filter` 同样抛错。
 - 权威状态在程序侧：模型只输出增量 Patch，由 `commitTurnPatchV2` 校验后合并。
 - 提交有两道 CAS 守卫：`patch.baseRevision` 必须等于当前 `revision`；前端 `commitSuccessfulTurn` 再比对一次 revision/turn。
+- 写后结算失败不是整轮作废：`runTurnV2` 抛 `TurnPostFailureV2`（携带 `TurnPartialV2`），`runTurnSettlementV2()` 只重跑 `planner_post`；游戏页据此提供「仅重试结算」与「重新生成本回合」。
 
 修改模型输出协议时，必须**成组**同步这四处：
 
@@ -105,4 +107,5 @@ src/
 
 1. 每次改动至少跑 `cmd /c npm run build` 与 `cmd /c npm test`；
 2. 改动 `engine.ts` / `patch.ts` 时跑 `cmd /c npm run test:patch`；
-3. 涉及模型协议或 UI 流程的改动，配置真实 API 后做一次浏览器冒烟：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景 / 手动输入 / 完结评分。
+3. 涉及模型协议或 UI 流程的改动，配置真实 API 后做一次浏览器冒烟：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景 / 手动输入 / 完结评分；
+4. 改动提示词结构或打包配置后跑 `cmd /c npm run test:e2e`（断言请求形状、缓存前缀结构与落盘状态）。

@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /**
- * 单元测试运行器：esbuild 打包 tests/**\/*.test.ts → test-runs/unit/*.test.mjs，
+ * 单元测试运行器：esbuild 打包 tests/**\/*.test.ts → test-runs/unit/<scope>/*.test.mjs，
  * 再用 node:test 逐文件（独立子进程）运行，最后打印可读汇总。
+ *
+ * <scope> 由 --filter 决定（未过滤时为 all）：多个 agent 并行开发时可能同时跑
+ * 不同过滤条件的测试，按 filter 隔离产物与报告目录，避免后启动的进程 rm -rf
+ * 掉先启动进程正在使用的文件。
  *
  * 设计约束：
  * - 不新增任何 npm 依赖（只用 esbuild + Node 内置模块）。
@@ -24,7 +28,6 @@ import { build } from 'esbuild';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const testsDir = path.join(rootDir, 'tests');
-const outDir = path.join(rootDir, 'test-runs', 'unit');
 
 const argv = process.argv.slice(2);
 const hasFlag = (name) => argv.some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
@@ -36,6 +39,10 @@ const flagValue = (name) => {
 
 const filter = flagValue('filter');
 const skipBuild = hasFlag('no-build');
+// 并行跑测试时按 filter 隔离目录：不同 scope 互不删除对方的产物。
+// 同一 scope 的两次运行仍会互相覆盖，这属于预期（同一过滤条件不该并发跑）。
+const scope = filter ? filter.replace(/[^a-zA-Z0-9_-]/g, '_') : 'all';
+const outDir = path.join(rootDir, 'test-runs', 'unit', scope);
 
 async function collectTestFiles(dir) {
   const found = [];
@@ -133,7 +140,7 @@ if (!selected.length) {
   process.exit(1);
 }
 
-console.log(`[unit-tests] node ${process.version} · 测试文件 ${selected.length} 个 · 产物目录 test-runs/unit/`);
+console.log(`[unit-tests] node ${process.version} · 测试文件 ${selected.length} 个 · 作用域 ${scope} · 产物目录 test-runs/unit/${scope}/`);
 
 if (!skipBuild) {
   const startedAt = Date.now();
@@ -167,7 +174,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-const reportDir = path.join(rootDir, 'test-runs', 'unit-reports');
+const reportDir = path.join(rootDir, 'test-runs', 'unit-reports', scope);
 await rm(reportDir, { recursive: true, force: true });
 await mkdir(reportDir, { recursive: true });
 const specFile = path.join(reportDir, 'spec.txt');

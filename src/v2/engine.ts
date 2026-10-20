@@ -2,6 +2,7 @@ import {
   chatJSONDetailed,
   chatStreamDetailed,
   type ChatMessage,
+  type ChatResult,
   type ChatTool,
   type ChatToolActivity,
   type ChatToolInvocation,
@@ -13,7 +14,7 @@ import { joinThinking } from '@/lib/thinking';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
-import type { ChoiceV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, PatchWarningV2, TurnModelCallV2, TurnPatchV2, TurnRecordV2, TurnRequestV2 } from './types';
+import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
 玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。`;
@@ -674,7 +675,40 @@ function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishR
   if (result.finishReason === 'content_filter') throw new Error(`${label}失败：模型内容过滤中止了输出。`);
 }
 
-export async function runTurnV2(p: TurnRequestV2) {
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 用户主动取消（而不是模型/网络失败）：不应被包装成可续跑的结算失败。 */
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return !!error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError';
+}
+
+/**
+ * 首次执行与“仅重试结算”共用的运行参数。
+ *
+ * 结算提示词、模型、JSON/思考参数都必须由同一处解析：否则续跑时重算的结算请求
+ * 可能与首次执行不同（例如提示词漏了导演视角注入），导致同一回合出现两套结算语义。
+ */
+interface TurnRuntimeV2 {
+  cfg: { baseUrl: string; apiKey: string };
+  plannerModel: string;
+  storyModel: string;
+  plannerToolsEnabled: boolean;
+  plannerToolMaxCalls: number;
+  plannerJsonEnabled: boolean;
+  thinking?: 'enabled' | 'disabled';
+  reasoningEffort?: 'low' | 'high' | 'max';
+  storyReasoningEffort?: 'low' | 'high' | 'max';
+  postReasoningEffort?: 'low' | 'high' | 'max';
+  plannerPrePrompt: string;
+  storyPrompt: string;
+  plannerPostPrompt: string;
+  shouldInjectPlanner: boolean;
+}
+
+function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2 {
   const cfg = { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey };
   const plannerModel = resolvePlannerModel(p.settings);
   const storyModel = resolveStoryModel(p.settings);
@@ -700,19 +734,12 @@ export async function runTurnV2(p: TurnRequestV2) {
   const storyReasoningEffort = reasoningEffortFor('story', storyModel);
   const postReasoningEffort = reasoningEffortFor('planner_post', plannerModel);
   const roleInjects = p.settings.roleInjects;
-  // 收集本回合所有阶段的思维链，导出与展示可共用。
-  const turnThinkingParts: string[] = [];
-  const turnCalls: TurnModelCallV2[] = [];
-  const collectThinking = (phase: ModelPhaseV2, model: string, text: string) => {
-    if (text) turnThinkingParts.push(text);
-    emitThinking(p, phase, model, text);
-  };
   // 导演视角只在执笔模式下生效；游历模式仍按玩家行动处理。
-  const directorPerspective = p.state.mode === 'author' && p.settings.inputPerspective === 'director';
+  const directorPerspective = state.mode === 'author' && p.settings.inputPerspective === 'director';
   // 规划角色有长期上下文，高优先级注入只在存档第一次规划调用时生效一次。
   const shouldInjectPlanner = !!roleInjects?.planner?.enabled
     && !!String(roleInjects.planner.text ?? '').trim()
-    && !p.state.plannerInjectApplied;
+    && !state.plannerInjectApplied;
   const plannerPrePrompt = withRoleInject(
     `${buildPlannerPreSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}`,
     shouldInjectPlanner ? roleInjects.planner : undefined,
@@ -723,11 +750,176 @@ export async function runTurnV2(p: TurnRequestV2) {
     buildPlannerPostSystem(directorPerspective),
     roleInjects?.post,
   );
+  return {
+    cfg,
+    plannerModel,
+    storyModel,
+    plannerToolsEnabled,
+    plannerToolMaxCalls,
+    plannerJsonEnabled,
+    thinking,
+    reasoningEffort,
+    storyReasoningEffort,
+    postReasoningEffort,
+    plannerPrePrompt,
+    storyPrompt,
+    plannerPostPrompt,
+    shouldInjectPlanner,
+  };
+}
+
+/**
+ * 写后结算（planner_post）失败：调用失败、finish_reason=length/content_filter，
+ * 或返回内容无法解析为 JSON。
+ *
+ * 与普通 Error 的区别是携带 `partial`——本回合已通过的前两阶段结果。前端据此显示
+ * “正文已生成 · 结算未完成”，并用 `runTurnSettlementV2` 只重跑结算，不重新调用
+ * planner_pre / story。用户主动取消（AbortSignal）不包装成本类型，原样抛出。
+ *
+ * 只有结算阶段的调用与解析错误会转成本类型；planner_pre / story 失败与提交阶段的
+ * CAS 错误仍是普通 Error。
+ */
+export class TurnPostFailureV2 extends Error {
+  readonly partial: TurnPartialV2;
+
+  constructor(message: string, partial: TurnPartialV2) {
+    super(message);
+    this.name = 'TurnPostFailureV2';
+    this.partial = partial;
+  }
+}
+
+/** 结算阶段的完整输入：既来自首次执行（内联对象），也来自 TurnPartialV2（续跑）。 */
+interface TurnPostInputV2 {
+  /** 回合开始前的权威状态；结算提示词、Patch 提交与历史追加都以它为基准。 */
+  stateBeforeTurn: GameStateV2;
+  input: string;
+  narrativePace: NarrativePaceV2;
+  brief: Record<string, unknown>;
+  story: string;
+  commitId: string;
+  turnCalls: TurnModelCallV2[];
+  thinkingParts: string[];
+  usage: { pre?: LlmUsage; story?: LlmUsage };
+}
+
+/**
+ * 结算 + 提交 + history/turnRecord 组装。
+ *
+ * 这是 planner_post 之后唯一的一份逻辑：`runTurnV2` 首次执行与
+ * `runTurnSettlementV2` 续跑都走这里，避免两条路径各自演化。
+ */
+async function runPostAndCommitV2(
+  p: TurnRequestV2,
+  runtime: TurnRuntimeV2,
+  turn: TurnPostInputV2,
+): Promise<TurnResultV2> {
+  const stateBeforeTurn = turn.stateBeforeTurn;
+  // 结算提示词里的权威状态必须与生成正文时一致，因此用 partial/首次执行捕获的状态快照，
+  // 而不是调用方此刻的 p.state（二者仅由 runTurnSettlementV2 的 CAS 校验保证 revision/turn 相同）。
+  const postRequest: TurnRequestV2 = { ...p, state: stateBeforeTurn, input: turn.input };
+  const plannerAuthorityBeforeTurn = snapshot(postRequest);
+  // 模板里不再内嵌 commitId / baseRevision / turn（它们每回合变化，会让整段模板失效）。
+  // 具体值统一在下面这条消息的可变区里给出：TURN_ID 带 turn 与 commitId，
+  // 另外单独给出 baseRevision 与 turn，避免模型只能从模板的占位值里猜。
+  // asPatch() 会用程序自己的值覆盖这三个字段，因此模型照抄占位值也不会出错。
+  const postMessages: ChatMessage[] = [
+    { role: 'system', content: runtime.plannerPostPrompt },
+    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${stateBeforeTurn.turn}:${turn.commitId}\n【baseRevision】${stateBeforeTurn.revision}\n【turn】${stateBeforeTurn.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${turn.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(turn.brief)}\n【CURRENT_STOP_BOUNDARY】${String(turn.brief.stopBoundary ?? '')}\n${stateBeforeTurn.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${turn.story}` },
+  ];
+  const postThinkingParts: string[] = [];
+  emitPhase(p, 'planner_post', runtime.plannerModel, 'started', undefined, false);
+  let post: ChatResult;
+  let parsed: Record<string, unknown>;
+  try {
+    post = await chatJSONDetailed(runtime.cfg, {
+      model: runtime.plannerModel,
+      temperature: .1,
+      messages: postMessages,
+      signal: p.signal,
+      ...(runtime.plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
+      ...(runtime.thinking ? { thinking: runtime.thinking } : {}),
+      ...(runtime.postReasoningEffort ? { reasoningEffort: runtime.postReasoningEffort } : {}),
+      onThinkingDelta: (text) => {
+        if (text) postThinkingParts.push(text);
+        emitThinking(p, 'planner_post', runtime.plannerModel, text);
+      },
+      onDelta: (text) => emitOutput(p, 'planner_post', runtime.plannerModel, text),
+    });
+    ensureModelResult('planner_post', post);
+    // 解析放进 try：非法 JSON 同样属于“结算失败”，必须给出可续跑的 partial，
+    // 而不是一个整轮作废的普通错误。
+    parsed = requireJSONObject(post.text, phaseLabels.planner_post);
+  } catch (error) {
+    emitPhase(p, 'planner_post', runtime.plannerModel, 'failed', error, false);
+    // 取消不是失败：原样抛出，调用方走取消分支（不提供续跑入口）。
+    if (isAbortError(error, p.signal)) throw error;
+    throw new TurnPostFailureV2(errorMessage(error), {
+      state: stateBeforeTurn,
+      input: turn.input,
+      narrativePace: turn.narrativePace,
+      brief: turn.brief,
+      story: turn.story,
+      commitId: turn.commitId,
+      turnCalls: [...turn.turnCalls],
+      thinkingParts: [...turn.thinkingParts],
+    });
+  }
+  const postCall: TurnModelCallV2 = { phase: 'planner_post', model: runtime.plannerModel, input: post.trace, output: post.text, thinking: post.thinking, usage: post.usage };
+  const turnCalls = [...turn.turnCalls, postCall];
+  const thinkingParts = [...turn.thinkingParts, ...postThinkingParts];
+  emitUsage(p, 'planner_post', runtime.plannerModel, post.usage);
+  emitPhase(p, 'planner_post', runtime.plannerModel, 'completed', undefined, false);
+  const patch = asPatch(parsed, postRequest, turn.commitId, turn.story);
+  emitPatchWarnings(p, runtime.plannerModel, patch.warnings);
+  // 提交阶段也可能修正模型输出（例如 superseded 缺少有效替代者时降级为 reframed），
+  // 这些说明同样要进入活动流，否则玩家与排障者只看到状态被改却找不到原因。
+  const commitWarnings: PatchWarningV2[] = [];
+  const patchStats = emptyPatchStatsV2();
+  const next = commitTurnPatchV2(stateBeforeTurn, patch, commitWarnings, patchStats);
+  emitPatchWarnings(p, runtime.plannerModel, commitWarnings);
+  const now = Date.now();
+  next.history = [...stateBeforeTurn.history,
+    { id: genId('msg'), role: 'user', content: turn.input, turn: stateBeforeTurn.turn, createdAt: now },
+    { id: genId('msg'), role: 'assistant', content: turn.story, turn: stateBeforeTurn.turn, createdAt: now, thinking: joinThinking(...thinkingParts) },
+  ];
+  const turnRecord: TurnRecordV2 = { turn: stateBeforeTurn.turn, input: turn.input, story: turn.story, calls: turnCalls, patchStats };
+  next.turnRecords = [...(stateBeforeTurn.turnRecords ?? []), turnRecord].slice(-100);
+  next.turn = stateBeforeTurn.turn + 1;
+  next.phase = 'input';
+  if (runtime.shouldInjectPlanner) next.plannerInjectApplied = true;
+  const randomEventPlanText = randomEventPlanToText(turn.brief.randomEvent);
+  if (randomEventPlanText) next.randomEvent.lastPlan = randomEventPlanText;
+  return { state: next, story: turn.story, brief: turn.brief, patch, usage: { pre: turn.usage.pre, story: turn.usage.story, post: post.usage } };
+}
+
+export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
+  const runtime = resolveTurnRuntime(p, p.state);
+  const {
+    cfg,
+    plannerModel,
+    storyModel,
+    plannerToolsEnabled,
+    plannerToolMaxCalls,
+    plannerJsonEnabled,
+    thinking,
+    reasoningEffort,
+    storyReasoningEffort,
+    plannerPrePrompt,
+    storyPrompt,
+  } = runtime;
+  // 收集本回合所有阶段的思维链，导出与展示可共用。
+  const turnThinkingParts: string[] = [];
+  const turnCalls: TurnModelCallV2[] = [];
+  const collectThinking = (phase: ModelPhaseV2, model: string, text: string) => {
+    if (text) turnThinkingParts.push(text);
+    emitThinking(p, phase, model, text);
+  };
   // 规划模型的近期原文由设置中的软 token 预算控制；摘要、世界书、
   // 结构化状态和大纲不在该预算内，始终完整注入。
   const plannerAuthority = snapshot(p, recentHistoryWithinBudget(p, plannerContextTokenBudget(p)));
-  // 写后结算只需要回合开始前的结构化状态，不再注入 recent 历史正文。
-  const plannerAuthorityBeforeTurn = snapshot(p);
+  // 写后结算只需要回合开始前的结构化状态，不再注入 recent 历史正文；
+  // 该快照由 runPostAndCommitV2 统一生成（续跑时也用它，保证两次结算看到的权威状态一致）。
   // 故事模型保持原有、稳定的最近四回合窗口，不跟随规划上下文设置缩放。
   const storyAuthority = snapshot(p, p.state.history.slice(-STORY_RECENT_MESSAGE_COUNT));
   // 世界书按 alwaysActive + 关键词命中筛选后再注入；被截断时明确告知，避免静默丢失。
@@ -825,55 +1017,50 @@ export async function runTurnV2(p: TurnRequestV2) {
   }
 
   const commitId = genId('commit');
-  // 模板里不再内嵌 commitId / baseRevision / turn（它们每回合变化，会让整段模板失效）。
-  // 具体值统一在下面这条消息的可变区里给出：TURN_ID 带 turn 与 commitId，
-  // 另外单独给出 baseRevision 与 turn，避免模型只能从模板的占位值里猜。
-  // asPatch() 会用程序自己的值覆盖这三个字段，因此模型照抄占位值也不会出错。
-  const postMessages: ChatMessage[] = [
-    { role: 'system', content: plannerPostPrompt },
-    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${p.state.turn}:${commitId}\n【baseRevision】${p.state.revision}\n【turn】${p.state.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${p.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(brief)}\n【CURRENT_STOP_BOUNDARY】${brief.stopBoundary || ''}\n${p.state.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${story.text}` },
-  ];
-  emitPhase(p, 'planner_post', plannerModel, 'started', undefined, false);
-  let post;
-  try {
-    post = await chatJSONDetailed(cfg, {
-      model: plannerModel,
-      temperature: .1,
-      messages: postMessages,
-      signal: p.signal,
-      ...(plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
-      ...(thinking ? { thinking } : {}),
-      ...(postReasoningEffort ? { reasoningEffort: postReasoningEffort } : {}),
-      onThinkingDelta: (text) => collectThinking('planner_post', plannerModel, text),
-      onDelta: (text) => emitOutput(p, 'planner_post', plannerModel, text),
-    });
-    ensureModelResult('planner_post', post);
-    turnCalls.push({ phase: 'planner_post', model: plannerModel, input: post.trace, output: post.text, thinking: post.thinking, usage: post.usage });
-    emitUsage(p, 'planner_post', plannerModel, post.usage);
-    emitPhase(p, 'planner_post', plannerModel, 'completed', undefined, false);
-  } catch (error) {
-    emitPhase(p, 'planner_post', plannerModel, 'failed', error, false);
-    throw error;
+  // planner_post + Patch 解析 + 提交 + history/turnRecord 组装统一走 runPostAndCommitV2：
+  // 首次执行与“仅重试结算”共用同一份逻辑，避免两条路径漂移。
+  return runPostAndCommitV2(p, runtime, {
+    stateBeforeTurn: p.state,
+    input: p.input,
+    narrativePace: p.state.narrativePace,
+    brief,
+    story: story.text,
+    commitId,
+    turnCalls,
+    thinkingParts: turnThinkingParts,
+    usage: { pre: pre.usage, story: story.usage },
+  });
+}
+
+/**
+ * 结算续跑：正文与写前规划已经完成、只有写后结算失败时使用。
+ *
+ * 只重跑 planner_post + Patch 提交 + history/turnRecord 组装（与 runTurnV2 共用
+ * runPostAndCommitV2），**不会**再次调用 planner_pre / story，因此成本从“整轮”
+ * 降到“一次结算调用”，已生成的正文也不会被丢弃。
+ *
+ * CAS 前置检查：`partial.state` 是回合开始前的快照。若当前存档的 revision/turn 已经
+ * 推进，说明待结算正文对应的回合不再是当前回合，续跑会把旧 Patch 记到新状态上，
+ * 因此直接拒绝并给出明确错误（前端据此引导玩家“重新生成本回合”）。
+ */
+export async function runTurnSettlementV2(p: TurnRequestV2, partial: TurnPartialV2): Promise<TurnResultV2> {
+  if (p.state.revision !== partial.state.revision || p.state.turn !== partial.state.turn) {
+    throw new Error(`无法仅重试结算：当前存档已推进到 revision=${p.state.revision} / 第 ${p.state.turn} 回合，待结算正文属于 revision=${partial.state.revision} / 第 ${partial.state.turn} 回合。请重新生成本回合。`);
   }
-  const patch = asPatch(requireJSONObject(post.text, phaseLabels.planner_post), p, commitId, story.text);
-  emitPatchWarnings(p, plannerModel, patch.warnings);
-  // 提交阶段也可能修正模型输出（例如 superseded 缺少有效替代者时降级为 reframed），
-  // 这些说明同样要进入活动流，否则玩家与排障者只看到状态被改却找不到原因。
-  const commitWarnings: PatchWarningV2[] = [];
-  const patchStats = emptyPatchStatsV2();
-  const next = commitTurnPatchV2(p.state, patch, commitWarnings, patchStats);
-  emitPatchWarnings(p, plannerModel, commitWarnings);
-  const now = Date.now();
-  next.history = [...p.state.history,
-    { id: genId('msg'), role: 'user', content: p.input, turn: p.state.turn, createdAt: now },
-    { id: genId('msg'), role: 'assistant', content: story.text, turn: p.state.turn, createdAt: now, thinking: joinThinking(...turnThinkingParts) },
-  ];
-  const turnRecord: TurnRecordV2 = { turn: p.state.turn, input: p.input, story: story.text, calls: turnCalls, patchStats };
-  next.turnRecords = [...(p.state.turnRecords ?? []), turnRecord].slice(-100);
-  next.turn = p.state.turn + 1;
-  next.phase = 'input';
-  if (shouldInjectPlanner) next.plannerInjectApplied = true;
-  const randomEventPlanText = randomEventPlanToText(brief?.randomEvent);
-  if (randomEventPlanText) next.randomEvent.lastPlan = randomEventPlanText;
-  return { state: next, story: story.text, brief, patch, usage: { pre: pre.usage, story: story.usage, post: post.usage } };
+  const runtime = resolveTurnRuntime(p, partial.state);
+  return runPostAndCommitV2(p, runtime, {
+    stateBeforeTurn: partial.state,
+    input: partial.input,
+    narrativePace: partial.narrativePace,
+    brief: partial.brief,
+    story: partial.story,
+    commitId: partial.commitId,
+    turnCalls: partial.turnCalls,
+    thinkingParts: partial.thinkingParts,
+    // 续跑没有新的 pre/story 调用；从已完成调用的留档里还原 usage，保证返回结构与首发一致。
+    usage: {
+      pre: partial.turnCalls.find((call) => call.phase === 'planner_pre')?.usage,
+      story: partial.turnCalls.find((call) => call.phase === 'story')?.usage,
+    },
+  });
 }

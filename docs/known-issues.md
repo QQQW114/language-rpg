@@ -80,13 +80,13 @@
 - 现象：供应商不回 `index` 时按帧内下标兜底，两帧各一个调用会被合成一个，`arguments` 拼接成非法 JSON，模型收到"query不能为空"。
 - 建议：无 `index` 且已存在同 id 调用时按 `id` 归并，而不是按下标。
 
-### L. 检索证据按前 900 字截断，但命中判定用全文
+### L. 检索证据按前 900 字截断，但命中判定用全文 ✅ 已修（见"已修复"一节）
 
 - 位置：`src/v2/engine.ts` 的 `clipContextEvidence` 与 `searchStoryContext`
 - 现象：命中发生在长文本后段时，返回给模型的"证据"里可能不含查询词。
 - 建议：按命中位置做窗口切片（前后各 300 字）。
 
-### M. `contextSearchTerms` 丢弃 CJK 单字
+### M. `contextSearchTerms` 丢弃 CJK 单字 ✅ 已修（见"已修复"一节）
 
 - 位置：`src/v2/engine.ts`
 - 现象：`"晴 在哪里"` 因 `晴` 长度 < 2 被丢弃，检索返回 0 条；单字中文人名检索不到。
@@ -98,9 +98,37 @@
 - 现象：内容恰好等于查询词的正文消息会排在结构化 facts 之后。
 - 建议：加权降级为次级排序键，先按命中密度归一。
 
+### O. 回合续跑的中间结果只存内存
+
+- 位置：`src/v2/GamePage.tsx` 的 `failedPartial`
+- 现象：`planner_post` 失败时保留的「已生成正文 + 续跑上下文」只存在本次页面会话里；刷新/离开页面后未提交正文与「仅重试结算」入口都会丢失（与旧 `failedDraft` 行为一致）。
+- 取舍：持久化到 `sessionStorage` 可跨刷新恢复，但需要同时保存回合前状态快照并校验 revision/正文一致，还要处理"同一回合多次失败"的覆盖语义；收益取决于真实游玩中结算失败的频率。
+- 建议：先观察真实触发情况，再决定是否值得持久化。
+
 ---
 
 # 三、已修复（本轮接手改造）
+
+### ✅ `lrpg.v2` 补上格式版本与迁移层
+
+- 位置：`src/v2/store.ts`
+- 现象：存档持久化是唯一没有 `version`/`migrate` 的存储（对比 `useContentStore` 有 `version: 3` 与 `sanitizePersistedContent`）。手工改过或截断过的存档若缺 `facts[].keywords`、`storyThreads`、`destiny.beats`、`inventory` 等字段，会在 `snapshot()` 阶段抛 `TypeError`——而且是在**已经发出若干次模型调用之后**，本轮成本全部作废。
+- 修复：persist 声明格式版本并加 `migrate` 链；读旧档时补齐缺失字段（数组补空、枚举补默认值、混入的坏元素逐个过滤）；结构坏到无法修复的条目被丢弃而不是拖垮整个存档集；由更新版本写入的存档原样保留并进入只读提示，不再被本程序重新解读后写回（那会静默抹掉它不认识的新字段）。
+- 回归测试：`tests/store.test.ts`（"存档格式版本与迁移"6 条）。
+
+### ✅ hydrate 静默丢失 `randomEvent` 审计字段
+
+- 位置：`src/v2/store.ts` 的 `sanitizeGameStateV2`
+- 现象：重建 `randomEvent` 时没有 spread 原始对象（`destiny` 分支有 spread），`lastPlan` / `lastNote` / `lastTriggeredTurn` 在每次 hydrate 时被静默丢弃——游戏页「故事脉动」卡片的随机事件安排与结果在刷新后消失。存档导入复用同一份规范化，同样会丢。
+- 修复：补 `...(randomEventRaw as unknown as GameStateV2['randomEvent'])`，显式兜底保持不变；导出的存档备份会保留这三个字段。
+- 回归测试：`tests/store.test.ts`（hydrate 保留审计字段）、`tests/saveTransfer.test.ts`（导入→导出→再导入往返一致）。
+
+### ✅ `turnRecords[].calls` 缺失时持久化/导出抛错
+
+- 位置：`src/v2/store.ts` 的 `sanitizeGameStateV2` / `toPortableSaveV2`
+- 现象：`toPortableSaveV2` 会对每条 turnRecord 的 `calls` 做 `.map(...)` 裁剪提示词留档；手改过或导入的存档若某个 record 缺 `calls`，写盘与导出都会抛错。
+- 修复：sanitize 时把 `calls` 归一化为对象数组（缺失/非数组 → `[]`，坏元素过滤）；`toPortableSaveV2` 再加一层 `Array.isArray` 防御，覆盖高版本只读存档不经 sanitize 的路径。
+- 回归测试：`tests/store.test.ts`。
 
 ### ✅ 库存数量被程序篡改（`grant` 强制至少 +1）
 

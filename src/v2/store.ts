@@ -92,6 +92,10 @@ export function sanitizeGameStateV2(raw: unknown): GameStateV2 | undefined {
       updatedAtTurn: typeof destinyRaw.updatedAtTurn === 'number' ? destinyRaw.updatedAtTurn : 0,
     },
     randomEvent: {
+      // 必须先 spread 原始对象再逐字段兜底：`lastPlan` / `lastNote` / `lastTriggeredTurn`
+      // 是游戏页「故事脉动」卡片的数据源，之前漏了这行，导致每次 hydrate 都静默丢掉它们
+      // （与 destiny 分支的写法保持一致，也顺带保留未来版本新增的字段）。
+      ...(randomEventRaw as unknown as GameStateV2['randomEvent']),
       enabled: randomEventRaw.enabled !== false,
       nextTriggerTurn: typeof randomEventRaw.nextTriggerTurn === 'number' ? randomEventRaw.nextTriggerTurn : 1,
       pending: randomEventRaw.pending === true,
@@ -99,12 +103,20 @@ export function sanitizeGameStateV2(raw: unknown): GameStateV2 | undefined {
       triggerIntervalMin: typeof randomEventRaw.triggerIntervalMin === 'number' ? randomEventRaw.triggerIntervalMin : 3,
       triggerIntervalMax: typeof randomEventRaw.triggerIntervalMax === 'number' ? randomEventRaw.triggerIntervalMax : 6,
     },
-    turnRecords: objectsOf<TurnRecordV2>(raw.turnRecords),
+    // calls 是持久化 / 导出裁剪（`toPortableSaveV2`）的必经字段：手改过的存档或跨版本导入的
+    // 文件可能缺 calls 或给了非数组，归一化为对象数组，避免 `calls.map(...)` 在写盘或导出时抛错。
+    turnRecords: objectsOf<TurnRecordV2>(raw.turnRecords)
+      .map((record) => ({ ...record, calls: objectsOf<TurnRecordV2['calls'][number]>(record.calls) })),
   };
 }
 
-/** 单个存档的字段兜底；结构坏到没有 state 时整体丢弃（宁可少一个存档也不要整页打不开）。 */
-function sanitizeSaveV2(raw: unknown, fallbackId: string): SaveV2 | undefined {
+/**
+ * 单个存档的字段兜底；结构坏到没有 state 时整体丢弃（宁可少一个存档也不要整页打不开）。
+ *
+ * 导出给存档导入（`src/v2/saveTransfer.ts`）复用：导入是"另一个入口读同一份存档结构"，
+ * 必须和 hydrate 共用一份规范化，否则会出现"导入能过、刷新就崩"或两套规则漂移。
+ */
+export function sanitizeSaveV2(raw: unknown, fallbackId: string): SaveV2 | undefined {
   if (!isRecord(raw)) return undefined;
   const state = sanitizeGameStateV2(raw.state);
   if (!state) return undefined;
@@ -123,6 +135,37 @@ function sanitizeSaveV2(raw: unknown, fallbackId: string): SaveV2 | undefined {
 
 function arrayOfWorldFacts(value: unknown): WorldBookEntry[] {
   return (Array.isArray(value) ? value : []).filter(isRecord) as unknown as WorldBookEntry[];
+}
+
+/**
+ * 把存档裁剪成"可持久化 / 可导出"的形态：
+ *
+ * 1. 剔除 `lastTurnCheckpoint`：只服务当前页面会话的回合回退，写入磁盘或带到别的设备
+ *    都会因 revision 对不上而失效，白白复制一份完整历史状态。
+ * 2. 剔除 `turnRecords[].calls[].input`：三阶段完整提示词留档，实测每回合约 208 KB、
+ *    占整包 97%（30 回合 6.2 MB），是 localStorage 5MB 配额的主要来源，对恢复游玩也没有作用。
+ *
+ * localStorage 持久化与「导出存档」备份共用这一份实现，避免两边裁剪规则漂移。
+ */
+export function toPortableSaveV2(save: SaveV2): SaveV2 {
+  const { lastTurnCheckpoint: _checkpoint, ...portableSave } = save;
+  const { turnRecords, ...portableState } = portableSave.state;
+  return {
+    ...portableSave,
+    state: {
+      ...portableState,
+      ...(turnRecords?.length
+        ? {
+            turnRecords: turnRecords.map(({ calls, ...record }) => ({
+              ...record,
+              // 防御：经 sanitize 的存档 calls 一定是数组；但高版本只读模式下的原始存档不经过
+              // sanitize，也不能让它在本次写盘或导出时把整个存档集带崩。
+              calls: (Array.isArray(calls) ? calls : []).map(({ input: _input, ...call }) => call),
+            })),
+          }
+        : {}),
+    },
+  };
 }
 
 /**
@@ -183,6 +226,15 @@ interface StoreV2 {
       triggerIntervalMax?: number;
     };
   }) => string;
+  /**
+   * 导入一份存档（备份恢复 / 换设备迁移），返回新存档 id。
+   *
+   * 与 create/update 的关键差别：**永远分配新 id**，因此不可能覆盖已有存档；
+   * 名称去重由导入层（`saveTransfer.parseSaveImport`）按现有存档名处理。
+   * 不改变 `activeId`——是否立刻进入由调用方决定。结构坏到没有 state 时抛错
+   * （调用方应先经 `parseSaveImport` 校验，这里只是最后的防御）。
+   */
+  importSave: (save: SaveV2) => string;
   setActive: (id: string) => void;
   update: (id: string, fn: (s: SaveV2) => SaveV2) => void;
   commitSuccessfulTurn: (id: string, turn: CommitSuccessfulTurnV2) => boolean;
@@ -195,6 +247,14 @@ const cloneCheckpoint = (checkpoint: LastTurnCheckpointV2): LastTurnCheckpointV2
   ...checkpoint,
   stateBeforeTurn: cloneState(checkpoint.stateBeforeTurn),
 });
+
+/** 生成一个与现有存档不冲突的 id（导入专用：一律新建，绝不覆盖已有存档）。 */
+function nextAvailableSaveId(saves: Record<string, SaveV2>): string {
+  for (;;) {
+    const id = genId('save');
+    if (!saves[id]) return id;
+  }
+}
 
 function isQuotaError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -346,6 +406,25 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
     set((x) => ({ saves: { ...x.saves, [id]: save }, activeId: id }));
     return id;
   },
+  importSave: (save) => {
+    let createdId = '';
+    set((x) => {
+      const id = nextAvailableSaveId(x.saves);
+      // 复用 hydrate 的规范化：缺字段的旧档在这里补齐，而不是等到进入游戏后才崩。
+      const normalized = sanitizeSaveV2(save, id);
+      if (!normalized) throw new Error('无法导入存档：缺少有效的游戏状态（state）。');
+      createdId = id;
+      return {
+        saves: {
+          ...x.saves,
+          // 导入视为一次用户操作，刷新 updatedAt 让新存档出现在首页「继续旅程」列表靠前位置；
+          // createdAt 保留备份里的原始创建时间。
+          [id]: { ...normalized, id, updatedAt: Date.now() },
+        },
+      };
+    });
+    return createdId;
+  },
   setActive: (id) => set({ activeId: id }),
   update: (id, fn) => set((x) => {
     const prev = x.saves[id];
@@ -433,26 +512,16 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
       useGameStoreV2.setState({ stateVersionIssue: { persistedVersion: version, currentVersion: SAVE_STORAGE_VERSION } });
     }
   },
-  // 持久化时剔除两类"可重建或可丢弃"的数据：
+  // 持久化时剔除两类"可重建或可丢弃"的数据（裁剪规则与「导出存档」共用 `toPortableSaveV2`）：
   //   1. lastTurnCheckpoint：只服务当前页面会话的重试，避免把完整历史复制一份写入。
   //   2. turnRecords[].calls[].input：三阶段完整提示词留档，实测每回合约 208 KB，
   //      占整包 97%（30 回合 6.2 MB），会让存档在第 26 回合撞上 localStorage 5MB 上限。
   //      出参与思维链仍然保留，够复盘；刷新后历史回合的提示词明细不再可导出。
   partialize: (state) => ({
     ...state,
-    saves: Object.fromEntries(Object.entries(state.saves).map(([id, save]) => {
-      const { lastTurnCheckpoint: _checkpoint, ...persistedSave } = save;
-      const { turnRecords, ...persistedState } = persistedSave.state;
-      return [id, {
-        ...persistedSave,
-        state: {
-          ...persistedState,
-          ...(turnRecords?.length
-            ? { turnRecords: turnRecords.map(({ calls, ...record }) => ({ ...record, calls: calls.map(({ input: _input, ...call }) => call) })) }
-            : {}),
-        },
-      }];
-    })),
+    saves: Object.fromEntries(
+      Object.entries(state.saves).map(([id, save]) => [id, toPortableSaveV2(save)]),
+    ),
   }),
 }));
 

@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeDestinyPatch, runTurnV2 } from '@/v2/engine';
+import { normalizeDestinyPatch, runTurnSettlementV2, runTurnV2, TurnPostFailureV2 } from '@/v2/engine';
 import type { AppSettings } from '@/types/settings';
-import type { GameStateV2, ModelActivityV2, ModelPhaseV2, ModelPhaseStatusV2, TurnRequestV2 } from '@/v2/types';
+import type { GameStateV2, ModelActivityV2, ModelPhaseV2, ModelPhaseStatusV2, TurnPartialV2, TurnRequestV2 } from '@/v2/types';
 import { makeBackground, makeOutline, makeSettings, makeState } from './helpers/fixtures';
 import {
   DONE_FRAME,
@@ -996,6 +996,216 @@ describe('engine.runTurnV2 — 前缀缓存结构', () => {
       // 且不应整段相同——否则说明这轮根本没变化，测试失去意义
       assert.notEqual(prefixA, prefixB, `${phase} 两回合的提示词应存在差异`);
       assert.ok(total > shared, `${phase} 应存在差异部分`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F. 回合续跑：planner_post 失败后仅重试结算
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 / runTurnSettlementV2 — 结算失败续跑', () => {
+  /** 结算阶段的 HTTP 500：模拟网络/限流类失败。 */
+  const httpFailure = (status = 500) => new Response(
+    JSON.stringify({ error: { message: '结算服务暂时不可用' } }),
+    { status, headers: { 'content-type': 'application/json' } },
+  );
+  const invalidJson = () => chatSSE([contentFrame('这不是 JSON'), DONE_FRAME]);
+  const storyWithThinking = () => storyStream({
+    thinking: '先想想阿黎会怎么反应。',
+    usage: { prompt_tokens: 30, completion_tokens: 12, prompt_cache_hit_tokens: 8 },
+  });
+
+  /** 跑一次完整回合并捕获结算失败错误；requests 用于确认请求次数与阶段。 */
+  async function capturePostFailure(
+    request: TurnRequestV2,
+    post: () => Response,
+    story: () => Response = storyStream,
+  ): Promise<{ failure: TurnPostFailureV2; requests: RecordedRequest[] }> {
+    const requests: RecordedRequest[] = [];
+    let failure: unknown;
+    await withFetchMock(phaseHandler({ post, story }), async (mock) => {
+      await assert.rejects(
+        () => runTurnV2(request),
+        (error: unknown) => { failure = error; return true; },
+      );
+      requests.push(...mock.requests);
+    });
+    assert.ok(
+      failure instanceof TurnPostFailureV2,
+      `结算失败应抛出 TurnPostFailureV2，实际：${failure instanceof Error ? `${failure.name}: ${failure.message}` : String(failure)}`,
+    );
+    return { failure: failure as TurnPostFailureV2, requests };
+  }
+
+  it('planner_post HTTP 失败时抛出 TurnPostFailureV2，partial 保留正文/简报/commitId 与已完成的两条调用', async () => {
+    const request = makeRequest();
+    const { failure, requests } = await capturePostFailure(request, httpFailure);
+
+    assert.deepEqual(requests.map(phaseOf), ['planner_pre', 'story', 'planner_post']);
+    assert.match(failure.message, /模型请求失败（500）/);
+    const partial: TurnPartialV2 = failure.partial;
+    assert.equal(partial.story, STORY_TEXT);
+    assert.equal(partial.brief.intent, '试探');
+    assert.equal(partial.brief.writingBrief, '主角向阿黎打听消息');
+    assert.ok(partial.commitId.startsWith('commit_'), `commitId 应已生成：${partial.commitId}`);
+    assert.equal(partial.input, request.input);
+    assert.equal(partial.state.revision, request.state.revision);
+    assert.equal(partial.state.turn, request.state.turn);
+    // 只有结算失败：已完成的调用恰好是前两阶段，没有半途的 planner_post 记录。
+    assert.deepEqual(partial.turnCalls.map((call) => call.phase), ['planner_pre', 'story']);
+    assert.ok(partial.turnCalls[0].input?.system?.includes('写前规划 Agent'));
+    assert.equal(partial.turnCalls[1].output, STORY_TEXT);
+  });
+
+  it('planner_post 返回非法 JSON 同样转成 TurnPostFailureV2（而不是整轮作废的普通错误）', async () => {
+    const { failure } = await capturePostFailure(makeRequest(), invalidJson);
+    assert.match(failure.message, /不是有效 JSON/);
+    assert.equal(failure.partial.story, STORY_TEXT);
+    assert.deepEqual(failure.partial.turnCalls.map((call) => call.phase), ['planner_pre', 'story']);
+  });
+
+  it('planner_post 被截断 / 内容过滤时同样抛出可续跑的 TurnPostFailureV2', async () => {
+    const cases: Array<[string, RegExp]> = [
+      ['length', /达到上限而被截断/],
+      ['content_filter', /内容过滤/],
+    ];
+    for (const [reason, pattern] of cases) {
+      const { failure } = await capturePostFailure(
+        makeRequest(),
+        () => chatSSE([contentFrame('{"schemaVersion":2'), finishFrame(reason), DONE_FRAME]),
+      );
+      assert.match(failure.message, pattern);
+      assert.equal(failure.partial.story, STORY_TEXT, `finish_reason=${reason} 时正文必须保留`);
+    }
+  });
+
+  it('pre/story 阶段失败仍是普通 Error；只有结算阶段提供续跑 partial', async () => {
+    await withFetchMock(
+      phaseHandler({ story: () => storyStream({ finishReason: 'length' }) }),
+      async () => {
+        await assert.rejects(() => runTurnV2(makeRequest()), (error: unknown) => {
+          assert.equal(error instanceof TurnPostFailureV2, false, '故事阶段失败不应包装成结算失败');
+          assert.match((error as Error).message, /达到上限而被截断/);
+          return true;
+        });
+      },
+    );
+  });
+
+  it('runTurnSettlementV2 只重跑结算：仅 1 次请求，最终状态与正常三阶段回合等价', async () => {
+    const request = makeRequest();
+    const { failure } = await capturePostFailure(request, invalidJson, storyWithThinking);
+    // 参照组：同一条请求完整跑完三阶段。
+    const normal = await withFetchMock(
+      phaseHandler({ story: storyWithThinking }),
+      () => runTurnV2(makeRequest()),
+    );
+
+    const resumed = await withFetchMock(
+      phaseHandler({ story: storyWithThinking }),
+      async (mock) => {
+        const output = await runTurnSettlementV2(makeRequest(), failure.partial);
+        assert.equal(mock.requests.length, 1, '续跑不应重新调用 planner_pre / story');
+        assert.equal(phaseOf(mock.requests[0]), 'planner_post');
+        const post = lastUserPromptOf(mock.requests[0]);
+        // 续跑必须复用同一 commitId / turn，否则提交时 Patch 的 baseRevision/turn 对不上。
+        assert.ok(post.includes(`【TURN_ID】${failure.partial.state.turn}:${failure.partial.commitId}`));
+        assert.ok(post.includes(`【baseRevision】${failure.partial.state.revision}`));
+        assert.ok(post.includes(`【turn】${failure.partial.state.turn}`));
+        assert.ok(post.includes(`【CURRENT_STORY】${STORY_TEXT}`));
+        assert.ok(post.includes(`【CURRENT_TURN_INPUT】${request.input}`));
+        assert.ok(post.includes('【CURRENT_WRITE_PLAN】'));
+        return output;
+      },
+    );
+
+    // 与正常三阶段回合逐项等价（commitId 与随机 msg id 每次生成、不参与比较）。
+    assert.equal(resumed.story, STORY_TEXT);
+    assert.equal(resumed.brief.intent, normal.brief.intent);
+    assert.equal(resumed.state.turn, normal.state.turn);
+    assert.equal(resumed.state.turn, request.state.turn + 1);
+    assert.equal(resumed.state.revision, normal.state.revision);
+    assert.equal(resumed.state.phase, 'input');
+    assert.equal(resumed.state.summary, normal.state.summary);
+    assert.equal(resumed.state.latestProgress, normal.state.latestProgress);
+    assert.deepEqual(resumed.state.destiny, normal.state.destiny);
+    assert.deepEqual(resumed.state.characters, normal.state.characters);
+    assert.deepEqual(resumed.state.relationships, normal.state.relationships);
+    assert.deepEqual(resumed.state.currentScene, normal.state.currentScene);
+    assert.deepEqual(resumed.state.randomEvent, normal.state.randomEvent);
+    // 历史与思维链等价
+    assert.deepEqual(
+      resumed.state.history.map((message) => ({ role: message.role, content: message.content, turn: message.turn })),
+      normal.state.history.map((message) => ({ role: message.role, content: message.content, turn: message.turn })),
+    );
+    assert.equal(resumed.state.history[2].thinking, normal.state.history[2].thinking);
+    // 回合留档：calls 含完整三阶段、patchStats 存在。
+    const record = resumed.state.turnRecords?.[0];
+    assert.ok(record, '续跑成功也必须写入 turnRecord');
+    assert.equal(record.turn, request.state.turn);
+    assert.deepEqual(record.calls.map((call) => call.phase), ['planner_pre', 'story', 'planner_post']);
+    assert.equal(record.calls[1].output, STORY_TEXT);
+    assert.ok(record.patchStats, '续跑成功也必须带 Patch 对账统计');
+    assert.deepEqual(record.patchStats, normal.state.turnRecords?.[0].patchStats);
+    // usage 透传：pre/story 从已完成调用的留档还原，post 来自本次续跑。
+    assert.equal(resumed.usage.story?.completionTokens, 12);
+    assert.equal(resumed.usage.story?.cache?.hitTokens, 8);
+    assert.equal(resumed.usage.pre?.promptTokens, normal.usage.pre?.promptTokens);
+    assert.equal(resumed.patch.commitId, resumed.state.lastCommitId);
+    assert.ok(resumed.patch.commitId.startsWith('commit_'));
+  });
+
+  it('续跑再次失败仍抛 TurnPostFailureV2，partial 可继续重试并最终提交', async () => {
+    const request = makeRequest();
+    const { failure: first } = await capturePostFailure(request, invalidJson);
+
+    let secondFailure: unknown;
+    await withFetchMock(phaseHandler({ post: httpFailure }), async (mock) => {
+      await assert.rejects(
+        () => runTurnSettlementV2(makeRequest(), first.partial),
+        (error: unknown) => { secondFailure = error; return true; },
+      );
+      assert.equal(mock.requests.length, 1);
+    });
+    assert.ok(secondFailure instanceof TurnPostFailureV2, `再次失败仍应是 TurnPostFailureV2，实际：${String(secondFailure)}`);
+    const second = secondFailure as TurnPostFailureV2;
+    assert.match(second.message, /模型请求失败（500）/);
+    // 失败的重试不产生 planner_post 调用记录，也不改变 partial 的正文与 commitId。
+    assert.deepEqual(second.partial.turnCalls.map((call) => call.phase), ['planner_pre', 'story']);
+    assert.equal(second.partial.story, STORY_TEXT);
+    assert.equal(second.partial.commitId, first.partial.commitId);
+    assert.notEqual(second.partial, first.partial, '每次失败都应给出独立的 partial 快照');
+
+    const final = await withFetchMock(phaseHandler(), async (mock) => {
+      const output = await runTurnSettlementV2(makeRequest(), second.partial);
+      assert.equal(mock.requests.length, 1, '第二次续跑仍只发一次结算请求');
+      return output;
+    });
+    assert.equal(final.state.turn, request.state.turn + 1);
+    assert.deepEqual(final.state.turnRecords?.[0].calls.map((call) => call.phase), ['planner_pre', 'story', 'planner_post']);
+  });
+
+  it('partial 与当前存档的 revision/turn 不一致时拒绝续跑（不发请求、不包装成可续跑错误）', async () => {
+    const { failure } = await capturePostFailure(makeRequest(), invalidJson);
+    const mismatches: Array<Record<string, unknown>> = [
+      { revision: failure.partial.state.revision + 1 },
+      { turn: failure.partial.state.turn + 1 },
+    ];
+    for (const mismatch of mismatches) {
+      const request = makeRequest({ state: mismatch });
+      await withFetchMock(phaseHandler(), async (mock) => {
+        await assert.rejects(
+          () => runTurnSettlementV2(request, failure.partial),
+          (error: unknown) => {
+            assert.equal(error instanceof TurnPostFailureV2, false, 'CAS 冲突不是结算失败，不能提供续跑入口');
+            assert.match((error as Error).message, /无法仅重试结算/);
+            assert.match((error as Error).message, /重新生成本回合/);
+            return true;
+          },
+        );
+        assert.equal(mock.requests.length, 0, '拒绝续跑时不应发出任何模型请求');
+      });
     }
   });
 });

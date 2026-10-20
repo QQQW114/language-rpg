@@ -226,6 +226,39 @@ export interface TurnRecordV2 {
   patchStats?: PatchStatsV2;
 }
 
+/**
+ * 一回合中已经生成、但结算（planner_post）尚未完成时的中间结果。
+ *
+ * 正文已经写出来、写前规划也已经完成，只差写后结算。带上它就能用
+ * `runTurnSettlementV2` 只重跑结算，而不必重新消耗 planner_pre / story 两次调用。
+ *
+ * `state` 是**回合开始前**的权威状态快照（与 LastTurnCheckpoint.stateBeforeTurn 同源）：
+ * 续跑时结算与提交都以它为基准，从而与“首次执行就成功”的结果保持等价；
+ * 调用方必须先用它的 revision/turn 与当前存档做 CAS 校验，不一致说明回合已经推进，
+ * 此时不允许续跑。
+ */
+export interface TurnPartialV2 {
+  state: GameStateV2;
+  input: string;
+  narrativePace: NarrativePaceV2;
+  brief: Record<string, unknown>;
+  story: string;
+  commitId: string;
+  /** 已完成的阶段调用；首次结算失败时恰好是 planner_pre + story 两条。 */
+  turnCalls: TurnModelCallV2[];
+  /** 已收集的思维链增量（按阶段顺序），用于组装历史消息的 thinking。 */
+  thinkingParts: string[];
+}
+
+/** 一次完整回合（首次执行或仅重试结算）的返回结构。 */
+export interface TurnResultV2 {
+  state: GameStateV2;
+  story: string;
+  brief: Record<string, unknown>;
+  patch: TurnPatchV2;
+  usage: { pre?: LlmUsage; story?: LlmUsage; post?: LlmUsage };
+}
+
 export interface MessageV2 {
   id: string;
   role: 'user' | 'assistant';
