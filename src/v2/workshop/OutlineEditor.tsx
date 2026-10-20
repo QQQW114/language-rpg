@@ -8,12 +8,13 @@ import {
   CircleHelp,
   Plus,
   ScrollText,
+  SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card, CardMeta, CardTitle } from '@/components/ui/Card';
 import { Input, Textarea } from '@/components/ui/Input';
-import type { StoryAct, StoryOutline } from '@/types/content';
+import { STORY_ACT_ADVANCED_LIMITS, type StoryAct, type StoryOutline } from '@/types/content';
 import { createBlankAct, createBlankBeat } from './model';
 
 interface OutlineEditorProps {
@@ -148,6 +149,8 @@ export function OutlineEditor({ value, onChange, reference }: OutlineEditorProps
       <div className="space-y-4">
         {value.acts.map((act, actIndex) => {
           const expanded = expandedActs.has(act.id);
+          const advancedFilled = [act.entryBrief, act.stageContract, act.exitCriteriaNote]
+            .filter((text) => Boolean(text?.trim())).length;
           return (
             <Card key={act.id} className="!p-0 overflow-hidden">
               <div className="flex items-center gap-2 border-b border-parchment-600/30 px-4 py-3">
@@ -275,6 +278,51 @@ export function OutlineEditor({ value, onChange, reference }: OutlineEditorProps
                       <Plus size={14} /> 为这一幕添加故事节
                     </Button>
                   </div>
+
+                  <details className="group mt-3 rounded-md border border-gold-dark/35 bg-parchment-900/25">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-xs text-parchment-200/70 transition-colors hover:text-gold-light">
+                      <SlidersHorizontal size={14} className="shrink-0 text-gold/80" />
+                      <span className="font-serif tracking-wider">阶段高级约束（可选）</span>
+                      <span className="rounded-full border border-parchment-600/40 px-2 py-0.5 text-[10px] text-parchment-200/50">
+                        {advancedFilled ? `已填写 ${advancedFilled}/3` : '默认折叠'}
+                      </span>
+                      <ChevronRight size={14} className="ml-auto shrink-0 transition-transform group-open:rotate-90" />
+                    </summary>
+                    <div className="border-t border-parchment-600/25 px-3 py-3">
+                      <p className="mb-3 text-[11px] leading-relaxed text-parchment-200/55">
+                        这三项只约束“创作边界”，不改写命运骨架：写清允许发生什么、禁止提前写穿什么，不必规定玩家必须走哪条路线。
+                      </p>
+                      <div className="space-y-3">
+                        <Textarea
+                          label="开幕引子"
+                          value={act.entryBrief ?? ''}
+                          rows={2}
+                          maxLength={STORY_ACT_ADVANCED_LIMITS.entryBrief}
+                          onChange={(event) => updateAct(actIndex, { ...act, entryBrief: event.target.value })}
+                          placeholder="进入本幕时的舞台状态、气氛与核心议题转移，例如：双线尚未交汇，主角只在传闻里听说另一个身份。"
+                          hint="只提供给模型的开场氛围提示（≤200 字符），不指定具体地点或事件。"
+                        />
+                        <Textarea
+                          label="本幕写作契约 / 禁令"
+                          value={act.stageContract ?? ''}
+                          rows={3}
+                          maxLength={STORY_ACT_ADVANCED_LIMITS.stageContract}
+                          onChange={(event) => updateAct(actIndex, { ...act, stageContract: event.target.value })}
+                          placeholder="本幕只铺垫双线交集，严禁提前揭穿双线身份底牌"
+                          hint="写叙事边界：本幕允许展开什么、禁止提前写穿什么；避免“必须去／固定在／第几章”这类固定路线。"
+                        />
+                        <Textarea
+                          label="幕完成标志（给人看）"
+                          value={act.exitCriteriaNote ?? ''}
+                          rows={2}
+                          maxLength={STORY_ACT_ADVANCED_LIMITS.exitCriteriaNote}
+                          onChange={(event) => updateAct(actIndex, { ...act, exitCriteriaNote: event.target.value })}
+                          placeholder="一句话说明这一幕怎样算结束，例如：主角已能坦然同时维持两套身份，并对其中一段关系作出承诺。"
+                          hint="人类可读的阶段收束标志（≤120 字符），方便改稿时判断进度；不锁定具体事件。"
+                        />
+                      </div>
+                    </div>
+                  </details>
                 </div>
               )}
             </Card>

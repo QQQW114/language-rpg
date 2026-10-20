@@ -273,3 +273,87 @@ describe('contentLibrary 导出/导入往返', () => {
     assert.equal(parseContentImport(text).ok, true);
   });
 });
+
+describe('contentLibrary — 幕级可选字段（entryBrief / stageContract / exitCriteriaNote）', () => {
+  const usableAct = (title: string) => ({ title, purpose: '推进', beats: [{ title: '开场', purpose: '建立日常' }] });
+
+  it('trim、按字符上限裁剪、空白与非字符串转 undefined、缺失保持 undefined', () => {
+    const result = validateStoryOutline({
+      title: 'T',
+      synopsis: 'S',
+      acts: [
+        {
+          ...usableAct('第一幕'),
+          entryBrief: `  ${'前'.repeat(250)}  `,
+          stageContract: ` ${'约'.repeat(250)} `,
+          exitCriteriaNote: ` ${'标'.repeat(150)} `,
+        },
+        { ...usableAct('第二幕'), entryBrief: '   ', stageContract: 42, exitCriteriaNote: null },
+        usableAct('第三幕'),
+      ],
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.issues, []);
+    const [first, second, third] = result.value!.acts;
+    assert.equal(first.entryBrief, '前'.repeat(200));
+    assert.equal(first.stageContract, '约'.repeat(200));
+    assert.equal(first.exitCriteriaNote, '标'.repeat(120));
+    assert.equal(second.entryBrief, undefined);
+    assert.equal(second.stageContract, undefined);
+    assert.equal(second.exitCriteriaNote, undefined);
+    assert.equal(third.entryBrief, undefined);
+    assert.equal(third.stageContract, undefined);
+    assert.equal(third.exitCriteriaNote, undefined);
+  });
+
+  it('旧内容（JSON 里没有这三个字段）100% 兼容：不报错、不新增 issue、字段为 undefined', () => {
+    const legacy = JSON.parse(JSON.stringify({
+      id: 'outline-legacy',
+      title: '旧故事',
+      synopsis: '旧简介',
+      acts: [{
+        id: 'act-old',
+        title: '第一幕',
+        purpose: '建立日常',
+        beats: [{ id: 'beat-old', title: '开场', purpose: '建立主角的日常状态' }],
+      }],
+    }));
+    const result = validateStoryOutline(legacy);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.issues, []);
+    const act = result.value!.acts[0];
+    assert.equal(act.id, 'act-old');
+    assert.equal(act.entryBrief, undefined);
+    assert.equal(act.stageContract, undefined);
+    assert.equal(act.exitCriteriaNote, undefined);
+  });
+
+  it('导出/导入往返保留字段，且二次校验幂等', () => {
+    const source = validateStoryOutline({
+      id: 'outline-advanced',
+      title: '往返故事',
+      synopsis: '用于验证幕级可选字段往返。',
+      acts: [
+        {
+          title: '第一幕',
+          purpose: '铺垫',
+          entryBrief: ' 雨夜，双线尚未交汇，主角只在传闻里听说另一个身份。 ',
+          stageContract: '本幕只铺垫双线交集，严禁提前揭穿双线身份底牌',
+          exitCriteriaNote: '主角第一次同时面对两套身份，并意识到必须选择。',
+          beats: [{ title: '开场', purpose: '建立日常' }],
+        },
+        { ...usableAct('第二幕'), entryBrief: '   ' },
+      ],
+    }).value!;
+
+    const text = serializeContentExport({ outlines: [source] });
+    assert.equal(text.includes('entryBrief'), true, '序列化结果应包含幕级可选字段');
+    assert.equal(text.includes('stageContract'), true);
+    assert.equal(text.includes('exitCriteriaNote'), true);
+
+    const roundTrip = parseContentImport(text);
+    assert.equal(roundTrip.ok, true);
+    assert.deepEqual(roundTrip.value!.outlines, [source]);
+    assert.deepEqual(validateStoryOutline(roundTrip.value!.outlines![0]).value, roundTrip.value!.outlines![0]);
+  });
+});

@@ -243,6 +243,8 @@ destiny.beats = outline.acts.flatMap(act => act.beats.map(beat => ({
 
 这是目前唯一经过真实长局验证的格式范本。作者完全可以自定义不同的幕数（UI 已支持任意幕数），但**幕/故事节的写法约定**以它为准：幕写"阶段方向与成长"，故事节写"必须完成的叙事功能/结果"，不写地点、不写固定顺序、不写玩家只能做什么。
 
+> **版本注**：2026-10 已按外部回馈把内置预设改造为 **5 幕 15 节**（并为每幕补上 `entryBrief` / `stageContract` / `exitCriteriaNote` 三个可选字段）。下方 JSON 是改造前的 3 幕版本，保留作格式历史参考；当前实况以 [`../src/presets/outlines.ts`](../src/presets/outlines.ts) 为准。
+
 **大纲**
 
 ```json

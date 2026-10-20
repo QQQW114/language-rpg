@@ -5,6 +5,7 @@
 - [`destiny-driven-story-core.md`](destiny-driven-story-core.md)：V2 产品定位与最高设计约束。**改提示词、状态结构或前端交互前先读这篇。**
 - [`PROJECT_STATUS.md`](PROJECT_STATUS.md)：与代码同步的实现状态——架构、数据流、协议字段、存储键、测试体系、已移除的遗留部分。
 - [`story-framework-brief.md`](story-framework-brief.md)：故事框架现状、预设故事格式规则，以及「幕系统 + 随机事件强化」提案的评估简报（自包含，含源码事实与待回答问题，供外部模型评审）。
+- [`act-system-plan.md`](act-system-plan.md)：幕系统改造的决议记录与实施计划（数据模型增量、P1-P6 步骤、验收口径、风险与回滚）。
 - [`cache-prefix-investigation.md`](cache-prefix-investigation.md)：前缀缓存调研——四个失效点的查证（含 DSH 源码与 DeepSeek 官方文档依据）、已修缺陷与仍需判断的问题。
 - [`cost-analysis.md`](cost-analysis.md)：一次真实三回合游玩的成本实测与优化优先级（含官方价格换算：输出占 82% 费用、时段差价 2 倍、缓存优化上限约 16%）。
 - [`frontend-interaction-polish.md`](frontend-interaction-polish.md)：四项前端交互优化的成因与实现（自动滚动、正文闪烁、草稿保留、侧边栏更新特效）。

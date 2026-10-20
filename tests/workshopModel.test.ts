@@ -17,7 +17,7 @@ import {
   normalizeWorldBookForSave,
   safeFilename,
 } from '@/v2/workshop/model';
-import { CONTENT_EXPORT_KIND, CONTENT_EXPORT_VERSION } from '@/lib/contentLibrary';
+import { CONTENT_EXPORT_KIND, CONTENT_EXPORT_VERSION, validateStoryOutline } from '@/lib/contentLibrary';
 import type { StoryOutline, WorldBook } from '@/types/content';
 import { makeOutline, makeWorldBook } from './helpers/fixtures';
 
@@ -247,6 +247,96 @@ describe('workshop.model — safeFilename', () => {
     assert.equal(safeFilename(''), 'language-rpg-content');
     assert.equal(safeFilename('   '), 'language-rpg-content');
     assert.equal(safeFilename('///'), '-', '连续非法字符被合并成一个替换符');
+  });
+});
+
+describe('workshop.model — 幕级可选字段（entryBrief / stageContract / exitCriteriaNote）', () => {
+  const makeAdvancedAct = (overrides: Record<string, unknown> = {}) => ({
+    id: 'act-x',
+    title: '第一幕',
+    purpose: '铺垫日常',
+    beats: [{ id: 'beat-x', title: '开场', purpose: '建立日常' }],
+    ...overrides,
+  });
+
+  it('normalizeOutlineForSave 清洗幕级可选字段：trim、按上限裁剪、空白转 undefined', () => {
+    const normalized = normalizeOutlineForSave({
+      id: 'outline-x',
+      title: '标题',
+      synopsis: '简介',
+      acts: [
+        makeAdvancedAct({
+          entryBrief: `  ${'前'.repeat(240)}  `,
+          stageContract: '  本幕只铺垫双线交集  ',
+          exitCriteriaNote: '   ',
+        }),
+        makeAdvancedAct({ id: 'act-y' }),
+      ],
+    } as unknown as StoryOutline);
+
+    assert.equal(normalized.acts[0].entryBrief, '前'.repeat(200));
+    assert.equal(normalized.acts[0].stageContract, '本幕只铺垫双线交集');
+    assert.equal(normalized.acts[0].exitCriteriaNote, undefined);
+    assert.equal(normalized.acts[1].entryBrief, undefined, '缺失字段保持 undefined');
+    assert.equal(normalized.acts[1].stageContract, undefined);
+    assert.equal(normalized.acts[1].exitCriteriaNote, undefined);
+  });
+
+  it('保存归一化结果可被内容库校验原样吃下（保存 → 导出 → 再导入不漂移）', () => {
+    const normalized = normalizeOutlineForSave({
+      id: 'outline-x',
+      title: '标题',
+      synopsis: '简介',
+      tone: '冷静',
+      worldBookIds: ['wb-1'],
+      acts: [
+        makeAdvancedAct({
+          entryBrief: `  ${'前'.repeat(240)}  `,
+          stageContract: '本幕只铺垫双线交集，严禁提前揭穿底牌',
+          exitCriteriaNote: ' 主角第一次同时面对两套身份。 ',
+        }),
+      ],
+    } as unknown as StoryOutline);
+
+    const validated = validateStoryOutline(normalized);
+    assert.equal(validated.ok, true);
+    assert.deepEqual(validated.issues, []);
+    assert.deepEqual(validated.value!.acts, normalized.acts);
+  });
+
+  it('旧内容（无幕级可选字段）不会新增任何问题，也不阻断保存', () => {
+    const issues = inspectOutline(makeOutline({ tone: '冷静', worldBookIds: ['wb-1'] }));
+    assert.deepEqual(issues, []);
+  });
+
+  it('stageContract / 幕作用里的强线性措辞只给 warning，不产生 error', () => {
+    const outline = makeOutline({
+      tone: '冷静',
+      worldBookIds: ['wb-1'],
+      acts: [makeAdvancedAct({
+        purpose: '主角必须去旧城区找到线人',
+        stageContract: '本幕固定在码头发生，第3场必须揭穿身份',
+      })],
+    });
+    const issues = inspectOutline(outline);
+    assert.deepEqual(issues.map((issue) => [issue.level, issue.path]), [
+      ['warning', '第 1 幕 · 叙事作用'],
+      ['warning', '第 1 幕 · 阶段写作契约'],
+    ]);
+    assert.equal(issues.filter((issue) => issue.level === 'error').length, 0, 'warning 不阻断保存');
+    assert.ok(issues.every((issue) => issue.message.includes('叙事边界')), '提示应引导写叙事边界');
+  });
+
+  it('单幕故事节超过 6 个时给非阻断建议，6 个及以内不提示', () => {
+    const actWithBeats = (count: number) => makeAdvancedAct({
+      beats: Array.from({ length: count }, (_, index) => ({ id: `beat-${index}`, title: `故事节 ${index + 1}`, purpose: '完成叙事功能' })),
+    });
+    const base = { tone: '冷静', worldBookIds: ['wb-1'] };
+
+    assert.deepEqual(inspectOutline(makeOutline({ ...base, acts: [actWithBeats(6)] })), []);
+    const issues = inspectOutline(makeOutline({ ...base, acts: [actWithBeats(7)] }));
+    assert.deepEqual(issues.map((issue) => [issue.level, issue.path]), [['warning', '第 1 幕']]);
+    assert.ok(issues[0].message.includes('7 个故事节'));
   });
 });
 

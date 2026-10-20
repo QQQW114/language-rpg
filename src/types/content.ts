@@ -27,11 +27,34 @@ export interface StoryBeat {
   purpose: string;
 }
 
+/**
+ * 幕级「阶段高级约束」字段的字数上限（按 Unicode 字符/码点计）。
+ * 内容库校验、工坊保存归一化与编辑器 maxLength 共用同一份常量，避免三处漂移。
+ */
+export const STORY_ACT_ADVANCED_LIMITS = {
+  /** 开幕引子：进入本幕时的舞台状态、气氛与核心议题转移。 */
+  entryBrief: 200,
+  /** 本幕写作契约/禁令：允许展开的范围与“禁止提前写穿”的底线。 */
+  stageContract: 200,
+  /** 幕完成标志：人类可读的阶段收束标志。 */
+  exitCriteriaNote: 120,
+} as const;
+
+export type StoryActAdvancedField = keyof typeof STORY_ACT_ADVANCED_LIMITS;
+
 export interface StoryAct {
   id: string;
   title: string;
   purpose: string;
   beats: StoryBeat[];
+  // 以下为可选「阶段高级约束」，全部与幕状态机解耦：
+  // 只影响内容层（提示词/工坊），旧内容缺省时行为完全不变。
+  /** 开幕引子（≤200 字符）：进入本幕时的舞台状态、气氛与核心议题转移，不指定固定场景。 */
+  entryBrief?: string;
+  /** 本幕写作契约/禁令（≤200 字符）：本幕允许展开的范围与“禁止提前写穿”的底线，写边界而非固定路线。 */
+  stageContract?: string;
+  /** 幕完成标志（≤120 字符）：人类可读的阶段收束标志，不锁定具体事件。 */
+  exitCriteriaNote?: string;
 }
 
 export interface StoryOutline {

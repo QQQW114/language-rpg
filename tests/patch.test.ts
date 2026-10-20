@@ -1111,3 +1111,332 @@ describe('patch — 顶层汇总、场景与 actions', () => {
     assert.deepEqual(state, snapshot, '原状态应保持完全不变');
   });
 });
+
+describe('patch — 程序权威幕状态机', () => {
+  /**
+   * 构造一份"带幕"的权威状态：act-1（beat-1-1、beat-1-2）→ act-2（beat-2-1）。
+   * 与 makeState 的区别是每个故事节都带 actId，程序才能推导幕顺序。
+   */
+  function actState(destinyOverrides: Record<string, unknown> = {}): GameStateV2 {
+    const base = makeState();
+    return makeState({
+      destiny: {
+        ...base.destiny,
+        currentActId: 'act-1',
+        currentActIndex: 0,
+        actHistory: [],
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-1-2', actId: 'act-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+        ...destinyOverrides,
+      },
+    });
+  }
+
+  /** 基于带幕状态提交一个 Patch，并收集提交阶段警告。 */
+  function commitAct(state: GameStateV2, patchOverrides: Record<string, unknown> = {}) {
+    const warnings: PatchWarningV2[] = [];
+    const next = commitTurnPatchV2(
+      state,
+      makePatch({ baseRevision: state.revision, turn: state.turn, ...patchOverrides }),
+      warnings,
+    );
+    return { state: next, warnings };
+  }
+
+  it('常规轨：本幕原生故事节全部终态时自动进入下一幕，并记录幕历史', () => {
+    const state = actState();
+    const { state: next, warnings } = commitAct(state, {
+      destiny: {
+        reason: '本幕收束',
+        beatChanges: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据一' },
+          { beatId: 'beat-1-2', status: 'satisfied', evidenceQuote: '证据二' },
+        ],
+      },
+    });
+    assert.equal(next.destiny.currentActId, 'act-2');
+    assert.equal(next.destiny.currentActIndex, 1);
+    assert.equal(next.destiny.lastActTransitionTurn, S);
+    assert.equal(next.destiny.currentStage, '', '切幕后清空阶段文本，等待模型下轮重新描述');
+    assert.deepEqual(next.destiny.actHistory, [{
+      actId: 'act-1',
+      enteredTurn: 0,
+      exitedTurn: S,
+      exitSummary: '本轮摘要',
+    }]);
+    // actId 不可变：故事节仍归属原幕
+    assert.deepEqual(next.destiny.beats.map((beat) => [beat.beatId, beat.actId]), [
+      ['beat-1-1', 'act-1'],
+      ['beat-1-2', 'act-1'],
+      ['beat-2-1', 'act-2'],
+    ]);
+    assert.deepEqual(warnings, []);
+  });
+
+  it('常规轨：roundSummary 为空时 exitSummary 用旧摘要，超过 150 字被截断', () => {
+    const state = actState();
+    const fallback = commitAct(state, {
+      roundSummary: '',
+      destiny: {
+        reason: 'x',
+        beatChanges: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据一' },
+          { beatId: 'beat-1-2', status: 'satisfied', evidenceQuote: '证据二' },
+        ],
+      },
+    });
+    assert.equal(fallback.state.destiny.actHistory[0]?.exitSummary, '旧摘要');
+
+    const longSummary = '长'.repeat(200);
+    const truncated = commitAct(state, {
+      roundSummary: longSummary,
+      destiny: {
+        reason: 'x',
+        beatChanges: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据一' },
+          { beatId: 'beat-1-2', status: 'satisfied', evidenceQuote: '证据二' },
+        ],
+      },
+    });
+    assert.equal(truncated.state.destiny.actHistory[0]?.exitSummary?.length, 150);
+  });
+
+  it('最后一幕：原生故事节全部终态也不自动推进，交给结局判定', () => {
+    const state = actState({
+      currentActId: 'act-2',
+      currentActIndex: 1,
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const { state: next, warnings } = commitAct(state, {
+      destiny: { reason: 'x', beatChanges: [{ beatId: 'beat-2-1', status: 'satisfied', evidenceQuote: '证据' }] },
+    });
+    assert.equal(next.destiny.currentActId, 'act-2');
+    assert.equal(next.destiny.currentActIndex, 1);
+    assert.deepEqual(next.destiny.actHistory, []);
+    assert.equal(next.destiny.lastActTransitionTurn, undefined);
+    assert.deepEqual(warnings, []);
+  });
+
+  it('模型提交的 currentActId 与权威当前幕不一致时忽略并留警告（跳幕/未知/倒退）', () => {
+    const forward = commitAct(actState(), { destiny: { reason: 'x', currentActId: 'act-2' } });
+    assert.equal(forward.state.destiny.currentActId, 'act-1', '跳幕被拒绝');
+    assert.equal(forward.state.destiny.currentActIndex, 0);
+    assert.equal(forward.warnings.filter((warning) => warning.code === 'act_current_id_rejected').length, 1);
+
+    const unknown = commitAct(actState(), { destiny: { reason: 'x', currentActId: '第三幕 · 未命名' } });
+    assert.equal(unknown.state.destiny.currentActId, 'act-1', '自由文本/未知幕被拒绝');
+    assert.ok(unknown.warnings.find((warning) => warning.code === 'act_current_id_rejected')?.message.includes('第三幕'));
+
+    const backwardState = actState({ currentActId: 'act-2', currentActIndex: 1 });
+    const backward = commitAct(backwardState, { destiny: { reason: 'x', currentActId: 'act-1' } });
+    assert.equal(backward.state.destiny.currentActId, 'act-2', '倒退被拒绝');
+    assert.equal(backward.warnings.filter((warning) => warning.code === 'act_current_id_rejected').length, 1);
+
+    const same = commitAct(actState(), { destiny: { reason: 'x', currentActId: 'act-1' } });
+    assert.deepEqual(same.warnings, [], '与权威值一致时不产生警告');
+  });
+
+  it('改道轨：三条 gate 通过时携节进入下一幕，挂账节保持非终态且 actId 不变', () => {
+    const state = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const { state: next, warnings } = commitAct(state, {
+      destiny: {
+        reason: '改道',
+        actTransition: { proposeNextAct: true, actExitSummary: '玩家离开校园，下一幕在校外继续' },
+        beatChanges: [{ beatId: 'beat-1-2', status: 'reframed', currentPlan: '在校外宾馆用电话完成边界确认', evidenceQuote: '证据', reason: '路线改变' }],
+      },
+    });
+    assert.equal(next.destiny.currentActId, 'act-2');
+    assert.equal(next.destiny.currentActIndex, 1);
+    assert.equal(next.destiny.lastActTransitionTurn, S);
+    assert.deepEqual(next.destiny.actHistory, [{
+      actId: 'act-1',
+      enteredTurn: 0,
+      exitedTurn: S,
+      exitSummary: '玩家离开校园，下一幕在校外继续',
+      carriedBeatIds: ['beat-1-2'],
+    }]);
+    const carried = next.destiny.beats.find((beat) => beat.beatId === 'beat-1-2');
+    assert.equal(carried?.status, 'reframed', '挂账节不视为完成');
+    assert.equal(carried?.actId, 'act-1', 'actId 不可变：不把故事节搬到下一幕');
+    assert.equal(carried?.carriedFromActId, 'act-1');
+    assert.deepEqual(warnings, []);
+  });
+
+  it('改道轨：挂账时保留最早的原属幕（已有 carriedFromActId 不覆盖）', () => {
+    const state = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'reframed', currentPlan: '既有计划', carriedFromActId: 'act-0', evidenceTurns: [], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const { state: next } = commitAct(state, { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(next.destiny.currentActId, 'act-2');
+    assert.equal(next.destiny.beats.find((beat) => beat.beatId === 'beat-1-2')?.carriedFromActId, 'act-0');
+  });
+
+  it('挂账节仍是非终态：不因跨幕挂账放宽结局门槛', () => {
+    const state = actState({
+      currentActId: 'act-2',
+      currentActIndex: 1,
+      actHistory: [{ actId: 'act-1', enteredTurn: 0, exitedTurn: 3, exitSummary: '上一幕', carriedBeatIds: ['beat-1-2'] }],
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [1], updatedAtTurn: 1 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'reframed', currentPlan: '新路径', carriedFromActId: 'act-1', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'satisfied', evidenceTurns: [5], updatedAtTurn: 5 },
+      ],
+    });
+    const { state: next } = commitAct(state, {
+      destiny: { reason: '收尾', completionEstimate: 100, endingReached: true },
+    });
+    assert.equal(next.destiny.endingReached, false, '挂账节 reframed 仍是未完成，结局门槛不放宽');
+  });
+
+  it('改道轨 gate 1：本幕无终态节或终态比例不足 50% 时拒绝并保持当前幕', () => {
+    const noTerminal = commitAct(actState(), { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(noTerminal.state.destiny.currentActId, 'act-1');
+    assert.ok(noTerminal.warnings.find((warning) => warning.code === 'act_transition_rejected'));
+
+    const lowRatioState = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'reframed', currentPlan: '计划', evidenceTurns: [], updatedAtTurn: 3 },
+        { beatId: 'beat-1-3', actId: 'act-1', status: 'reframed', currentPlan: '计划', evidenceTurns: [], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const lowRatio = commitAct(lowRatioState, { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(lowRatio.state.destiny.currentActId, 'act-1', '1/3 = 33% < 50%');
+    assert.equal(lowRatio.state.destiny.currentActIndex, 0);
+    assert.deepEqual(lowRatio.state.destiny.actHistory, []);
+    const warning = lowRatio.warnings.find((item) => item.code === 'act_transition_rejected');
+    assert.ok(warning?.message.includes('原生故事节 3 条'), '警告应包含具体条数');
+    assert.ok(warning?.message.includes('终态 1 条'));
+  });
+
+  it('改道轨 gate 2：非终态节必须是 reframed/weakened 且写明 currentPlan', () => {
+    const activeState = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'active', currentPlan: '计划', evidenceTurns: [], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const activeResult = commitAct(activeState, { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(activeResult.state.destiny.currentActId, 'act-1', 'active 节不能被挂账带走');
+    assert.ok(activeResult.warnings.find((warning) => warning.code === 'act_transition_rejected')?.message.includes('不满足'));
+
+    const noPlanState = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'reframed', evidenceTurns: [], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const noPlan = commitAct(noPlanState, { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(noPlan.state.destiny.currentActId, 'act-1', '没有 currentPlan 的 reframed 节不能被挂账');
+    assert.ok(noPlan.warnings.find((warning) => warning.code === 'act_transition_rejected'));
+  });
+
+  it('改道轨 gate 3：非终态原生节超过 2 个时拒绝（防止整幕批发挂账）', () => {
+    const state = actState({
+      beats: [
+        ...['beat-1-1', 'beat-1-2', 'beat-1-3'].map((beatId) => ({ beatId, actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 })),
+        ...['beat-1-4', 'beat-1-5', 'beat-1-6'].map((beatId) => ({ beatId, actId: 'act-1', status: 'reframed', currentPlan: '计划', evidenceTurns: [], updatedAtTurn: 3 })),
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const { state: next, warnings } = commitAct(state, { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(next.destiny.currentActId, 'act-1', '3/6 终态比例达标，但非终态 3 条 > 2 条');
+    assert.ok(warnings.find((warning) => warning.code === 'act_transition_rejected')?.message.includes('非终态 3 条'));
+  });
+
+  it('更早幕的挂账节不参与本幕终态比例，也不阻塞常规轨自动推进', () => {
+    const state = actState({
+      currentActId: 'act-2',
+      currentActIndex: 1,
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [1], updatedAtTurn: 1 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'reframed', currentPlan: '旧计划', carriedFromActId: 'act-1', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'satisfied', evidenceTurns: [5], updatedAtTurn: 5 },
+        { beatId: 'beat-3-1', actId: 'act-3', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const { state: next, warnings } = commitAct(state, {
+      destiny: { reason: 'x', actTransition: { proposeNextAct: true } },
+    });
+    // act-2 原生节只有 beat-2-1 且已终态 → 常规轨自动进 act-3；更早幕的挂账节既不阻塞也不被搬动。
+    assert.equal(next.destiny.currentActId, 'act-3');
+    assert.equal(next.destiny.currentActIndex, 2);
+    assert.deepEqual(warnings, []);
+    assert.equal(next.destiny.beats.find((beat) => beat.beatId === 'beat-1-2')?.status, 'reframed');
+    assert.equal(next.destiny.beats.find((beat) => beat.beatId === 'beat-1-2')?.actId, 'act-1');
+  });
+
+  it('最后一幕提议切幕：没有可推导的下一幕时拒绝并警告', () => {
+    const state = actState({ currentActId: 'act-2', currentActIndex: 1 });
+    const { state: next, warnings } = commitAct(state, { destiny: { reason: 'x', actTransition: { proposeNextAct: true } } });
+    assert.equal(next.destiny.currentActId, 'act-2');
+    assert.ok(warnings.find((warning) => warning.code === 'act_transition_rejected')?.message.includes('最后一幕'));
+  });
+
+  it('actTransition 未明确提议或不是对象时不切幕', () => {
+    const partialState = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'reframed', currentPlan: '计划', evidenceTurns: [], updatedAtTurn: 3 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    const notProposed = commitAct(partialState, { destiny: { reason: 'x', actTransition: { proposeNextAct: false } } });
+    assert.equal(notProposed.state.destiny.currentActId, 'act-1');
+    assert.equal(notProposed.warnings.length, 0);
+
+    const invalid = commitAct(partialState, { destiny: { reason: 'x', actTransition: 'yes' as never } });
+    assert.equal(invalid.state.destiny.currentActId, 'act-1');
+    assert.equal(invalid.warnings.length, 0);
+  });
+
+  it('连续两次切幕：enteredTurn 取上一条幕历史的 exitedTurn', () => {
+    const state = actState({
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-1-2', actId: 'act-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-2-1', actId: 'act-2', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+        { beatId: 'beat-3-1', actId: 'act-3', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    });
+    // 第一次：act-1 已全部终态 → 常规轨自动进 act-2。
+    const first = commitAct(state, { destiny: { reason: 'x' } });
+    assert.equal(first.state.destiny.currentActId, 'act-2');
+    assert.deepEqual(first.state.destiny.actHistory.map((entry) => [entry.actId, entry.enteredTurn, entry.exitedTurn]), [
+      ['act-1', 0, S],
+    ]);
+
+    // 模拟引擎在提交后推进回合号（patch.ts 本身的 turn 不变）。
+    const secondState: GameStateV2 = { ...first.state, turn: 10 };
+    const second = commitAct(secondState, {
+      // 每回合 commitId 不同；相同 commitId 会命中幂等分支（不重复提交）。
+      commitId: 'commit-test-2',
+      destiny: { reason: 'x', beatChanges: [{ beatId: 'beat-2-1', status: 'satisfied', evidenceQuote: '证据' }] },
+    });
+    assert.equal(second.state.destiny.currentActId, 'act-3');
+    assert.deepEqual(second.state.destiny.actHistory.map((entry) => [entry.actId, entry.enteredTurn, entry.exitedTurn]), [
+      ['act-1', 0, S],
+      ['act-2', S, 10],
+    ]);
+  });
+});

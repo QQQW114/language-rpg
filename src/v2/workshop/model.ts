@@ -1,6 +1,6 @@
 import type { ImportBundle, StoryAct, StoryBeat, StoryOutline, WorldBook, WorldBookEntry } from '@/types/content';
 import { genId } from '@/lib/utils';
-import { buildContentExport } from '@/lib/contentLibrary';
+import { buildContentExport, normalizeStoryActAdvancedFields } from '@/lib/contentLibrary';
 
 export type WorkshopIssueLevel = 'error' | 'warning';
 
@@ -94,6 +94,29 @@ export function clonePresetProject(
   return { outline: clonedOutline, worldBooks: clonedBooks };
 }
 
+/** 单幕故事节超过该数量时只给非阻断建议（预设《错位青春》第三幕恰好 6 个，不应被提示）。 */
+const SUGGESTED_BEATS_PER_ACT = 6;
+
+/**
+ * 「强线性词」linter：识别把叙事边界写成固定路线的常见措辞。
+ * 只产出 warning，绝不阻断保存；旧内容（没有幕级可选字段）不会命中。
+ */
+const LINEAR_ROUTE_PATTERNS: RegExp[] = [
+  /必须(?:去|前往|到|抵达)/,
+  /固定(?:在|于)/,
+  /只能(?:在|去|走|选择|前往|经过)/,
+  /只允许(?:在|去|发生|写)/,
+  /第[0-9一二三四五六七八九十百零两]+[章场回]/,
+];
+
+const LINEAR_ROUTE_HINT = '建议写叙事边界（本幕允许展开什么、禁止提前写穿什么），而不是固定路线或指定场景。';
+
+function findLinearRoutePhrase(text: string): string | undefined {
+  return LINEAR_ROUTE_PATTERNS
+    .map((pattern) => text.match(pattern)?.[0])
+    .find((phrase): phrase is string => Boolean(phrase));
+}
+
 export function inspectOutline(outline: StoryOutline): WorkshopIssue[] {
   const issues: WorkshopIssue[] = [];
   if (!outline.title.trim()) issues.push(error('故事标题', '请填写故事标题。'));
@@ -107,6 +130,21 @@ export function inspectOutline(outline: StoryOutline): WorkshopIssue[] {
     if (!act.title.trim()) issues.push(error(actPath, '请填写幕标题。'));
     if (!act.purpose.trim()) issues.push(error(actPath, '请说明这一幕必须完成的叙事作用。'));
     if (!act.beats.length) issues.push(error(actPath, '每一幕至少需要一个故事节。'));
+    if (act.beats.length > SUGGESTED_BEATS_PER_ACT) {
+      issues.push(warning(
+        actPath,
+        `这一幕有 ${act.beats.length} 个故事节，命运骨架可能被切得过细；建议合并到 ${SUGGESTED_BEATS_PER_ACT} 个以内，只保留不可替代的叙事功能。`,
+      ));
+    }
+    const purposeLinear = findLinearRoutePhrase(act.purpose);
+    if (purposeLinear) {
+      issues.push(warning(`${actPath} · 叙事作用`, `「${purposeLinear}」把路线写死了。${LINEAR_ROUTE_HINT}`));
+    }
+    const stageContract = act.stageContract?.trim();
+    const contractLinear = stageContract ? findLinearRoutePhrase(stageContract) : undefined;
+    if (contractLinear) {
+      issues.push(warning(`${actPath} · 阶段写作契约`, `「${contractLinear}」把路线写死了。${LINEAR_ROUTE_HINT}`));
+    }
     act.beats.forEach((beat, beatIndex) => {
       const path = `${actPath} · 故事节 ${beatIndex + 1}`;
       if (!beat.title.trim()) issues.push(error(path, '请填写故事节标题。'));
@@ -144,6 +182,8 @@ export function normalizeOutlineForSave(outline: StoryOutline): StoryOutline {
       ...act,
       title: act.title.trim(),
       purpose: act.purpose.trim(),
+      // 与内容库同一实现：trim、按上限裁剪、空白降级为 undefined，保存→导出→再导入不漂移。
+      ...normalizeStoryActAdvancedFields(act),
       beats: act.beats.map((beat) => ({
         ...beat,
         title: beat.title.trim(),

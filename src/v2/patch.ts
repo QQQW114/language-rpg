@@ -1,6 +1,6 @@
 import { normalizeChoices } from '@/lib/actions';
 import { clamp, genId, textOrPrevious } from '@/lib/utils';
-import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchCategoryStatsV2, PatchStatsV2, PatchWarningV2, RandomEventIntensityV2, RelationshipV2, StoryThreadV2, TurnPatchV2 } from './types';
+import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchCategoryStatsV2, PatchStatsV2, PatchWarningV2, RandomEventIntensityV2, RelationshipV2, StoryBeatRuntimeV2, StoryBeatStatusV2, StoryThreadV2, TurnPatchV2 } from './types';
 
 const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -270,12 +270,13 @@ export function commitTurnPatchV2(
   }
 
   const destiny = { ...state.destiny, beats: state.destiny.beats.map((x) => ({ ...x, evidenceTurns: [...x.evidenceTurns] })) };
+  // 程序权威的当前幕：模型自报的 currentActId 只是"提议"，不能直接写入权威状态。
+  const authoritativeActId = text(state.destiny.currentActId, 80);
   // reason用于解释与审计，不是命运Patch的事务开关。即使供应商漏掉一个
   // 说明字段，也必须逐项提交其余合法状态，不能静默丢弃整个命运更新。
   if (record(patch.destiny)) {
     if (patch.destiny.completionEstimate !== undefined) destiny.completionEstimate = clamp(Number(patch.destiny.completionEstimate) || 0, 0, 100);
     if (patch.destiny.completionReason !== undefined) destiny.completionReason = text(patch.destiny.completionReason, 400) || destiny.completionReason;
-    if (patch.destiny.currentActId !== undefined) destiny.currentActId = text(patch.destiny.currentActId, 80) || destiny.currentActId;
     if (patch.destiny.currentStage !== undefined) destiny.currentStage = text(patch.destiny.currentStage, 80) || destiny.currentStage;
     if (patch.destiny.currentPath !== undefined) destiny.currentPath = text(patch.destiny.currentPath, 240) || destiny.currentPath;
     if (patch.destiny.nextMilestone !== undefined) destiny.nextMilestone = text(patch.destiny.nextMilestone, 200) || undefined;
@@ -333,6 +334,97 @@ export function commitTurnPatchV2(
         });
       }
     }
+
+    // ---- 程序权威幕状态机（在故事节更新之后、结局判定之前） ----
+    // 模型提交的 currentActId 只有与程序当前幕完全一致时才接受（此时也无需写入）；
+    // 未知 / 跳幕 / 倒退一律忽略并留下可观察警告。幕推进只由故事节完成情况决定。
+    const proposedActId = patch.destiny.currentActId === undefined ? '' : text(patch.destiny.currentActId, 80);
+    if (proposedActId && proposedActId !== authoritativeActId) {
+      warnings.push({
+        code: 'act_current_id_rejected',
+        path: 'destiny.currentActId',
+        message: `模型提交的当前幕「${proposedActId.slice(0, 30)}」与程序权威当前幕「${authoritativeActId || '未知'}」不一致，已忽略；幕推进只由故事节完成情况决定。`,
+      });
+    }
+
+    const isTerminalBeat = (status: StoryBeatStatusV2) => status === 'satisfied' || status === 'superseded';
+    // 幕顺序从故事节的 actId 首现顺序推导：commitTurnPatchV2 的入参只有 state（没有 outline），
+    // 而故事节是按大纲幕顺序扁平化创建的，因此"首次出现顺序"就是幕顺序。
+    const actOrder = Array.from(new Set(destiny.beats.map((beat) => text(beat.actId, 80)).filter(Boolean)));
+    // 旧存档/直接调用方可能没有 actId（真实运行链路里 hydrate 已按 outline 反查补齐）：
+    // 视为属于当前幕，而不是把它们排除在"本幕进度"之外。
+    const beatActId = (beat: StoryBeatRuntimeV2) => text(beat.actId, 80) || authoritativeActId;
+    const nativeBeats = destiny.beats.filter((beat) => beatActId(beat) === authoritativeActId);
+    const terminalCount = nativeBeats.filter((beat) => isTerminalBeat(beat.status)).length;
+    const nonTerminalBeats = nativeBeats.filter((beat) => !isTerminalBeat(beat.status));
+    const storedActIndex = typeof destiny.currentActIndex === 'number' && destiny.currentActIndex >= 0 ? destiny.currentActIndex : -1;
+    // 优先用存档里的 currentActIndex（由 hydrate 按大纲同步过），但它必须与 actOrder 对得上，
+    // 否则说明故事节里没有该幕的信息，退回按 actId 查找。
+    const currentActPosition = storedActIndex >= 0 && actOrder[storedActIndex] === authoritativeActId
+      ? storedActIndex
+      : actOrder.indexOf(authoritativeActId);
+    const nextActId = currentActPosition >= 0 ? actOrder[currentActPosition + 1] : undefined;
+    // 同步 currentActIndex（旧档可能还没有这个字段）；推导不出时保留原值，绝不乱造幕序号。
+    destiny.currentActIndex = currentActPosition >= 0 ? currentActPosition : Math.max(0, storedActIndex);
+    if (!Array.isArray(destiny.actHistory)) destiny.actHistory = [];
+    const previousActEntry = destiny.actHistory[destiny.actHistory.length - 1];
+
+    /**
+     * 退出当前幕后追加的幕历史。
+     *
+     * `enteredTurn` 取上一幕记录的 exitedTurn（第一幕从 0 开始）：程序不伪造历史，
+     * 但切幕是程序自己做的，因此这里补的回合数字都是真实发生过的。
+     */
+    const buildActHistoryEntry = (actId: string, exitSummary: string | undefined, carriedBeatIds?: string[]) => ({
+      actId,
+      enteredTurn: typeof previousActEntry?.exitedTurn === 'number' ? previousActEntry.exitedTurn : 0,
+      exitedTurn: state.turn,
+      ...(exitSummary ? { exitSummary } : {}),
+      ...(carriedBeatIds?.length ? { carriedBeatIds } : {}),
+    });
+    const advanceAct = (nextId: string, exitSummary: string | undefined, carriedBeatIds?: string[]) => {
+      destiny.actHistory = [...destiny.actHistory, buildActHistoryEntry(authoritativeActId, exitSummary, carriedBeatIds)];
+      destiny.currentActId = nextId;
+      destiny.currentActIndex = currentActPosition + 1;
+      destiny.currentStage = '';
+      destiny.lastActTransitionTurn = state.turn;
+    };
+    const currentActAllTerminal = nativeBeats.length > 0 && nonTerminalBeats.length === 0;
+    if (nextActId && currentActAllTerminal) {
+      // 常规轨：本幕原生故事节全部进入终态，自动进入下一幕。
+      // 最后一幕不在这里推进——交给下面的结局判定收尾。
+      const exitSummary = text(patch.roundSummary, 150) || text(state.summary, 150) || undefined;
+      advanceAct(nextActId, exitSummary);
+    } else if (patch.destiny.actTransition?.proposeNextAct === true) {
+      // 改道轨：玩家把路线改到本幕无法完成某些故事节时，允许模型提议"携节跨幕"（挂账）。
+      // 只处理当前幕的原生故事节；更早幕带进来的挂账节不参与本幕比例，但仍受结局门槛约束。
+      const ratio = nativeBeats.length > 0 ? terminalCount / nativeBeats.length : 0;
+      const ratioOk = terminalCount >= 1 && ratio >= 0.5;
+      const planOk = nonTerminalBeats.every((beat) => (beat.status === 'reframed' || beat.status === 'weakened') && !!text(beat.currentPlan, 300));
+      const carryLimitOk = nonTerminalBeats.length <= 2;
+      if (!nextActId) {
+        warnings.push({
+          code: 'act_transition_rejected',
+          path: 'destiny.actTransition.proposeNextAct',
+          message: '模型提议进入下一幕，但程序无法确定下一幕（当前已是可推导的最后一幕，或存档缺少幕信息），已保持当前幕。',
+        });
+      } else if (ratioOk && planOk && carryLimitOk) {
+        // actId 保持不可变：挂账只写 carriedFromActId（已有则保留最早的原属幕），
+        // 故事节仍是非终态，绝不放宽结局门槛。
+        for (const beat of nonTerminalBeats) {
+          if (!text(beat.carriedFromActId, 80)) beat.carriedFromActId = authoritativeActId;
+        }
+        const exitSummary = text(patch.destiny.actTransition.actExitSummary, 150) || text(patch.roundSummary, 150) || text(state.summary, 150) || undefined;
+        advanceAct(nextActId, exitSummary, nonTerminalBeats.map((beat) => beat.beatId));
+      } else {
+        warnings.push({
+          code: 'act_transition_rejected',
+          path: 'destiny.actTransition.proposeNextAct',
+          message: `模型提议进入下一幕，但未满足跨幕挂账条件：本幕原生故事节 ${nativeBeats.length} 条，终态 ${terminalCount} 条（需 ≥1 条且占比 ≥50%）；非终态 ${nonTerminalBeats.length} 条（需 ≤2 条，且全部为 reframed/weakened 并写明 currentPlan：${planOk ? '满足' : '不满足'}）。已保持当前幕。`,
+        });
+      }
+    }
+
     const allCoreBeatsSatisfied = destiny.beats.length > 0 && destiny.beats.every((x) => x.status === 'satisfied' || x.status === 'superseded');
     if (patch.destiny.endingReached === true && destiny.completionEstimate >= 100 && allCoreBeatsSatisfied && !destiny.endingReached) {
       destiny.endingReached = true;

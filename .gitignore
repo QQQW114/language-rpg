@@ -8,6 +8,8 @@ dist
 test-saves/
 test-runs/
 docs/other/
+# 外部模型评审/反馈的临时输入目录，不进仓库
+docs/temp/
 *.bak
 
 # Local legacy prompt and architecture references (not shipped)

@@ -1,4 +1,5 @@
 import { genId } from './utils';
+import { STORY_ACT_ADVANCED_LIMITS } from '@/types/content';
 import type {
   Background,
   ContentExportPackage,
@@ -6,6 +7,7 @@ import type {
   ContentValidationResult,
   ImportBundle,
   StoryAct,
+  StoryActAdvancedField,
   StoryBeat,
   StoryOutline,
   WorldBook,
@@ -35,6 +37,27 @@ const issue = (
   code: string,
   message: string,
 ): ContentValidationIssue => ({ kind, path, code, message });
+
+/** HTML `maxLength` 按 UTF-16 计；这里按 Unicode 码点裁剪，避免代理对被切成半个字符。 */
+const clampChars = (value: unknown, maxChars: number): string | undefined => {
+  const text = cleanText(value);
+  if (!text) return undefined;
+  const chars = Array.from(text);
+  return chars.length > maxChars ? chars.slice(0, maxChars).join('') : text;
+};
+
+/**
+ * 清洗 `StoryAct` 的幕级可选字段：trim、按字符上限裁剪、空白/非字符串/缺失 → undefined。
+ * 内容库校验与工坊保存归一化共用同一实现，保证「保存 → 导出 → 再导入」往返一致。
+ */
+export function normalizeStoryActAdvancedFields(input: unknown): Pick<StoryAct, StoryActAdvancedField> {
+  const record = isRecord(input) ? input : {};
+  return {
+    entryBrief: clampChars(record.entryBrief, STORY_ACT_ADVANCED_LIMITS.entryBrief),
+    stageContract: clampChars(record.stageContract, STORY_ACT_ADVANCED_LIMITS.stageContract),
+    exitCriteriaNote: clampChars(record.exitCriteriaNote, STORY_ACT_ADVANCED_LIMITS.exitCriteriaNote),
+  };
+}
 
 function uniqueId(raw: unknown, prefix: string, used: Set<string>): string {
   let id = cleanText(raw) || genId(prefix);
@@ -95,6 +118,8 @@ export function validateStoryOutline(input: unknown): ContentValidationResult<St
       id: uniqueId(rawAct.id, 'act', actIds),
       title: actTitle,
       purpose: actPurpose,
+      // 可选字段不参与必填校验：旧内容缺失时保持 undefined，新内容超限被裁剪而不是报错。
+      ...normalizeStoryActAdvancedFields(rawAct),
       beats,
     });
   });

@@ -23,12 +23,52 @@ export interface CommitSuccessfulTurnV2 {
   nextState: GameStateV2;
 }
 
-/** 存档持久化格式版本。新增/变更 GameStateV2 字段时递增，并在 migrate 里补一档迁移。 */
-export const SAVE_STORAGE_VERSION = 1;
+/**
+ * 存档持久化格式版本。新增/变更 GameStateV2 字段时递增，并在 migrate 里补一档迁移。
+ *
+ * v2：destiny 增加 `currentActIndex` / `actHistory` / `lastActTransitionTurn`，
+ *     `destiny.beats[]` 增加 `actId` / `carriedFromActId`（用于程序权威幕状态机）。
+ *     必须递增版本号：zustand persist 只在"存档版本 ≠ 当前版本"时才调用 migrate，
+ *     否则旧档永远不会经过 `sanitizeSaveV2` 补齐这些字段。
+ */
+export const SAVE_STORAGE_VERSION = 2;
 /** 最近一次 hydrate 时读到的存档格式版本（用于"高版本存档只读"判定）。 */
 let persistedVersionSeen: number | undefined;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+/** 大纲幕结构的只读视图：仅在旧档反查 `actId` / 纠正 `currentActId` 时使用。 */
+interface OutlineActLite {
+  id: string;
+  title: string;
+  beatIds: string[];
+}
+
+/**
+ * 从存档容器的大纲里提取幕结构。
+ *
+ * 只读取 `id / title / beats[].id`，对畸形大纲保持沉默（返回空数组）：导入裸档可能
+ * 根本没有 outline，此时幕状态机安全退化，但不能因此让整份存档读不出来。
+ */
+function outlineActsOf(raw: unknown): OutlineActLite[] {
+  if (!isRecord(raw) || !Array.isArray(raw.acts)) return [];
+  const acts: OutlineActLite[] = [];
+  for (const rawAct of raw.acts) {
+    if (!isRecord(rawAct) || typeof rawAct.id !== 'string' || !rawAct.id) continue;
+    acts.push({
+      id: rawAct.id,
+      title: typeof rawAct.title === 'string' ? rawAct.title.trim() : '',
+      beatIds: (Array.isArray(rawAct.beats) ? rawAct.beats : [])
+        .filter(isRecord)
+        .map((beat) => (typeof beat.id === 'string' ? beat.id : ''))
+        .filter(Boolean),
+    });
+  }
+  return acts;
+}
+
+/** 故事节终态：只有它们算"本幕完成"，也参与结局门槛。 */
+const TERMINAL_BEAT_STATUSES: ReadonlySet<string> = new Set(['satisfied', 'superseded']);
 
 /**
  * 存档字段兜底。
@@ -37,16 +77,59 @@ const isRecord = (value: unknown): value is Record<string, unknown> => !!value &
  * 被截断过，或未来新增字段时漏了兼容，都会让 `snapshot()` 之类的读取点直接抛
  * `TypeError`——而那时本轮已经花掉两三次模型调用了。这里把所有数组字段补成数组、
  * 缺省标量补成默认值，让坏档退化成"内容少一点"而不是"直接崩"。
+ *
+ * @param outline 存档容器里的大纲（可选）。用于旧档反查 `destiny.beats[].actId`、
+ *   纠正模型自报的自由文本 `currentActId`。没有大纲时幕状态机安全退化，不抛错。
  */
-export function sanitizeGameStateV2(raw: unknown): GameStateV2 | undefined {
+export function sanitizeGameStateV2(raw: unknown, outline?: unknown): GameStateV2 | undefined {
   if (!isRecord(raw)) return undefined;
   const arrayOf = <T,>(value: unknown): T[] => (Array.isArray(value) ? value as T[] : []);
   // 数组元素本身也可能是坏数据；读取点会对每个元素取属性，这里只保留对象元素。
   const objectsOf = <T,>(value: unknown): T[] => arrayOf<unknown>(value).filter(isRecord) as T[];
   const destinyRaw = isRecord(raw.destiny) ? raw.destiny : {};
+  const acts = outlineActsOf(outline);
   const destinyBeats = objectsOf<GameStateV2['destiny']['beats'][number]>(destinyRaw.beats)
     .filter((beat) => typeof beat.beatId === 'string' && beat.beatId)
-    .map((beat) => ({ ...beat, evidenceTurns: arrayOf<number>(beat.evidenceTurns).filter((turn) => typeof turn === 'number') }));
+    .map((beat) => {
+      const storedActId = typeof beat.actId === 'string' ? beat.actId.trim() : '';
+      // 旧档的 beats 没有 actId：按 outline 反查该 beat 所属幕补齐；查不到（无大纲 /
+      // 大纲不含该节）时留空串——提交时按"当前幕"兜底，绝不把不确定的节硬塞进某一幕。
+      const actId = storedActId || acts.find((act) => act.beatIds.includes(beat.beatId))?.id || '';
+      return { ...beat, actId, evidenceTurns: arrayOf<number>(beat.evidenceTurns).filter((turn) => typeof turn === 'number') };
+    });
+  const actHistory = objectsOf<GameStateV2['destiny']['actHistory'][number]>(destinyRaw.actHistory)
+    .filter((entry) => typeof entry.actId === 'string' && entry.actId)
+    .map((entry) => ({
+      actId: entry.actId,
+      // 缺进入回合时按 0 兜底；这是补字段，不是伪造一条新历史。
+      enteredTurn: typeof entry.enteredTurn === 'number' ? entry.enteredTurn : 0,
+      ...(typeof entry.exitedTurn === 'number' ? { exitedTurn: entry.exitedTurn } : {}),
+      ...(typeof entry.exitSummary === 'string' && entry.exitSummary ? { exitSummary: entry.exitSummary } : {}),
+      ...(Array.isArray(entry.carriedBeatIds)
+        ? { carriedBeatIds: entry.carriedBeatIds.filter((id): id is string => typeof id === 'string') }
+        : {}),
+    }));
+  // 程序权威的当前幕。旧档里的 currentActId 可能是模型写的自由文本（甚至乱码），
+  // 按以下顺序纠正：① 幕 id 精确匹配 → ② 幕标题精确匹配 → ③ 第一个仍有非终态
+  // 故事节的幕 → ④ 最后一幕（全部完成，交给结局判定收尾）。
+  const persistedActId = typeof destinyRaw.currentActId === 'string' ? destinyRaw.currentActId.trim() : '';
+  const beatActOrder = Array.from(new Set(destinyBeats.map((beat) => beat.actId).filter(Boolean)));
+  let currentActId = persistedActId;
+  let currentActIndex = 0;
+  if (acts.length) {
+    let index = persistedActId ? acts.findIndex((act) => act.id === persistedActId) : -1;
+    if (index < 0 && persistedActId) index = acts.findIndex((act) => act.title === persistedActId);
+    if (index < 0) {
+      index = acts.findIndex((act) => destinyBeats.some((beat) => beat.actId === act.id && !TERMINAL_BEAT_STATUSES.has(beat.status)));
+    }
+    if (index < 0) index = acts.length - 1;
+    currentActIndex = index;
+    currentActId = acts[index].id;
+  } else if (persistedActId) {
+    // 无 outline（例如导入裸档）：无法反查幕序，安全退化——保留原值，序号尽力从
+    // 故事节的 actId 顺序推导；推导不出就归零，不影响游玩。
+    currentActIndex = Math.max(0, beatActOrder.indexOf(persistedActId));
+  }
   const randomEventRaw = isRecord(raw.randomEvent) ? raw.randomEvent : {};
   const currentScene = isRecord(raw.currentScene) && typeof raw.currentScene.id === 'string'
     ? raw.currentScene as unknown as GameStateV2['currentScene']
@@ -84,10 +167,14 @@ export function sanitizeGameStateV2(raw: unknown): GameStateV2 | undefined {
       ...(destinyRaw as unknown as GameStateV2['destiny']),
       completionEstimate: typeof destinyRaw.completionEstimate === 'number' ? destinyRaw.completionEstimate : 0,
       completionReason: typeof destinyRaw.completionReason === 'string' ? destinyRaw.completionReason : '',
-      currentActId: typeof destinyRaw.currentActId === 'string' ? destinyRaw.currentActId : '',
+      currentActId,
+      currentActIndex,
       currentStage: typeof destinyRaw.currentStage === 'string' ? destinyRaw.currentStage : '',
       currentPath: typeof destinyRaw.currentPath === 'string' ? destinyRaw.currentPath : '',
       beats: destinyBeats,
+      // 旧档没有幕历史时不伪造：空数组就是"没有记录过已完成幕"的准确表达。
+      actHistory,
+      ...(typeof destinyRaw.lastActTransitionTurn === 'number' ? { lastActTransitionTurn: destinyRaw.lastActTransitionTurn } : {}),
       endingReached: destinyRaw.endingReached === true,
       updatedAtTurn: typeof destinyRaw.updatedAtTurn === 'number' ? destinyRaw.updatedAtTurn : 0,
     },
@@ -118,7 +205,9 @@ export function sanitizeGameStateV2(raw: unknown): GameStateV2 | undefined {
  */
 export function sanitizeSaveV2(raw: unknown, fallbackId: string): SaveV2 | undefined {
   if (!isRecord(raw)) return undefined;
-  const state = sanitizeGameStateV2(raw.state);
+  // 旧档的 beats 缺 actId、currentActId 可能是模型自报自由文本：用存档自身的大纲
+  // 反查/纠正（导入裸档没有 outline 时 sanitizeGameStateV2 会安全退化）。
+  const state = sanitizeGameStateV2(raw.state, raw.outline);
   if (!state) return undefined;
   const now = Date.now();
   return {
@@ -173,6 +262,10 @@ export function toPortableSaveV2(save: SaveV2): SaveV2 {
  *
  * 迁移链是"逐档递增"的：新增格式版本时在这里补一段 `if (version < N)`，
  * 不要把多个版本合并成一步（跳过中间版本会漏掉中间引入的字段变换）。
+ *
+ * v2 变更（幕状态机字段）不需要单独的版本分支：`sanitizeSaveV2` 对旧档的补齐是
+ * 幂等的——缺 actId 的 beats 按 outline 反查、非法 currentActId 按派生算法纠正、
+ * actHistory 缺省为空数组。因此这里统一走 sanitize，避免两份迁移规则漂移。
  */
 export function migrateV2State(persisted: unknown): { saves: Record<string, SaveV2>; activeId?: string } {
   const root = isRecord(persisted) ? persisted : {};
@@ -381,15 +474,21 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
           completionEstimate: 0,
           completionReason: '故事刚刚开始，预设命运尚未展开。',
           currentActId: p.outline?.acts[0]?.id ?? 'act-opening',
+          currentActIndex: 0,
           currentStage: p.outline?.acts[0]?.title ?? '起点',
           currentPath: '开局',
           nextMilestone: p.outline?.acts[0]?.beats[0]?.title ?? p.outline?.acts[0]?.title,
           beats: (p.outline?.acts ?? []).flatMap((act, actIndex) => act.beats.map((beat, beatIndex) => ({
             beatId: beat.id,
+            // 创建时就把所属幕写进权威状态：之后所有幕推进判定都以它为准，
+            // 不再依赖模型自报的 currentActId。
+            actId: act.id,
             status: actIndex === 0 && beatIndex === 0 ? 'available' as const : 'pending' as const,
             evidenceTurns: [],
             updatedAtTurn: 0,
           }))),
+          // 新存档还没有退出过任何幕，历史就是空的（不预填）。
+          actHistory: [],
           endingReached: false,
           updatedAtTurn: 0,
         },

@@ -106,24 +106,57 @@ export interface PatchStatsV2 {
 export type StoryBeatStatusV2 = 'pending' | 'available' | 'active' | 'satisfied' | 'weakened' | 'reframed' | 'superseded';
 export interface StoryBeatRuntimeV2 {
   beatId: string;
+  /**
+   * 故事节所属幕（大纲 `act.id`）。
+   *
+   * 创建时按大纲写入；旧存档在 hydrate 时按 outline 反查补齐。**本字段不可变**：
+   * 玩家改道导致某个故事节无法在本幕完成时，它仍然属于原幕，只额外写
+   * `carriedFromActId` 表示"从那一幕挂账带到后续幕继续追踪"。把 `actId` 搬到下一幕
+   * 会让"本幕是否完成"失去依据，也会掩盖挂账节尚未完成的事实。
+   */
+  actId: string;
   status: StoryBeatStatusV2;
   currentPlan?: string;
   evidenceSummary?: string;
   evidenceTurns: number[];
   replacementBeatId?: string;
+  /** 因改道跨幕挂账时记录原属幕；`actId` 保持不变。 */
+  carriedFromActId?: string;
   updatedAtTurn: number;
 }
+
+/** 已退出幕的历史记录（由程序在切幕时追加，旧存档不伪造历史）。 */
+export interface DestinyActHistoryEntryV2 {
+  /** 已退出的幕 id。 */
+  actId: string;
+  /** 进入该幕的回合（第一幕为 0）。 */
+  enteredTurn: number;
+  /** 退出该幕的回合；当前幕没有这个字段。 */
+  exitedTurn?: number;
+  /** 退出时的幕摘要，供模型/玩家回顾"上一幕发生了什么"。 */
+  exitSummary?: string;
+  /** 因改道挂账被带走的故事节 id（这些节仍是非终态，不参与结局门槛放宽）。 */
+  carriedBeatIds?: string[];
+}
+
 export interface DestinyProgressV2 {
   completionEstimate: number;
   completionReason: string;
+  /** 权威当前幕 id：只由程序维护，模型自报值仅作为提议。 */
   currentActId: string;
+  /** 当前幕在大纲幕序中的 0-based 序号（UI 可渲染「幕 2/3」）。 */
+  currentActIndex: number;
   currentStage: string;
   currentPath: string;
   nextMilestone?: string;
   convergencePlan?: string;
   beats: StoryBeatRuntimeV2[];
+  /** 已退出幕的历史；旧存档默认为空数组，不伪造 entered/exited turn。 */
+  actHistory: DestinyActHistoryEntryV2[];
   endingReached: boolean;
   endingReachedAtTurn?: number;
+  /** 最近一次幕切换发生的回合。 */
+  lastActTransitionTurn?: number;
   updatedAtTurn: number;
 }
 
@@ -329,6 +362,7 @@ export interface TurnPatchV2 {
   destiny?: {
     completionEstimate?: number;
     completionReason?: string;
+    /** 模型自报的当前幕。只有与程序权威当前幕一致时才被接受，否则忽略并警告。 */
     currentActId?: string;
     currentStage?: string;
     currentPath?: string;
@@ -336,6 +370,12 @@ export interface TurnPatchV2 {
     convergencePlan?: string;
     endingReached?: boolean;
     reason: string;
+    /**
+     * 幕切换提议。`proposeNextAct` 只是模型的**提议**：当前幕无法全部完成时，
+     * 程序按三条 gate 决定是否携带挂账节进入下一幕。常规轨（本幕原生故事节全部
+     * 终态）由程序自动推进，不需要这个字段。
+     */
+    actTransition?: { proposeNextAct?: boolean; actExitSummary?: string };
     beatChanges?: Array<{ beatId: string; status: StoryBeatStatusV2; currentPlan?: string; evidenceSummary?: string; evidenceQuote?: string; replacementBeatId?: string; reason: string }>;
   };
   randomEvent?: { handled: boolean; note?: string };

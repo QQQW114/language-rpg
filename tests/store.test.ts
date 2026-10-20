@@ -557,3 +557,236 @@ describe('useGameStoreV2 — importSave（存档导入）', () => {
     assert.deepEqual(store().saves, savesBefore);
   });
 });
+
+describe('useGameStoreV2 — 幕状态机字段（create 与旧档迁移）', () => {
+  const persistApi = () => (useGameStoreV2 as unknown as {
+    persist: { rehydrate: () => Promise<void> | void };
+  }).persist;
+
+  /**
+   * 上一版程序写下的存档（persist version 1）：
+   * `destiny.beats` 没有 actId，`currentActId` 可能是模型自报的自由文本。
+   */
+  const legacyActSave = (options: {
+    currentActId?: unknown;
+    beats?: unknown[];
+    outline?: unknown;
+    destiny?: Record<string, unknown>;
+  } = {}) => ({
+    id: 'save-act-legacy',
+    name: '旧幕档',
+    createdAt: 1,
+    updatedAt: 2,
+    outline: options.outline === undefined ? makeOutline() : options.outline,
+    worldFacts: [],
+    state: {
+      schemaVersion: 2,
+      revision: 3,
+      turn: 5,
+      phase: 'input',
+      mode: 'author',
+      history: [],
+      summary: '旧摘要',
+      destiny: {
+        completionEstimate: 10,
+        completionReason: '旧说明',
+        ...(options.currentActId !== undefined ? { currentActId: options.currentActId } : {}),
+        currentStage: '第一幕',
+        currentPath: '',
+        beats: options.beats ?? [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+          { beatId: 'beat-1-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+        endingReached: false,
+        updatedAtTurn: 0,
+        ...options.destiny,
+      },
+    },
+  });
+
+  const hydrateLegacyActSave = async (save: unknown): Promise<SaveV2> => {
+    seedPersisted('lrpg.v2', { saves: { 'save-act-legacy': save }, activeId: 'save-act-legacy' }, 1);
+    await persistApi().rehydrate();
+    const hydrated = useGameStoreV2.getState().saves['save-act-legacy'];
+    assert.ok(hydrated, '旧档应被迁移后保留');
+    return hydrated;
+  };
+
+  it('create 按大纲写入故事节 actId、幕序号与空幕历史', () => {
+    const id = store().create({ name: '幕后', mode: 'author', outline: makeOutline() });
+    const destiny = saveOf(id)!.state.destiny;
+    assert.deepEqual(destiny.beats.map((beat) => [beat.beatId, beat.actId]), [
+      ['beat-1-1', 'act-1'],
+      ['beat-1-2', 'act-1'],
+      ['beat-2-1', 'act-2'],
+    ]);
+    assert.equal(destiny.currentActId, 'act-1');
+    assert.equal(destiny.currentActIndex, 0);
+    assert.deepEqual(destiny.actHistory, []);
+    assert.equal(destiny.lastActTransitionTurn, undefined);
+
+    const bare = store().create({ name: '裸档', mode: 'author' });
+    const bareDestiny = saveOf(bare)!.state.destiny;
+    assert.deepEqual(bareDestiny.beats, []);
+    assert.equal(bareDestiny.currentActId, 'act-opening');
+    assert.equal(bareDestiny.currentActIndex, 0);
+    assert.deepEqual(bareDestiny.actHistory, []);
+  });
+
+  it('旧档（version 1）缺 actId 时按大纲反查补齐；自由文本 currentActId 按派生算法纠正', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({ currentActId: '第一幕 · 觉醒' }));
+    const destiny = save.state.destiny;
+    assert.deepEqual(destiny.beats.map((beat) => [beat.beatId, beat.actId]), [
+      ['beat-1-1', 'act-1'],
+      ['beat-1-2', 'act-1'],
+      ['beat-2-1', 'act-2'],
+    ], '旧档 beats 的 actId 按 outline 反查补齐');
+    // beat-1-1 已终态、beat-1-2 未终态 → 派生为第一个仍有非终态节的幕（act-1）。
+    assert.equal(destiny.currentActId, 'act-1');
+    assert.equal(destiny.currentActIndex, 0);
+    assert.deepEqual(destiny.actHistory, [], '旧档没有幕历史时不伪造');
+    assert.equal(destiny.lastActTransitionTurn, undefined);
+    // 版本必须递增，否则同版本存档永远不会走 migrate（字段补不齐）。
+    const persisted = readPersisted('lrpg.v2') as { version?: number };
+    assert.equal(persisted.version, SAVE_STORAGE_VERSION);
+  });
+
+  it('currentActId 落在幕标题上时按标题精确匹配（旧版模型可能报幕标题）', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({ currentActId: makeOutline().acts[1].title }));
+    assert.equal(save.state.destiny.currentActId, 'act-2');
+    assert.equal(save.state.destiny.currentActIndex, 1);
+  });
+
+  it('currentActId 是乱码时派生到第一个仍有非终态故事节的幕', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({
+      currentActId: '??乱码??',
+      beats: [
+        { beatId: 'beat-1-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-1-2', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-2-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    }));
+    assert.equal(save.state.destiny.currentActId, 'act-2');
+    assert.equal(save.state.destiny.currentActIndex, 1);
+  });
+
+  it('currentActId 是乱码且故事节全部终态时兜底最后一幕', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({
+      currentActId: '第一幕 · 觉醒',
+      beats: [
+        { beatId: 'beat-1-1', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-1-2', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-2-1', status: 'satisfied', evidenceTurns: [3], updatedAtTurn: 3 },
+      ],
+    }));
+    assert.equal(save.state.destiny.currentActId, 'act-2');
+    assert.equal(save.state.destiny.currentActIndex, 1);
+  });
+
+  it('已有的幕历史与 lastActTransitionTurn 原样保留，不被迁移改写', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({
+      currentActId: 'act-2',
+      destiny: {
+        actHistory: [{ actId: 'act-1', enteredTurn: 0, exitedTurn: 3, exitSummary: '上一幕', carriedBeatIds: ['beat-1-2'] }],
+        lastActTransitionTurn: 3,
+      },
+    }));
+    assert.equal(save.state.destiny.currentActIndex, 1);
+    assert.deepEqual(save.state.destiny.actHistory, [{
+      actId: 'act-1',
+      enteredTurn: 0,
+      exitedTurn: 3,
+      exitSummary: '上一幕',
+      carriedBeatIds: ['beat-1-2'],
+    }]);
+    assert.equal(save.state.destiny.lastActTransitionTurn, 3);
+  });
+
+  it('故事节已有 actId 时不被大纲反查结果覆盖', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({
+      currentActId: 'act-1',
+      beats: [
+        { beatId: 'beat-1-1', actId: 'act-9', status: 'satisfied', evidenceTurns: [2], updatedAtTurn: 2 },
+        { beatId: 'beat-1-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    }));
+    assert.equal(save.state.destiny.beats.find((beat) => beat.beatId === 'beat-1-1')?.actId, 'act-9');
+    assert.equal(save.state.destiny.beats.find((beat) => beat.beatId === 'beat-1-2')?.actId, 'act-1');
+  });
+
+  it('没有 outline 的裸档安全退化：不崩、不伪造 actId 与幕历史', async () => {
+    const save = await hydrateLegacyActSave(legacyActSave({
+      outline: null,
+      currentActId: 'act-1',
+      beats: [
+        { beatId: 'beat-a', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+      ],
+    }));
+    assert.deepEqual(save.state.destiny.beats.map((beat) => beat.actId), [''], '无法反查时不硬塞某一幕');
+    assert.equal(save.state.destiny.currentActId, 'act-1', '无大纲时保留原值');
+    assert.equal(save.state.destiny.currentActIndex, 0);
+    assert.deepEqual(save.state.destiny.actHistory, []);
+  });
+
+  it('importSave 的裸档缺 outline 时同样安全退化', () => {
+    const id = store().importSave({
+      id: 'save-act-import',
+      name: '裸档导入',
+      createdAt: 1,
+      updatedAt: 2,
+      state: {
+        schemaVersion: 2,
+        revision: 1,
+        turn: 2,
+        phase: 'input',
+        mode: 'author',
+        history: [],
+        summary: '旧摘要',
+      },
+    } as unknown as SaveV2);
+    const destiny = saveOf(id)!.state.destiny;
+    assert.deepEqual(destiny.beats, []);
+    assert.equal(destiny.currentActId, '');
+    assert.equal(destiny.currentActIndex, 0);
+    assert.deepEqual(destiny.actHistory, []);
+  });
+
+  it('importSave 导入带大纲的旧档时按大纲补齐 actId 并纠正幕标题形式的 currentActId', () => {
+    const id = store().importSave({
+      id: 'save-act-import-outline',
+      name: '带大纲旧档',
+      createdAt: 1,
+      updatedAt: 2,
+      outline: makeOutline(),
+      worldFacts: [],
+      state: {
+        schemaVersion: 2,
+        revision: 1,
+        turn: 2,
+        phase: 'input',
+        mode: 'author',
+        history: [],
+        summary: '',
+        destiny: {
+          completionEstimate: 30,
+          completionReason: '',
+          currentActId: '第二幕',
+          currentStage: '',
+          currentPath: '',
+          beats: [
+            { beatId: 'beat-1-1', status: 'satisfied', evidenceTurns: [], updatedAtTurn: 1 },
+            { beatId: 'beat-1-2', status: 'satisfied', evidenceTurns: [], updatedAtTurn: 1 },
+            { beatId: 'beat-2-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+          ],
+          endingReached: false,
+          updatedAtTurn: 1,
+        },
+      },
+    } as unknown as SaveV2);
+    const destiny = saveOf(id)!.state.destiny;
+    assert.deepEqual(destiny.beats.map((beat) => beat.actId), ['act-1', 'act-1', 'act-2']);
+    assert.equal(destiny.currentActId, 'act-2', '幕标题精确匹配成功');
+    assert.equal(destiny.currentActIndex, 1);
+  });
+});
