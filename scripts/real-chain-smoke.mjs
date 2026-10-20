@@ -262,6 +262,23 @@ async function runOneTurn(input, turnIndex) {
 
   const next = useGameStoreV2.getState().saves[saveId].state;
   const turnRecord = next.turnRecords[next.turnRecords.length - 1];
+  // 分阶段缓存统计：DeepSeek 官方 usage 给出 prompt_cache_hit_tokens，
+  // llmUsage 归一化后落在 usage.cache.hitTokens；promptTokens 是完整输入量。
+  const perPhase = (turnRecord?.calls ?? []).map((call) => {
+    const usage = call.usage ?? {};
+    const prompt = Number(usage.promptTokens) || 0;
+    const cacheHit = Number(usage.cache?.hitTokens) || 0;
+    const completion = Number(usage.completionTokens) || 0;
+    return {
+      phase: call.phase,
+      model: call.model,
+      prompt,
+      completion,
+      cacheHit,
+      cacheMiss: Math.max(0, prompt - cacheHit),
+      hitRate: prompt ? Math.round((cacheHit / prompt) * 1000) / 10 : null,
+    };
+  });
   return {
     turnIndex,
     elapsedMs: Date.now() - startedAt,
@@ -269,6 +286,7 @@ async function runOneTurn(input, turnIndex) {
     storyHead: result.story.slice(0, 80),
     storyTail: result.story.slice(-80),
     usage: sumUsage(result.usage),
+    perPhase,
     patchStats: turnRecord?.patchStats,
     pacing: turnRecord?.pacing,
     calls: turnRecord?.calls?.map((call) => `${call.phase}:${call.model}`) ?? [],
@@ -310,9 +328,32 @@ for (let index = 0; index < TURNS; index += 1) {
   console.log(`[real-chain] 正文头：${turn.storyHead.replace(/\n/g, ' ')}…`);
   console.log(`[real-chain] 正文尾：…${turn.storyTail.replace(/\n/g, ' ')}`);
   console.log(`[real-chain] usage：输入 ${turn.usage.prompt} / 输出 ${turn.usage.completion} / 缓存命中 ${turn.usage.cacheHit}`);
+  if (turn.perPhase?.length) {
+    const cacheLine = turn.perPhase.map((item) => `${item.phase} ${item.cacheHit}/${item.prompt}${item.hitRate === null ? '' : `（${item.hitRate}%）`}`).join(' · ');
+    console.log(`[real-chain] 分阶段缓存：${cacheLine}`);
+  }
   console.log(`[real-chain] pacing：${JSON.stringify(turn.pacing)}`);
   console.log(`[real-chain] 状态：${JSON.stringify(turn.state)}`);
   console.log(`[real-chain] 活动：${turn.activities.slice(-12).join(' | ')}`);
+}
+
+// 缓存汇总：第一回合是冷启动（前缀尚未建立），单独列出；之后按阶段聚合命中率。
+const warmTurns = report.turns.slice(1);
+if (warmTurns.length) {
+  const byPhase = {};
+  for (const turnItem of warmTurns) {
+    for (const item of turnItem.perPhase ?? []) {
+      const agg = byPhase[item.phase] ?? { prompt: 0, hit: 0 };
+      agg.prompt += item.prompt;
+      agg.hit += item.cacheHit;
+      byPhase[item.phase] = agg;
+    }
+  }
+  const parts = Object.entries(byPhase).map(([phase, agg]) => (
+    `${phase} ${agg.hit}/${agg.prompt}${agg.prompt ? `（${Math.round((agg.hit / agg.prompt) * 1000) / 10}%）` : ''}`
+  ));
+  console.log(`[real-chain] 缓存汇总（不含首回合冷启动）：${parts.join(' · ')}`);
+  report.cacheSummary = { warmTurns: warmTurns.length, byPhase };
 }
 
 report.requests = requestLog;

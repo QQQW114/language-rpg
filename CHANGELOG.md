@@ -33,6 +33,7 @@
 - 单元测试 304 → **338 条**（15 个测试文件）：新增结算失败续跑 7 条、存档导出/导入 21 条、store 导入与 hydrate 加固 6 条。
 - **单元测试 338 → 479 条（18 个测试文件）**：新增 `actWindow` / `randomEvent` / `paceGuard` 三个测试文件，覆盖窗口降级与稳定块字节不变、`beatsThisTurn` 裁剪、事件历史裁剪与绑定校验、三态闭环与智能强度、切幕平滑、节奏审计与纠偏文本；`patch` 补幕状态机全部 gate 分支，`store` 补旧档幕迁移。
 - 新增 `npm run test:real`（`scripts/real-chain-smoke.mjs`）：用真实 engine 打真实 OpenAI 兼容端点跑 1~2 回合，内置请求级重试；需 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，产物 `test-runs/real-chain-report.json`。
+- **真实链路与缓存实测（2026-10-20）**：DeepSeek 官方 `deepseek-flash` 连跑 3 回合，第 2 回合起前缀缓存稳定命中，相邻回合命中 token 恒定（planner_pre 3,328 / story 3,200 / planner_post 1,536），预热回合命中率约 42.0% / 36.8% / 30.3%；同时验证随机事件真实闭环（`T2 resolved related→thread`）。数据与解读见 [`docs/cache-prefix-investigation.md`](docs/cache-prefix-investigation.md) 第九节。
 - `npm run test:e2e` 43/43、`npm run test:patch`、`npm run test:storage`、`npm run test:story -- --dry-run` 全部通过。
 
 ### 文档
