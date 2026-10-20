@@ -19,6 +19,7 @@ import { commitTurnPatchV2, emptyPatchStatsV2 } from './patch';
 import { buildRandomEventContextBlock, buildRandomEventInstruction, listRandomEventTargets, validateRandomEventBinding } from './randomEvents';
 import { buildStageAndActWindow, DYNAMIC_WORLD_FACT_LIMIT, normalizeBeatsThisTurn, splitWorldFacts, STABLE_WORLD_FACT_LIMIT } from './actWindow';
 import { analyzePace, buildPaceCorrectionAlert } from './paceGuard';
+import { formatWebSearchFailure, isOfficialDeepSeekEndpoint, plannerWebSearchDiscipline, plannerWebSearchTool, searchWeb, WEB_SEARCH_MAX_CALLS_PER_TURN } from './webSearch';
 import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, RandomEventBindingV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
@@ -515,15 +516,44 @@ function emitToolActivity(
   });
 }
 
-function plannerToolHandler(p: TurnRequestV2, maxCalls: number) {
+/**
+ * planner_pre 的工具 handler。
+ *
+ * - `search_story_context`：本地上下文检索（既有逻辑，下沉在 contextSearch.ts）；
+ * - `web_search`：DeepSeek 官方联网搜索（仅 webSearchAllowed 时挂载）。每回合最多
+ *   `WEB_SEARCH_MAX_CALLS_PER_TURN` 次；搜索失败/超限都返回 tool 错误文本，不抛异常，
+ *   因此工具问题不会让整回合失败。
+ */
+function plannerToolHandler(
+  p: TurnRequestV2,
+  maxCalls: number,
+  options: { webSearchAllowed?: boolean } = {},
+) {
   let calls = 0;
+  let webSearchCalls = 0;
   return async (call: ChatToolInvocation) => {
     calls += 1;
     if (calls > maxCalls) return { error: `本阶段工具调用已达到玩家设置的上限（${maxCalls}次），请直接基于现有证据完成任务。` };
-    if (call.name !== 'search_story_context') {
-      return { error: `未知工具：${call.name}` };
+    if (call.name === 'search_story_context') {
+      return searchStoryContext(p, call.arguments);
     }
-    return searchStoryContext(p, call.arguments);
+    if (call.name === 'web_search') {
+      if (!options.webSearchAllowed) {
+        return formatWebSearchFailure(call.arguments?.query, '联网搜索当前不可用：需要在设置里同时开启「故事上下文查询工具」与「允许规划模型联网搜索」，并使用官方 DeepSeek 地址与 API Key。');
+      }
+      if (webSearchCalls >= WEB_SEARCH_MAX_CALLS_PER_TURN) {
+        return formatWebSearchFailure(call.arguments?.query, `本回合联网搜索已调用 ${WEB_SEARCH_MAX_CALLS_PER_TURN} 次（每回合上限），请直接使用已有结果或现有权威状态完成规划，不要重复搜索。`);
+      }
+      webSearchCalls += 1;
+      const outcome = await searchWeb(call.arguments?.query, {
+        apiBase: p.settings.apiBaseUrl,
+        apiKey: p.settings.apiKey,
+        oriQuestion: p.input,
+        signal: p.signal,
+      });
+      return outcome.toolResult;
+    }
+    return { error: `未知工具：${call.name}` };
   };
 }
 
@@ -595,6 +625,8 @@ interface TurnRuntimeV2 {
   storyModel: string;
   plannerToolsEnabled: boolean;
   plannerToolMaxCalls: number;
+  /** 规划阶段是否挂载官方联网搜索（工具开关 + 联网开关 + 官方地址 + 有 Key）。 */
+  webSearchAllowed: boolean;
   plannerJsonEnabled: boolean;
   thinking?: 'enabled' | 'disabled';
   reasoningEffort?: 'low' | 'high' | 'max';
@@ -612,8 +644,14 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
   const storyModel = resolveStoryModel(p.settings);
   const plannerToolsEnabled = p.settings.plannerToolsEnabled === true;
   const plannerToolMaxCalls = Math.max(1, Math.min(6, Math.round(Number(p.settings.plannerToolMaxCalls) || 2)));
-  let isOfficialDeepSeek = /api\.deepseek\.com/i.test(p.settings.apiBaseUrl);
-  try { isOfficialDeepSeek ||= /(^|\.)deepseek\.com$/i.test(new URL(p.settings.apiBaseUrl).hostname); } catch { /* 由LLM客户端负责报告无效URL */ }
+  // 官方判定抽到 webSearch.ts：设置页与引擎共用一份，避免两处漂移。
+  const isOfficialDeepSeek = isOfficialDeepSeekEndpoint(p.settings.apiBaseUrl);
+  // 联网搜索默认关闭，且只有官方地址 + 有 Key 时才可用：非官方服务没有该接口，
+  // 请求会 404/401，既浪费一次工具轮次也会让模型困惑。
+  const webSearchAllowed = plannerToolsEnabled
+    && p.settings.plannerWebSearchEnabled === true
+    && isOfficialDeepSeek
+    && !!String(cfg.apiKey ?? '').trim();
   const plannerJsonEnabled = p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek);
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
   // 思考强度按模型解析：思考行为的差异来自模型本身，所以首选"每个模型一个档位"，
@@ -639,7 +677,7 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
     && !!String(roleInjects.planner.text ?? '').trim()
     && !state.plannerInjectApplied;
   const plannerPrePrompt = withRoleInject(
-    `${buildPlannerPreSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}`,
+    `${buildPlannerPreSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}${webSearchAllowed ? plannerWebSearchDiscipline : ''}`,
     shouldInjectPlanner ? roleInjects.planner : undefined,
   );
   const storyPrompt = withRoleInject(buildStorySystem(directorPerspective), roleInjects?.story);
@@ -654,6 +692,7 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
     storyModel,
     plannerToolsEnabled,
     plannerToolMaxCalls,
+    webSearchAllowed,
     plannerJsonEnabled,
     thinking,
     reasoningEffort,
@@ -809,6 +848,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     storyModel,
     plannerToolsEnabled,
     plannerToolMaxCalls,
+    webSearchAllowed,
     plannerJsonEnabled,
     thinking,
     reasoningEffort,
@@ -875,10 +915,11 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
       ...(thinking ? { thinking } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(plannerToolsEnabled ? {
-        tools: [plannerContextTool],
+        // 联网搜索是可选工具：默认关闭，只有官方地址 + 有 Key 且玩家显式开启时才挂载。
+        tools: [plannerContextTool, ...(webSearchAllowed ? [plannerWebSearchTool] : [])],
         toolChoice: 'auto' as const,
         maxToolRounds: plannerToolMaxCalls,
-        onToolCall: plannerToolHandler(p, plannerToolMaxCalls),
+        onToolCall: plannerToolHandler(p, plannerToolMaxCalls, { webSearchAllowed }),
         onToolActivity: (activity: ChatToolActivity) => emitToolActivity(p, 'planner_pre', plannerModel, activity),
       } : {}),
       onThinkingDelta: (text) => collectThinking('planner_pre', plannerModel, text),

@@ -49,6 +49,8 @@ const MAX_TOKENS = Number.isFinite(rawMaxTokens) && rawMaxTokens > 0
 const MAX_RETRIES = Math.max(1, Math.min(8, Number(process.env.LRPG_RETRIES || 5)));
 // 默认关闭工具（真实游玩默认也不开）；LRPG_TOOLS=1 时启用规划模型上下文检索工具。
 const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
+// 官方联网搜索开关（仅官方 DeepSeek Base 生效）；LRPG_WEB_SEARCH=1 时同时启用工具。
+const WEB_SEARCH_ENABLED = process.env.LRPG_WEB_SEARCH === '1';
 const RUN_ID = `lau_rpg-smoke-${Date.now().toString(36)}`;
 let requestSeq = 0;
 
@@ -89,7 +91,8 @@ const settings = {
   temperatureStory: 0.8,
   storyMaxTokens: MAX_TOKENS,
   plannerJsonMode: 'enabled',
-  plannerToolsEnabled: TOOLS_ENABLED,
+  plannerToolsEnabled: TOOLS_ENABLED || WEB_SEARCH_ENABLED,
+  plannerWebSearchEnabled: WEB_SEARCH_ENABLED,
   thinkingMode: 'auto',
 };
 

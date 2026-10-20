@@ -85,6 +85,8 @@ export function normalizeSettings(value?: Partial<AppSettings>): AppSettings {
     plannerContextTokens,
     plannerToolsEnabled: value?.plannerToolsEnabled === true,
     plannerToolMaxCalls: Math.max(1, Math.min(6, Math.round(Number(value?.plannerToolMaxCalls) || DEFAULT_SETTINGS.plannerToolMaxCalls))),
+    // 旧设置没有这个字段：只有严格 true 才启用，缺字段/坏值一律按关闭处理（默认关）。
+    plannerWebSearchEnabled: value?.plannerWebSearchEnabled === true,
     plannerJsonMode: featureModes.includes(value?.plannerJsonMode as any) ? value!.plannerJsonMode! : DEFAULT_SETTINGS.plannerJsonMode,
     thinkingMode: featureModes.includes(value?.thinkingMode as any) ? value!.thinkingMode! : DEFAULT_SETTINGS.thinkingMode,
     // 回归：这里曾写成 `value?.reasoningEffort === 'max' ? 'max' : 'high'`，

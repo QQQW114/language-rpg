@@ -37,6 +37,14 @@ export interface AppSettings {
   plannerContextTokens: number;
   plannerToolsEnabled: boolean;
   plannerToolMaxCalls: number;
+  /**
+   * 是否允许规划模型调用 DeepSeek 官方联网搜索（`web_search` 工具）。
+   *
+   * 默认关闭：需要官方 DeepSeek 地址 + API Key，且按成功请求计费；仅在
+   * `plannerToolsEnabled` 同时开启时生效。搜索只是规划的辅助证据，
+   * 外部结果不得覆盖世界书、正史与人物设定。
+   */
+  plannerWebSearchEnabled: boolean;
   plannerJsonMode: ProviderFeatureMode;
   thinkingMode: ProviderFeatureMode;
   /**
@@ -82,6 +90,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   plannerContextTokens: PLANNER_CONTEXT_PRESET_TOKENS.standard,
   plannerToolsEnabled: false,
   plannerToolMaxCalls: 2,
+  // 联网搜索按次计费且依赖官方地址，默认关闭；玩家需在设置页显式开启。
+  plannerWebSearchEnabled: false,
   plannerJsonMode: 'auto',
   thinkingMode: 'auto',
   reasoningEffort: 'high',

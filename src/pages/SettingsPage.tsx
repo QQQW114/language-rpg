@@ -11,7 +11,8 @@ import {
 import { Card } from '@/components/ui/Card';
 import { CornerFiligree, OrnateDivider } from '@/components/ui/Ornaments';
 import { TextStarfield } from '@/components/TextStarfield';
-import { ArrowLeft, ChevronDown, ChevronRight, Save, Search, Settings } from 'lucide-react';
+import { isOfficialDeepSeekEndpoint } from '@/v2/webSearch';
+import { ArrowLeft, ChevronDown, ChevronRight, Globe, Save, Search, Settings } from 'lucide-react';
 
 const contextOptions: Array<{
   id: PlannerContextPreset;
@@ -57,6 +58,8 @@ export default function SettingsPage() {
   const customTokensValid = Number.isInteger(customTokenNumber)
     && customTokenNumber >= 4_096
     && customTokenNumber <= 1_000_000;
+  // 联网搜索只对官方 DeepSeek 地址生效；非官方地址只提示、不阻止保存（与工具开关一致的宽松策略）。
+  const officialDeepSeekBase = isOfficialDeepSeekEndpoint(draft.apiBaseUrl);
 
   const chooseContextPreset = (preset: PlannerContextPreset) => {
     const presetTokens = preset === 'custom' ? undefined : PLANNER_CONTEXT_PRESET_TOKENS[preset];
@@ -268,6 +271,7 @@ export default function SettingsPage() {
                 ? `自定义 · ${customTokens || '—'} Token`
                 : `${contextOptions.find((option) => option.id === draft.plannerContextPreset)?.label ?? '标准'} · ${draft.plannerContextTokens.toLocaleString()} Token`}
               {' · '}{draft.plannerToolsEnabled ? '查询工具偏好已开启' : '查询工具关闭'}
+              {draft.plannerWebSearchEnabled ? ' · 联网搜索开启' : ''}
             </span>
           </span>
           {advancedOpen
@@ -364,6 +368,44 @@ export default function SettingsPage() {
                 hint="仅写前规划阶段会调用工具；写后结算阶段不挂载工具。二者上限由程序强制执行。建议2次，最高6次。"
               />
             </div>}
+
+            <div className="mt-4 flex items-start justify-between gap-4 rounded-md border border-parchment-600/35 bg-ink/25 p-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Globe size={15} className="text-gold/75" />
+                  <span className="text-sm text-parchment-100">允许规划模型联网搜索（DeepSeek 官方）</span>
+                  <span className="rounded border border-gold/35 bg-gold/10 px-1.5 py-0.5 text-[10px] tracking-wider text-gold/75">默认关闭</span>
+                </div>
+                <p className="mt-1.5 text-xs leading-relaxed text-parchment-200/55">
+                  开启后写前规划在需要现实世界事实（现实制度与法律、真实地理、专业知识、当代生活细节）时，可调用一次 web_search。虚构设定、世界书与正史始终优先；外部结果可能过时，不得覆盖既有设定。需要同时开启上方「故事上下文查询工具」，并且只在官方 DeepSeek 地址 + 已填 API Key 时生效；查询内容会发送给 DeepSeek 搜索服务，官方计费约 $0.75 / 1000 次成功请求（约 ¥5.4，仅返回结果时计费）。
+                </p>
+                {draft.plannerWebSearchEnabled && !officialDeepSeekBase && (
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-blood/80">
+                    当前 API Base URL 不是官方 DeepSeek 地址，联网搜索不会生效（保存不受影响）。
+                  </p>
+                )}
+                {draft.plannerWebSearchEnabled && !draft.plannerToolsEnabled && (
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-gold/70">
+                    还需要开启「故事上下文查询工具」才会真正挂载工具。
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={draft.plannerWebSearchEnabled}
+                aria-label="允许规划模型联网搜索"
+                onClick={() => setDraft((current) => ({
+                  ...current,
+                  plannerWebSearchEnabled: !current.plannerWebSearchEnabled,
+                }))}
+                className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors ${draft.plannerWebSearchEnabled
+                  ? 'border-gold/70 bg-gold/55'
+                  : 'border-parchment-500/55 bg-parchment-800/80'}`}
+              >
+                <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-parchment-50 shadow transition-transform ${draft.plannerWebSearchEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
 
             <div className="mt-4 rounded-md border border-parchment-600/35 bg-ink/20 p-3">
               <div className="text-sm text-parchment-100">DeepSeek兼容优化</div>

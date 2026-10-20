@@ -1881,3 +1881,237 @@ describe('engine.runTurnV2 — 节奏审计与下轮软纠偏', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// J. 规划模型官方联网搜索（web_search，默认关闭）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 规划模型官方联网搜索', () => {
+  const OFFICIAL_BASE = 'https://api.deepseek.com/v1';
+  const WEB_SEARCH_RESPONSE = {
+    results: [
+      {
+        rerank_score: 2.4,
+        title: '现实资料',
+        url: 'https://example.com/fact',
+        snippet: '与查询相关的短摘要',
+        summary: '一段关于现实世界制度的资料摘要。',
+        content: '',
+        site_name: '示例站',
+        site_icon: null,
+        date: '2026-06-01T00:00:00+00:00',
+        authority: 3,
+      },
+    ],
+  };
+  const webToolCall = (id: string) => chatSSE([toolCallFrame([{
+    index: 0,
+    id,
+    type: 'function',
+    function: { name: 'web_search', arguments: '{"query":"现实世界的制度"}' },
+  }]), DONE_FRAME]);
+  const toolNamesOf = (request: RecordedRequest): string[] => (
+    Array.isArray(request.body?.tools)
+      ? request.body.tools.map((tool: any) => String(tool?.function?.name ?? ''))
+      : []
+  );
+  const toolMessagesOf = (request: RecordedRequest): any[] => (
+    (request.body?.messages ?? []).filter((message: any) => message.role === 'tool')
+  );
+  const plannerRequestsOf = (requests: RecordedRequest[]): RecordedRequest[] => (
+    requests.filter((request) => systemPromptOf(request).includes('写前规划 Agent'))
+  );
+  /** 规划 JSON 请求：官方 base 下 plannerJsonMode 为 auto 时会带 response_format，mock 忽略即可。 */
+  const plannerJson = () => jsonStream(BRIEF);
+  const isSearchRequest = (request: RecordedRequest): boolean => request.url.endsWith('/tools/search');
+
+  it('默认设置（联网搜索关闭）下不提供 web_search；仅开工具时也只有 search_story_context', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest());
+      for (const request of mock.requests) {
+        assert.equal(request.body?.tools, undefined, `${phaseOf(request)} 默认不应带工具`);
+      }
+    });
+
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { plannerToolsEnabled: true } }));
+      assert.deepEqual(toolNamesOf(mock.requests[0]), ['search_story_context']);
+      assert.ok(!systemPromptOf(mock.requests[0]).includes('联网搜索工具纪律'), '未开启联网搜索时不应注入纪律');
+    });
+  });
+
+  it('开启 + 官方地址 + 有 Key：planner_pre 挂载 web_search 并注入纪律，故事/结算不挂载', async () => {
+    const request = makeRequest({
+      settings: {
+        plannerToolsEnabled: true,
+        plannerToolMaxCalls: 2,
+        plannerWebSearchEnabled: true,
+        apiBaseUrl: OFFICIAL_BASE,
+      },
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      assert.deepEqual(toolNamesOf(mock.requests[0]), ['search_story_context', 'web_search']);
+      const system = systemPromptOf(mock.requests[0]);
+      assert.ok(system.includes('联网搜索工具纪律'));
+      assert.ok(system.includes('web_search'));
+      assert.equal(mock.requests[1].body?.tools, undefined, '故事阶段不挂载工具');
+      assert.equal(mock.requests[2].body?.tools, undefined, '结算阶段不挂载工具');
+      assert.ok(!allPromptTextOf(mock.requests[2]).includes('web_search'));
+    });
+  });
+
+  it('开启但 API Base 不是官方 DeepSeek：不提供 web_search，也不注入纪律', async () => {
+    const request = makeRequest({
+      settings: {
+        plannerToolsEnabled: true,
+        plannerWebSearchEnabled: true,
+        apiBaseUrl: 'https://api.test.invalid/v1',
+      },
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(request);
+      assert.deepEqual(toolNamesOf(mock.requests[0]), ['search_story_context']);
+      assert.ok(!systemPromptOf(mock.requests[0]).includes('联网搜索工具纪律'));
+    });
+  });
+
+  it('模型请求 web_search：官方结果注入下一轮，回合照常提交', async () => {
+    const activity: ModelActivityV2[] = [];
+    const request = makeRequest({
+      settings: {
+        plannerToolsEnabled: true,
+        plannerToolMaxCalls: 2,
+        plannerWebSearchEnabled: true,
+        apiBaseUrl: OFFICIAL_BASE,
+      },
+      hooks: { onModelActivity: (item) => activity.push(item) },
+    });
+    const searchRequests: RecordedRequest[] = [];
+    const result = await withFetchMock((recorded) => {
+      if (isSearchRequest(recorded)) {
+        searchRequests.push(recorded);
+        return new Response(JSON.stringify(WEB_SEARCH_RESPONSE), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        return toolMessagesOf(recorded).length ? plannerJson() : webToolCall('call_web_1');
+      }
+      if (system.includes('写后审计')) return jsonStream(POST_PATCH);
+      return storyStream();
+    }, async (mock) => {
+      const output = await runTurnV2(request);
+      // 校验请求形状（tools/search 请求没有 messages，必须用 URL 区分）
+      assert.equal(searchRequests.length, 1, '应只发起一次官方搜索请求');
+      assert.equal(searchRequests[0].url, 'https://api.deepseek.com/v1/tools/search');
+      assert.equal(searchRequests[0].headers.Authorization, 'Bearer test-key');
+      assert.deepEqual(JSON.parse(searchRequests[0].rawBody), {
+        query: '现实世界的制度',
+        count: 5,
+        need_content: false,
+        ori_question: '我向阿黎打听消息',
+      });
+      // 第二轮 planner_pre 应带 tool 结果消息
+      const planners = plannerRequestsOf(mock.requests);
+      assert.equal(planners.length, 2, '第一轮规划 + 带工具结果的第二轮规划');
+      const toolMessages = toolMessagesOf(planners[1]);
+      assert.equal(toolMessages.length, 1);
+      assert.equal(toolMessages[0].name, 'web_search');
+      assert.equal(toolMessages[0].tool_call_id, 'call_web_1');
+      const payload = JSON.parse(String(toolMessages[0].content));
+      assert.equal(payload.ok, true);
+      assert.equal(payload.resultCount, 1);
+      assert.equal(payload.results[0].title, '现实资料');
+      assert.equal(payload.results[0].url, 'https://example.com/fact');
+      assert.ok(String(payload.note).includes('不得用它覆盖'));
+      assert.ok(String(payload.note).includes('URL'));
+      return output;
+    });
+
+    assert.equal(result.state.turn, request.state.turn + 1);
+    assert.deepEqual(result.state.turnRecords?.[0].calls.map((call) => call.phase), ['planner_pre', 'story', 'planner_post']);
+    const toolEvents = activity.filter((item) => item.type === 'tool') as Array<Extract<ModelActivityV2, { type: 'tool' }>>;
+    assert.deepEqual(toolEvents.map((item) => item.toolName), ['web_search', 'web_search']);
+    assert.deepEqual(toolEvents.map((item) => item.status), ['call', 'result']);
+    assert.ok((toolEvents[1].resultText ?? '').includes('example.com'), '工具结果应进入活动流');
+  });
+
+  it('同一回合第二次 web_search 被拒：返回错误文本、不再发请求、回合照常提交', async () => {
+    const request = makeRequest({
+      settings: {
+        plannerToolsEnabled: true,
+        plannerToolMaxCalls: 2,
+        plannerWebSearchEnabled: true,
+        apiBaseUrl: OFFICIAL_BASE,
+      },
+    });
+    const searchRequests: RecordedRequest[] = [];
+    const result = await withFetchMock((recorded) => {
+      if (isSearchRequest(recorded)) {
+        searchRequests.push(recorded);
+        return new Response(JSON.stringify(WEB_SEARCH_RESPONSE), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        const toolCount = toolMessagesOf(recorded).length;
+        if (toolCount === 0) return webToolCall('call_web_1');
+        if (toolCount === 1) return webToolCall('call_web_2');
+        return plannerJson();
+      }
+      if (system.includes('写后审计')) return jsonStream(POST_PATCH);
+      return storyStream();
+    }, async (mock) => {
+      const output = await runTurnV2(request);
+      assert.equal(searchRequests.length, 1, '第二次调用必须被程序拒绝，不产生网络请求');
+      const planners = plannerRequestsOf(mock.requests);
+      assert.equal(planners.length, 3, '初始规划 + 第一次工具结果 + 第二次工具结果');
+      const rejected = JSON.parse(String(toolMessagesOf(planners[2])[1]?.content ?? '{}'));
+      assert.equal(rejected.ok, false);
+      assert.equal(rejected.tool, 'web_search');
+      assert.ok(String(rejected.error).includes('每回合'), `实际错误：${rejected.error}`);
+      return output;
+    });
+    assert.equal(result.state.turn, request.state.turn + 1);
+  });
+
+  it('搜索失败（HTTP 500）只返回工具错误文本，回合照常提交', async () => {
+    const request = makeRequest({
+      settings: {
+        plannerToolsEnabled: true,
+        plannerToolMaxCalls: 2,
+        plannerWebSearchEnabled: true,
+        apiBaseUrl: OFFICIAL_BASE,
+      },
+    });
+    const result = await withFetchMock((recorded) => {
+      if (isSearchRequest(recorded)) {
+        return new Response(JSON.stringify({ error: { message: 'internal error' } }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) {
+        return toolMessagesOf(recorded).length ? plannerJson() : webToolCall('call_web_500');
+      }
+      if (system.includes('写后审计')) return jsonStream(POST_PATCH);
+      return storyStream();
+    }, async (mock) => {
+      const output = await runTurnV2(request);
+      const planners = plannerRequestsOf(mock.requests);
+      const payload = JSON.parse(String(toolMessagesOf(planners[1])[0]?.content ?? '{}'));
+      assert.equal(payload.ok, false);
+      assert.ok(String(payload.error).includes('500'), `实际错误：${payload.error}`);
+      assert.ok(String(payload.note).includes('联网搜索失败已降级'));
+      return output;
+    });
+    assert.equal(result.state.turn, request.state.turn + 1, '搜索失败不应导致回合失败');
+  });
+});
+
