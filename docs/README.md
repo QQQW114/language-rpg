@@ -12,7 +12,12 @@
 - [`known-issues.md`](known-issues.md)：审查与测试中发现、尚未修复的问题登记（含严重度、影响路径与处理建议）。
 - [`multiround-generation-evaluation.md`](multiround-generation-evaluation.md)：评估「是否该把故事回合拆成多轮增量生成」——含 29 个真实回合的量化证据、被证伪的假设与推荐的替代方案。
 - [`planner-multiround-evaluation.md`](planner-multiround-evaluation.md)：评估「规划模型是否需要类似 agent 的多轮工作」——结论是不需要，它需要的是被校验；含模型分工定位、体量实测与历史失败模式的归类。
-- [`prompt-list.md`](prompt-list.md)：当前实际存在的提示词与协议位置清单。
+- [`prompt-list.md`](prompt-list.md)：当前实际存在的提示词与协议位置清单（Prompt Pack v2.1 结构、消息拼装、工具纪律）。
+- [`prompt-design-log.md`](prompt-design-log.md)：四轮外部评审结论、v2/v2.1 的 A/B 数据、过拟合审计与模型分级建议。**改提示词前先读这篇。**
+- [`preset-authoring.md`](preset-authoring.md)：预设故事 / 世界书 / 出身的编写规范、导入包格式与内置预设表。
+- [`content-examples/`](content-examples/README.md)：预设大纲、世界书、出身与外部生成 `ImportBundle` 的示例文件。
+- [`release-notes-v0.5.0.md`](release-notes-v0.5.0.md)：v0.5.0 发行说明（Prompt Pack v2.1、幕系统、阅读前端）。
+- [`release-notes-v0.5.1.md`](release-notes-v0.5.1.md)：v0.5.1 发行说明（新增两个内置预设与文档整理）。
 - [`release-notes-v0.3.0.md`](release-notes-v0.3.0.md)：v0.3.0 发布说明。
 
 仓库根目录另有：
