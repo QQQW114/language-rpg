@@ -212,6 +212,11 @@ function searchStoryContext(p: TurnRequestV2, args: Record<string, unknown>) {
 
 const DEFAULT_PLANNER_CONTEXT_TOKENS = 16_000;
 const STORY_RECENT_MESSAGE_COUNT = 8;
+/**
+ * 正文最小长度：低于此值几乎必然是流式输出被截断/提前结束，而不是合法的短回合。
+ * 真实长局里出现过 6 字正文（"下了课借口去"），旧逻辑只拒绝空串，于是这种回合被当成成功提交。
+ */
+export const STORY_MIN_OUTPUT_CHARS = 80;
 
 /**
  * 只用于近期正文的软预算，不试图精确复刻任一供应商的 tokenizer。
@@ -640,9 +645,12 @@ function normalizeActions(raw: unknown): ChoiceV2[] {
   return normalizeChoices(raw);
 }
 
-function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishReason?: string }) {
+function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishReason?: string }, minChars = 0) {
   const label = phaseLabels[phase];
   if (!String(result.text ?? '').trim()) throw new Error(`${label}失败：模型返回了空内容，请重试本回合。`);
+  if (minChars > 0 && String(result.text ?? '').trim().length < minChars) {
+    throw new Error(`${label}失败：模型输出过短（${String(result.text ?? '').trim().length} 字，疑似流式截断），未提交本回合；请重试。`);
+  }
   if (result.finishReason === 'length' || result.finishReason === 'max_tokens') {
     throw new Error(`${label}失败：模型输出达到上限而被截断，未提交本回合状态。`);
   }
@@ -1031,7 +1039,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         emitOutput(p, 'story', storyModel, text);
       },
     });
-    ensureModelResult('story', story);
+    ensureModelResult('story', story, STORY_MIN_OUTPUT_CHARS);
     turnCalls.push({ phase: 'story', model: storyModel, input: story.trace, output: story.text, thinking: story.thinking, usage: story.usage });
     emitUsage(p, 'story', storyModel, story.usage);
     emitPhase(p, 'story', storyModel, 'completed');

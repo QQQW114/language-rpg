@@ -21,7 +21,7 @@
  *       LRPG_TOOLS=1（启用规划模型 search_story_context 工具，默认关闭）。
  * 产物：test-runs/real-chain-report.json（被 gitignore）。
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,6 +50,10 @@ const MAX_TOKENS = Number.isFinite(rawMaxTokens) && rawMaxTokens > 0
 const MAX_RETRIES = Math.max(1, Math.min(8, Number(process.env.LRPG_RETRIES || 5)));
 // 报告路径：并行跑多个预设时可分开写，避免互相覆盖。
 const REPORT_FILE = String(process.env.LRPG_REPORT_FILE || 'test-runs/real-chain-report.json');
+// 断点续跑：每回合成功后写检查点；失败后可用 LRPG_RESUME 指向该文件继续，而不是从头重跑。
+const CHECKPOINT_FILE = String(process.env.LRPG_CHECKPOINT_FILE || 'test-runs/real-chain-checkpoint.json');
+const RESUME_FILE = String(process.env.LRPG_RESUME || '');
+const KEEP_CHECKPOINT = process.env.LRPG_KEEP_CHECKPOINT === '1';
 // 默认关闭工具（真实游玩默认也不开）；LRPG_TOOLS=1 时启用规划模型上下文检索工具。
 const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
 // 官方联网搜索开关（仅官方 DeepSeek Base 生效）；LRPG_WEB_SEARCH=1 时同时启用工具。
@@ -79,7 +83,7 @@ await build({
 });
 const imp = (name) => import(pathToFileURL(path.join(outDir, `${name}.js`)).href);
 const { runTurnV2, runTurnSettlementV2, TurnPostFailureV2 } = await imp('engine');
-const { useGameStoreV2 } = await imp('store');
+const { useGameStoreV2, toPortableSaveV2 } = await imp('store');
 const { PRESET_OUTLINES } = await imp('outlines');
 const { PRESET_BACKGROUNDS } = await imp('backgrounds');
 const { PRESET_WORLDBOOKS } = await imp('worldbooks');
@@ -177,18 +181,10 @@ globalThis.fetch = async (input, init = {}) => {
 // ---------------------------------------------------------------------------
 // 可用 LRPG_OUTLINE_ID 指定内置故事（默认第一个）；出身与世界书按故事的推荐字段自动选择。
 const OUTLINE_ID = String(process.env.LRPG_OUTLINE_ID || '');
-const outline = (OUTLINE_ID ? PRESET_OUTLINES.find((item) => item.id === OUTLINE_ID) : undefined) ?? PRESET_OUTLINES[0];
-const background = PRESET_BACKGROUNDS.find((item) => outline.backgroundIds?.includes(item.id)) ?? PRESET_BACKGROUNDS[0];
-const worldBook = PRESET_WORLDBOOKS.find((book) => outline.worldBookIds?.includes(book.id)) ?? PRESET_WORLDBOOKS[0];
-const worldFacts = worldBook?.entries ?? [];
-const saveId = useGameStoreV2.getState().create({
-  name: `真实链路冒烟 · ${outline.title} · ${new Date().toLocaleString('zh-CN')}`,
-  mode: 'author',
-  outline,
-  background,
-  worldFacts,
-  randomEvent: { enabled: true, triggerIntervalMin: 1, triggerIntervalMax: 1 },
-});
+let outline = (OUTLINE_ID ? PRESET_OUTLINES.find((item) => item.id === OUTLINE_ID) : undefined) ?? PRESET_OUTLINES[0];
+let background = PRESET_BACKGROUNDS.find((item) => outline.backgroundIds?.includes(item.id)) ?? PRESET_BACKGROUNDS[0];
+let worldBook = PRESET_WORLDBOOKS.find((book) => outline.worldBookIds?.includes(book.id)) ?? PRESET_WORLDBOOKS[0];
+let worldFacts = worldBook?.entries ?? [];
 
 const INPUTS_FILE = String(process.env.LRPG_INPUTS_FILE || '');
 const DEFAULT_INPUTS = [
@@ -333,23 +329,90 @@ async function runOneTurn(input, turnIndex) {
   };
 }
 
-const report = {
-  runId: RUN_ID,
-  apiBase: API_BASE,
-  model: MODEL,
-  preset: {
-    outlineId: outline.id,
-    outlineTitle: outline.title,
-    backgroundId: background?.id,
-    worldBookId: worldBook?.id,
-  },
-  settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
-  turns: [],
-  requests: requestLog,
+const resolvePath = (file) => (path.isAbsolute(file) ? file : path.join(root, file));
+const checkpointPath = resolvePath(CHECKPOINT_FILE);
+const resumePath = RESUME_FILE ? resolvePath(RESUME_FILE) : '';
+let saveId = '';
+let startIndex = 0;
+let report;
+
+if (resumePath) {
+  const checkpoint = JSON.parse(readFileSync(resumePath, 'utf8'));
+  const saved = checkpoint.save;
+  if (!saved?.id || !saved?.state) throw new Error(`[real-chain] 检查点缺少存档快照：${resumePath}`);
+  if (checkpoint.model && checkpoint.model !== MODEL) {
+    console.warn(`[real-chain] 检查点模型=${checkpoint.model}，当前 LRPG_MODEL=${MODEL}；按当前配置续跑。`);
+  }
+  saveId = saved.id;
+  outline = saved.outline ?? outline;
+  background = saved.background ?? background;
+  worldFacts = saved.worldFacts ?? worldFacts;
+  worldBook = PRESET_WORLDBOOKS.find((book) => outline.worldBookIds?.includes(book.id)) ?? worldBook;
+  useGameStoreV2.setState((state) => ({ saves: { ...state.saves, [saveId]: saved }, activeId: saveId }));
+  startIndex = Number(checkpoint.nextIndex) || checkpoint.report?.turns?.length || 0;
+  report = {
+    ...(checkpoint.report ?? {}),
+    runId: checkpoint.runId ?? RUN_ID,
+    apiBase: API_BASE,
+    model: MODEL,
+    preset: checkpoint.preset ?? checkpoint.report?.preset,
+    settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
+    turns: checkpoint.report?.turns ?? [],
+    requests: requestLog,
+  };
+  delete report.error;
+  console.log(`[real-chain] ===== 从检查点续跑：已完成 ${report.turns.length} 回合，从第 ${startIndex + 1}/${TURNS} 回合继续 =====`);
+} else {
+  saveId = useGameStoreV2.getState().create({
+    name: `真实链路冒烟 · ${outline.title} · ${new Date().toLocaleString('zh-CN')}`,
+    mode: 'author',
+    outline,
+    background,
+    worldFacts,
+    randomEvent: { enabled: true, triggerIntervalMin: 1, triggerIntervalMax: 1 },
+  });
+  report = {
+    runId: RUN_ID,
+    apiBase: API_BASE,
+    model: MODEL,
+    preset: {
+      outlineId: outline.id,
+      outlineTitle: outline.title,
+      backgroundId: background?.id,
+      worldBookId: worldBook?.id,
+    },
+    settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
+    turns: [],
+    requests: requestLog,
+  };
+}
+
+/** 每回合成功后落一次完整存档快照；失败时可用 LRPG_RESUME 续跑。 */
+const writeCheckpoint = async (nextIndex) => {
+  try {
+    const save = useGameStoreV2.getState().saves[saveId];
+    if (!save) return;
+    const checkpoint = {
+      runId: report.runId,
+      model: MODEL,
+      preset: report.preset,
+      settings: report.settings,
+      save: toPortableSaveV2(save),
+      report: { ...report, requests: [], error: undefined, turns: report.turns },
+      nextIndex,
+      turns: TURNS,
+      inputsFile: INPUTS_FILE,
+      updatedAt: Date.now(),
+    };
+    await writeFile(checkpointPath, JSON.stringify(checkpoint), 'utf8');
+  } catch (error) {
+    console.warn(`[real-chain] 检查点写入失败（不影响本回合）：${error?.message ?? error}`);
+  }
 };
+
 const TURN_ATTEMPTS = 2;
 let failed = false;
-for (let index = 0; index < TURNS; index += 1) {
+for (let index = startIndex; index < TURNS; index += 1) {
   const input = INPUTS[index % INPUTS.length];
   console.log(`\n[real-chain] ===== 第 ${index + 1} 回合 =====`);
   console.log(`[real-chain] 输入：${input}`);
@@ -361,7 +424,7 @@ for (let index = 0; index < TURNS; index += 1) {
       break;
     } catch (error) {
       lastError = error;
-      const transient = /空内容|empty|JSON|timeout|超时|aborted|network|fetch/i.test(String(error?.message ?? error));
+      const transient = /空内容|empty|JSON|timeout|超时|aborted|network|fetch|过短|截断|terminated|ECONNRESET|socket/i.test(String(error?.message ?? error));
       console.error(`[real-chain] 第 ${index + 1} 回合第 ${attempt} 次失败${transient ? '（可重试）' : ''}：${error?.message ?? error}`);
       if (!transient || attempt === TURN_ATTEMPTS) break;
       console.log('[real-chain] 换一个 session seed 重跑本回合…');
@@ -385,6 +448,7 @@ for (let index = 0; index < TURNS; index += 1) {
   console.log(`[real-chain] pacing：${JSON.stringify(turn.pacing)}`);
   console.log(`[real-chain] 状态：${JSON.stringify(turn.state)}`);
   console.log(`[real-chain] 活动：${turn.activities.slice(-12).join(' | ')}`);
+  await writeCheckpoint(index + 1);
 }
 
 // 缓存汇总：第一回合是冷启动（前缀尚未建立），单独列出；之后按阶段聚合命中率。
@@ -452,6 +516,11 @@ if (evaluation) {
 report.requests = requestLog;
 await writeFile(path.isAbsolute(REPORT_FILE) ? REPORT_FILE : path.join(root, REPORT_FILE), JSON.stringify(report, null, 2), 'utf8');
 const okTurns = report.turns.length;
+if (okTurns === TURNS && !failed && !KEEP_CHECKPOINT) {
+  await unlink(checkpointPath).catch(() => {});
+} else {
+  console.log(`[real-chain] 检查点：${CHECKPOINT_FILE}（可用 LRPG_RESUME 指向它继续）`);
+}
 console.log(`\n[real-chain] 汇总：完成 ${okTurns}/${TURNS} 回合 · 请求 ${requestLog.length} 次（重试 ${requestLog.filter((item) => item.attempt > 1).length} 次）`);
 console.log(`[real-chain] 报告：${REPORT_FILE}`);
 process.exit(failed || okTurns === 0 ? 1 : 0);

@@ -38,7 +38,7 @@ const BRIEF = {
   randomEvent: { planned: false, summary: '' },
 };
 
-const STORY_TEXT = '雨夜的街口很安静。阿黎压低声音，说出了一个地名。';
+const STORY_TEXT = '雨夜的街口很安静。阿黎压低声音，说出了一个地名。路灯在积水里碎成几片摇晃的光，远处有卷帘门落下的响动。她把伞往我这边偏了偏，又补了一句：今晚别走正街，巷口的修车铺亮着灯，那地方最近不太平。我记下那个地名，跟她约好天亮前在旧码头碰面。';
 
 const POST_PATCH = {
   schemaVersion: 2,
@@ -2155,6 +2155,16 @@ describe('engine.runTurnV2 — 故事推进权限（与叙事速度解耦的骨�
       const storyUser = lastUserPromptOf(mock.requests[1]);
       assert.ok(storyUser.startsWith('【NARRATIVE_PACE】'), '缓存前缀断言：story user#2 必须以叙事节奏开头');
       assert.ok(storyUser.indexOf('【NARRATIVE_PACE】') < storyUser.indexOf('【STORY_AUTONOMY】'), '推进权限排在叙事节奏之后');
+    });
+  });
+});
+
+describe('engine.runTurnV2 — 异常短正文防护', () => {
+  it('正文低于最小长度时判失败、不提交（流式截断防护）', async () => {
+    await withFetchMock(phaseHandler({
+      story: () => storyStream({ text: '下了课借口去' }),
+    }), async () => {
+      await assert.rejects(() => runTurnV2(makeRequest()), /过短/);
     });
   });
 });

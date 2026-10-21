@@ -123,4 +123,4 @@ src/
 2. 改动 `engine.ts` / `patch.ts` 时跑 `cmd /c npm run test:patch`；
 3. 涉及模型协议或 UI 流程的改动，配置真实 API 后做一次浏览器冒烟：设置 → 启程 → 生成一轮 → 生成选项 → 背包 / 场景 / 手动输入 / 完结评分；UI 改动还要确认阅读导航（卷宗目录 / 书签 / 版式）、司辰仪活动面板、侧边栏更新特效与结算失败恢复态；
 4. 改动提示词结构或打包配置后跑 `cmd /c npm run test:e2e`（断言请求形状、缓存前缀结构与落盘状态）；
-5. 有真实 API 时可用 `cmd /c npm run test:real` 跑真实链路（`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`；可选 `LRPG_TURNS`（1–40，默认 2）、`LRPG_MAX_TOKENS`（0 = 不限输出）、`LRPG_RETRIES`、`LRPG_TOOLS=1` 启用上下文检索、`LRPG_WEB_SEARCH=1` 启用官方联网搜索（仅官方 DeepSeek base 生效）、`LRPG_INPUTS_FILE` 指定每行一条玩家输入的文本文件；产物 `test-runs/real-chain-report.json`，含 `cacheSummary` 与长局 `evaluation`）。它检查链路、落盘与缓存统计，不评估写作质量。
+5. 有真实 API 时可用 `cmd /c npm run test:real` 跑真实链路（`LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`；可选 `LRPG_TURNS`（1–40，默认 2）、`LRPG_MAX_TOKENS`（0 = 不限输出）、`LRPG_RETRIES`、`LRPG_TOOLS=1` 启用上下文检索、`LRPG_WEB_SEARCH=1` 启用官方联网搜索（仅官方 DeepSeek base 生效）、`LRPG_INPUTS_FILE` 指定每行一条玩家输入的文本文件、`LRPG_CHECKPOINT_FILE` 指定检查点、`LRPG_RESUME` 指向检查点续跑、`LRPG_KEEP_CHECKPOINT=1` 保留检查点；产物 `test-runs/real-chain-report.json`，含 `cacheSummary` 与长局 `evaluation`）。它检查链路、落盘与缓存统计，不评估写作质量。story 正文低于 80 字会被 engine 判为截断失败、不提交本回合。

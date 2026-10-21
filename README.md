@@ -128,6 +128,8 @@ npm run test:real
 - `LRPG_TURNS`（1~40，默认 2）、`LRPG_MAX_TOKENS`（`0` 表示不限输出，默认 `0`）、`LRPG_RETRIES`；
 - `LRPG_OUTLINE_ID`：选择一个内置预设故事（自动带上其推荐出身与世界书）；
 - `LRPG_REPORT_FILE`：自定义报告路径（并行跑多个预设时分开写，互不覆盖）；
+- `LRPG_CHECKPOINT_FILE`：检查点路径（默认 `test-runs/real-chain-checkpoint.json`，每回合成功后写完整存档快照）；
+- `LRPG_RESUME`：指向检查点文件，从最后一个成功回合继续跑（不再从头重来）；
 - `LRPG_INPUTS_FILE`：外部输入列表，每行一条玩家输入（空行与 `#` 开头忽略）；
 - `LRPG_TOOLS=1`：启用规划模型上下文检索工具；
 - `LRPG_WEB_SEARCH=1`：启用官方 DeepSeek 联网搜索（仅官方 API Base 生效；查询会发给 DeepSeek，按成功请求计费）。
