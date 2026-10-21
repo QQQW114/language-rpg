@@ -1,4 +1,4 @@
-# 言灵 · Language RPG v0.6.0
+# 言灵 · Language RPG v0.6.1
 
 纯前端、双模型驱动的中文互动小说 AGENT。
 
@@ -52,7 +52,7 @@
 
 V2 使用独立浏览器存储 `lrpg.v2`，不兼容0.3版本以下的旧存档。
 
-> 当前发行版：**0.6.0**（Prompt Pack v2.2.1：故事推进权限 / 文风 profile / 失败恢复 / 混合端点 / 阶段级重试）。详见 [`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/release-notes-v0.6.0.md`](docs/release-notes-v0.6.0.md)。
+> 当前发行版：**0.6.1**（Prompt Pack v2.2.1：故事推进权限 / 文风 profile / 失败恢复 / 混合端点 / 阶段级重试）。详见 [`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/release-notes-v0.6.1.md`](docs/release-notes-v0.6.1.md)。
 
 存档可在主页「继续旅程」中随时导出为 JSON 备份，也可从备份导入恢复；导入一律生成新旅程，不会覆盖现有存档。
 
@@ -150,7 +150,7 @@ npm run test:real
 - [`docs/prompt-design-log.md`](docs/prompt-design-log.md)：提示词评审结论、A/B 数据、过拟合审计与模型分级建议。
 - [`docs/preset-authoring.md`](docs/preset-authoring.md)：预设故事 / 世界书 / 出身的编写规范与导入格式。
 - [`CHANGELOG.md`](CHANGELOG.md)：版本更新记录。
-- [`docs/release-notes-v0.6.0.md`](docs/release-notes-v0.6.0.md)：当前发行版说明。
+- [`docs/release-notes-v0.6.1.md`](docs/release-notes-v0.6.1.md)：当前发行版说明。
 
 ## 技术栈
 

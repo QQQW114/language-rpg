@@ -2,6 +2,21 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
+## [0.6.1] - 2026-10-21
+
+> 发行说明：[`docs/release-notes-v0.6.1.md`](docs/release-notes-v0.6.1.md)
+
+### 修复 / 提示词微调（gemini-4-argon 第二轮复审）
+
+- **P0 混合端点 profile 绑定复核**：确认 `resolveStoryProfile()` 读取实际生效的 story 模型（非全局/规划模型）；`planner=deepseek + story=gemini` 时正确走 `expressive`。新增回归测试。
+- **P1 planner_pre 节拍数彻底收口**：删除最后一处“慢叙事只写 1 个”的叙事速度耦合；标准推进 1 个、本轮无随机事件时最多 2 个；随机事件 targetId 要求纯 ID、禁止拼接 `beat:` 等前缀。
+- **P1 标准档篇幅区间下移**：`【STORY_AUTONOMY】` standard 改为目标 800~1100 字、硬上限 1200 字；若同回合安排随机事件，须合并进同一篇幅，不额外拉长。
+- 按复审建议，不在 story 重试时追加“请完整写完”提示，避免注水；阶段级重试继续复用原请求。
+
+### 测试
+
+- 单元测试 602 → **604 条 / 24 个测试文件**（混合端点 profile 绑定 + P1 提示词防呆各 1 条）；e2e 44/44、build、test:patch 通过；真实 3 回合 quick check 通过（1030/1197/1543 字，0 重试/0 截断）。
+
 ## [0.6.0] - 2026-10-21
 
 > 发行说明：[`docs/release-notes-v0.6.0.md`](docs/release-notes-v0.6.0.md)

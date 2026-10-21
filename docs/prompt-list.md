@@ -18,7 +18,7 @@ Prompt Pack v2.2.1 的设计原则：**规划只定「结果底线 + 戏剧切�
 
 ### v2.2.1（篇幅带单一来源，2026-10-21）
 
-- **单一来源**：单回合篇幅与展开幅度只由 `【STORY_AUTONOMY】` 三档给出——strict 400~800 字 / standard 800~1200 字 / free 1000~1500 字，并接管 `beatsThisTurn` 数量上限（0~1 / 1~2 / 1~3）。文风 profile 只控制**笔法密度**（`compact` 带正反微示范、`expressive` 不带）与**近因锚点长短**（完整版 / 38 字短版），不再携带数值篇幅带。
+- **单一来源**：单回合篇幅与展开幅度只由 `【STORY_AUTONOMY】` 三档给出——strict 400~800 字 / standard 目标 800~1100 字、硬上限 1200 字 / free 1000~1500 字，并接管 `beatsThisTurn` 数量上限（strict 0~1 / standard 1、无随机事件最多 2 / free 1~3）。文风 profile 只控制**笔法密度**（`compact` 带正反微示范、`expressive` 不带）与**近因锚点长短**（完整版 / 38 字短版），不再携带数值篇幅带。
 - **收掉的三处第二套数字**：
   1. story system 删除 profile 的篇幅带，改为「目标篇幅以`【STORY_AUTONOMY】`为准」，并新增明文优先级——profile / 近因锚点 / 叙事速度与 `【STORY_AUTONOMY】` 的篇幅目标冲突时，以后者为准；
   2. planner_pre `stopBoundary` 不再说「轮数与篇幅由 STORY_AUTONOMY 与 NARRATIVE_PACE 共同决定」，改为「单回合的交锋轮数与篇幅以`【STORY_AUTONOMY】`为准，叙事速度只调整镜头焦距与时间流速」；

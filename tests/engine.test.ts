@@ -2497,6 +2497,34 @@ describe('engine.runTurnV2 — 故事阶段独立连接（混合端点）', () =
       assert.equal(output.state.turn, request.state.turn + 1);
     });
   });
+
+  it('混合端点下 storyProfile 按实际 story 模型选择（deepseek planner + gemini story → expressive）', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      // 全局/planner 仍是 deepseek，但 story 覆盖为 gemini；profile 必须看 effective story model。
+      await runTurnV2(hybridRequest({ storyModel: 'gemini-3.8-flash-high' }));
+      const storySystem = systemPromptOf(mock.requests[1]);
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(!storySystem.includes('文风正反微示范'), 'story=gemini 时不应挂载 compact 微示范');
+      assert.ok(storyUser.includes('忌用过度渲染副词与段末总结旁白'), 'story=gemini 时应使用 expressive 短锚点');
+    });
+  });
+
+  it('P1 提示词防呆：标准档节拍数、随机事件纯 ID、800~1100 字目标与 1200 硬上限', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest());
+      const plannerSystem = systemPromptOf(mock.requests[0]);
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(
+        plannerSystem.includes('标准推进 1 个，若本轮没有随机事件最多 2 个'),
+        'planner_pre 的节拍数应完全由推进权限决定，且标准档随机事件时只写 1 个',
+      );
+      assert.ok(plannerSystem.includes('纯ID字符串'), '随机事件 targetId 应禁止拼接 kind 前缀');
+      assert.ok(!plannerSystem.includes('慢叙事只写1个'), 'planner_pre 不应再残留叙事速度→节拍的旧耦合');
+      assert.ok(storyUser.includes('目标篇幅800~1100字'), '标准档应使用下移的目标区间');
+      assert.ok(storyUser.includes('硬上限不超过1200字'), '标准档应有 1200 硬上限');
+      assert.ok(storyUser.includes('若本轮同时安排了随机事件'), '标准档应说明随机事件合并进同一篇幅');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
