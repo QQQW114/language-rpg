@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/Button';
 import { confirmDialog } from '@/components/ui/ConfirmDialog';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { UpdateGlow } from '@/components/ui/UpdateGlow';
+import { isRetryableTurnError, sleepWithAbort } from '@/lib/retry';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { readDraft, writeDraft } from './draft';
 import { runTurnSettlementV2, runTurnV2, TurnPostFailureV2 } from './engine';
@@ -57,6 +58,9 @@ import type {
   TurnRecordV2,
 } from './types';
 import type { StoryAct } from '@/types/content';
+
+/** 回合失败时自动重跑整回合的次数（不含结算单独重试）。 */
+const MAX_TURN_AUTO_RETRIES = 1;
 
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
   { id: 'slow', label: '慢叙事', hint: '细致到每个动作，只推进很小节拍' },
@@ -1186,11 +1190,12 @@ export default function GamePageV2() {
     setThinking({ planner_pre: '', story: '', planner_post: '' });
 
     void (async () => {
+      let autoRetries = 0;
       try {
         const latestSave = useGameStoreV2.getState().saves[save.id];
         if (!latestSave) throw new Error('当前存档已不存在。');
         const latestSettings = useSettingsStore.getState().settings;
-        const result = await runTurnV2({
+        const request: Parameters<typeof runTurnV2>[0] = {
           state: { ...latestSave.state, phase: 'generating', narrativePace: item.pace },
           input: item.input,
           settings: latestSettings,
@@ -1220,8 +1225,46 @@ export default function GamePageV2() {
               setThinking((current) => ({ ...current, [phase]: current[phase] + text }));
             }
           },
-        });
+        };
+        const resetAttemptView = () => {
+          streamBufferRef.current = '';
+          setStream('');
+          setActivities([]);
+          setThinking({ planner_pre: '', story: '', planner_post: '' });
+          setFailedDraft('');
+        };
+
+        let result: Awaited<ReturnType<typeof runTurnV2>>;
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            result = await runTurnV2(request);
+            break;
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            let failure: unknown = error;
+            if (failure instanceof TurnPostFailureV2) {
+              // 写后结算失败：正文已经生成，先自动只重试结算一次，不必重跑整轮。
+              try {
+                setError('写后结算失败，正在自动重试结算…');
+                result = await runTurnSettlementV2(request, failure.partial);
+                break;
+              } catch (settlementError) {
+                failure = settlementError;
+                if (!(settlementError instanceof TurnPostFailureV2)) throw settlementError;
+              }
+            }
+            if (attempt < MAX_TURN_AUTO_RETRIES && isRetryableTurnError(failure)) {
+              autoRetries += 1;
+              setError(`模型请求中断，正在自动重试（${autoRetries}/${MAX_TURN_AUTO_RETRIES}）…\n${cleanError(failure)}`);
+              await sleepWithAbort(900, controller.signal);
+              resetAttemptView();
+              continue;
+            }
+            throw failure;
+          }
+        }
         if (controller.signal.aborted || runIdRef.current !== runId) return;
+        setError('');
         const committed = useGameStoreV2.getState().commitSuccessfulTurn(save.id, {
           stateBeforeTurn: latestSave.state,
           input: item.input,
@@ -1239,11 +1282,16 @@ export default function GamePageV2() {
           setError('已取消当前模型请求；后续行动队列已暂停。');
         } else if (cause instanceof TurnPostFailureV2) {
           setFailedPartial(cause.partial);
-          setError(`结算失败，正文已保留：\n${cleanError(cause)}`);
+          setError(`结算失败，正文已保留${autoRetries ? `（已自动重试 ${autoRetries} 次）` : ''}：\n${cleanError(cause)}`);
           setQueuePaused(true);
         } else {
           if (streamBufferRef.current.trim()) setFailedDraft(streamBufferRef.current);
-          setError(cleanError(cause));
+          // 把未提交的输入写回草稿：即使刷新页面，也能从输入框恢复这一条，而不是彻底丢失。
+          writeDraft(save.id, item.input);
+          const retrySuffix = autoRetries
+            ? `\n已自动重试 ${autoRetries} 次仍失败；可点击「重试模型请求」继续，或检查网络/设置。`
+            : '';
+          setError(`${cleanError(cause)}${retrySuffix}`);
           setQueuePaused(true);
           setQueue((current) => (current.some((queued) => queued.id === item.id) ? current : [item, ...current]));
         }

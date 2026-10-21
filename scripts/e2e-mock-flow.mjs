@@ -394,14 +394,17 @@ report.scenarios.push({ name: 'story 截断', requests: requests.length, error: 
 // =====================================================================
 console.log('\n[场景 4] 失败路径：planner_pre 返回非法 JSON');
 requests.length = 0;
-script = [{ kind: 'text', chunks: ['我不打算输出 JSON，这里是散文。'] }];
+script = [
+  { kind: 'text', chunks: ['我不打算输出 JSON，这里是散文。'] },
+  { kind: 'text', chunks: ['我仍然不输出 JSON，这里是第二段散文。'] },
+];
 cursor = 0;
 let jsonError;
 try {
   await runTurnV2({ state: { ...stateForTurn2, phase: 'generating' }, input: '继续。', settings: settingsChat, outline: OUTLINE, background: BACKGROUND, worldFacts: WORLD_FACTS });
 } catch (error) { jsonError = error; }
 check('非法 JSON 时抛错', !!jsonError, '未抛错');
-check('非法 JSON 时未进入故事阶段（仅 1 次请求）', requests.length === 1, `实际 ${requests.length}`);
+check('非法 JSON 时自动修复重试一次、仍不进入故事阶段（共 2 次请求）', requests.length === 2, `实际 ${requests.length}`);
 report.scenarios.push({ name: 'planner_pre 非法 JSON', requests: requests.length, error: String(jsonError?.message) });
 
 // =====================================================================
@@ -409,13 +412,18 @@ report.scenarios.push({ name: 'planner_pre 非法 JSON', requests: requests.leng
 // =====================================================================
 console.log('\n[场景 6] 供应商返回 429');
 requests.length = 0;
-script = [{ kind: 'httpError', status: 429, message: 'Rate limit reached' }];
+script = [
+  { kind: 'httpError', status: 429, message: 'Rate limit reached' },
+  { kind: 'httpError', status: 429, message: 'Rate limit reached' },
+  { kind: 'httpError', status: 429, message: 'Rate limit reached' },
+];
 cursor = 0;
 let httpError;
 try {
   await runTurnV2({ state: { ...stateForTurn2, phase: 'generating' }, input: '继续。', settings: settingsChat, outline: OUTLINE, background: BACKGROUND, worldFacts: WORLD_FACTS });
 } catch (error) { httpError = error; }
-check('HTTP 429 抛错且错误信息含状态码与供应商原文', /429/.test(String(httpError?.message)) && /Rate limit/.test(String(httpError?.message)), String(httpError?.message));
+check('HTTP 429 经传输层重试 3 次后抛错，错误信息含状态码与供应商原文', /429/.test(String(httpError?.message)) && /Rate limit/.test(String(httpError?.message)), String(httpError?.message));
+check('HTTP 429 共发出 3 次请求（2 次自动重试）', requests.length === 3, `实际 ${requests.length}`);
 report.scenarios.push({ name: 'HTTP 429', requests: requests.length, error: String(httpError?.message) });
 
 // =====================================================================

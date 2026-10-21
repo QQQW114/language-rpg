@@ -278,9 +278,23 @@ async function runOneTurn(input, turnIndex) {
     result = await runTurnV2({ ...request, ...callbacks });
   } catch (error) {
     if (error instanceof TurnPostFailureV2 && error.partial) {
-      console.log(`[real-chain] 结算失败，尝试只重试结算：${error.message}`);
-      activities.push(`[planner_post] failed · 只重试结算`);
-      result = await runTurnSettlementV2(request, error.partial);
+      // 只重试结算：反代偶发返回非法 JSON 时，重跑整轮既慢又浪费；
+      // planner_post 只依赖已完成的正文与写前规划，可以独立重试。
+      let settlementError = error;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        console.log(`[real-chain] 结算失败，尝试只重试结算（${attempt}/2）：${settlementError.message}`);
+        activities.push(`[planner_post] failed · 只重试结算 ${attempt}/2`);
+        await sleep(1500 + Math.floor(Math.random() * 1500));
+        try {
+          result = await runTurnSettlementV2(request, error.partial);
+          settlementError = null;
+          break;
+        } catch (retryError) {
+          settlementError = retryError;
+          if (!(retryError instanceof TurnPostFailureV2 && retryError.partial)) throw retryError;
+        }
+      }
+      if (settlementError) throw settlementError;
     } else {
       throw error;
     }
@@ -414,7 +428,7 @@ const writeCheckpoint = async (nextIndex) => {
   }
 };
 
-const TURN_ATTEMPTS = 2;
+const TURN_ATTEMPTS = Math.max(1, Math.min(6, Number(process.env.LRPG_TURN_ATTEMPTS || 3)));
 let failed = false;
 for (let index = startIndex; index < TURNS; index += 1) {
   const input = INPUTS[index % INPUTS.length];

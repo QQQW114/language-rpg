@@ -640,6 +640,38 @@ function requireJSONObject(text: string, label: string): Record<string, unknown>
   return parsed as Record<string, unknown>;
 }
 
+/** JSON 解析失败时追加的修复指令：只要求重发合法 JSON，不改变原始任务。 */
+const JSON_REPAIR_INSTRUCTION =
+  '你上一次的输出不是合法 JSON 对象（可能带了解释、markdown 代码块或被截断）。请只重新输出一个能被 JSON.parse 直接解析的 JSON 对象：不要代码块、不要解释、不要任何前后缀，字段结构严格保持原要求。';
+
+function repairMessages(messages: ChatMessage[], badText: string): ChatMessage[] {
+  return [
+    ...messages,
+    { role: 'assistant', content: String(badText ?? '').slice(0, 4000) },
+    { role: 'user', content: JSON_REPAIR_INSTRUCTION },
+  ];
+}
+
+/**
+ * 规划/结算 JSON 的修复重试参数：只重发当前阶段，不重跑整轮；
+ * 修复重试不再携带工具（工具轮已经完成，剩下的是把结果整理成 JSON）。
+ */
+function repairJSONParams(
+  params: Parameters<typeof chatJSONDetailed>[1],
+  messages: ChatMessage[],
+  badText: string,
+): Parameters<typeof chatJSONDetailed>[1] {
+  return {
+    ...params,
+    messages: repairMessages(messages, badText),
+    tools: undefined,
+    toolChoice: undefined,
+    maxToolRounds: undefined,
+    onToolCall: undefined,
+    onToolActivity: undefined,
+  };
+}
+
 function normalizeActions(raw: unknown): ChoiceV2[] {
   // 与状态写入层共用同一份实现，避免两条路径规则漂移。
   return normalizeChoices(raw);
@@ -828,27 +860,38 @@ async function runPostAndCommitV2(
   ];
   const postThinkingParts: string[] = [];
   emitPhase(p, 'planner_post', runtime.plannerModel, 'started', undefined, false);
+  const postParams: Parameters<typeof chatJSONDetailed>[1] = {
+    model: runtime.plannerModel,
+    temperature: .1,
+    messages: postMessages,
+    signal: p.signal,
+    ...(runtime.plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
+    ...(runtime.thinking ? { thinking: runtime.thinking } : {}),
+    ...(runtime.postReasoningEffort ? { reasoningEffort: runtime.postReasoningEffort } : {}),
+    onThinkingDelta: (text) => {
+      if (text) postThinkingParts.push(text);
+      emitThinking(p, 'planner_post', runtime.plannerModel, text);
+    },
+    onDelta: (text) => emitOutput(p, 'planner_post', runtime.plannerModel, text),
+  };
   let post: ChatResult;
   let parsed: Record<string, unknown>;
   try {
-    post = await chatJSONDetailed(runtime.cfg, {
-      model: runtime.plannerModel,
-      temperature: .1,
-      messages: postMessages,
-      signal: p.signal,
-      ...(runtime.plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
-      ...(runtime.thinking ? { thinking: runtime.thinking } : {}),
-      ...(runtime.postReasoningEffort ? { reasoningEffort: runtime.postReasoningEffort } : {}),
-      onThinkingDelta: (text) => {
-        if (text) postThinkingParts.push(text);
-        emitThinking(p, 'planner_post', runtime.plannerModel, text);
-      },
-      onDelta: (text) => emitOutput(p, 'planner_post', runtime.plannerModel, text),
-    });
+    post = await chatJSONDetailed(runtime.cfg, postParams);
     ensureModelResult('planner_post', post);
     // 解析放进 try：非法 JSON 同样属于“结算失败”，必须给出可续跑的 partial，
     // 而不是一个整轮作废的普通错误。
-    parsed = requireJSONObject(post.text, phaseLabels.planner_post);
+    try {
+      parsed = requireJSONObject(post.text, phaseLabels.planner_post);
+    } catch (parseError) {
+      if (isAbortError(parseError, p.signal)) throw parseError;
+      // 反代/模型偶发在结算 JSON 前后夹解释或代码块：先自动修复重试一次，
+      // 只重发 planner_post，不重跑规划与正文。
+      console.warn(`[V2 planner_post] 返回非法 JSON，自动修复重试一次：${errorMessage(parseError)}`);
+      post = await chatJSONDetailed(runtime.cfg, repairJSONParams(postParams, postMessages, post.text));
+      ensureModelResult('planner_post', post);
+      parsed = requireJSONObject(post.text, phaseLabels.planner_post);
+    }
   } catch (error) {
     emitPhase(p, 'planner_post', runtime.plannerModel, 'failed', error, false);
     // 取消不是失败：原样抛出，调用方走取消分支（不提供续跑入口）。
@@ -958,36 +1001,48 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n${paceCorrectionAlert ? `${paceCorrectionAlert}\n` : ''}【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
-  let pre;
-  try {
-    pre = await chatJSONDetailed(cfg, {
+  const preParams: Parameters<typeof chatJSONDetailed>[1] = {
+    model: plannerModel,
+    temperature: .25,
+    messages: preMessages,
+    signal: p.signal,
+    ...(plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
+    ...(thinking ? { thinking } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(plannerToolsEnabled ? {
+      // 联网搜索是可选工具：默认关闭，只有官方地址 + 有 Key 且玩家显式开启时才挂载。
+      tools: [plannerContextTool, ...(webSearchAllowed ? [plannerWebSearchTool] : [])],
+      toolChoice: 'auto' as const,
+      maxToolRounds: plannerToolMaxCalls,
+      onToolCall: plannerToolHandler(p, plannerToolMaxCalls, { webSearchAllowed }),
+      onToolActivity: (activity: ChatToolActivity) => emitToolActivity(p, 'planner_pre', plannerModel, activity),
+    } : {}),
+    onThinkingDelta: (text) => collectThinking('planner_pre', plannerModel, text),
+    onDelta: (text) => emitOutput(p, 'planner_pre', plannerModel, text),
+    onStreamWarning: (warning) => emitActivity(p, {
+      type: 'warning',
+      phase: 'planner_pre',
       model: plannerModel,
-      temperature: .25,
-      messages: preMessages,
-      signal: p.signal,
-      ...(plannerJsonEnabled ? { responseFormat: 'json_object' as const } : {}),
-      ...(thinking ? { thinking } : {}),
-      ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(plannerToolsEnabled ? {
-        // 联网搜索是可选工具：默认关闭，只有官方地址 + 有 Key 且玩家显式开启时才挂载。
-        tools: [plannerContextTool, ...(webSearchAllowed ? [plannerWebSearchTool] : [])],
-        toolChoice: 'auto' as const,
-        maxToolRounds: plannerToolMaxCalls,
-        onToolCall: plannerToolHandler(p, plannerToolMaxCalls, { webSearchAllowed }),
-        onToolActivity: (activity: ChatToolActivity) => emitToolActivity(p, 'planner_pre', plannerModel, activity),
-      } : {}),
-      onThinkingDelta: (text) => collectThinking('planner_pre', plannerModel, text),
-      onDelta: (text) => emitOutput(p, 'planner_pre', plannerModel, text),
-      onStreamWarning: (warning) => emitActivity(p, {
-        type: 'warning',
-        phase: 'planner_pre',
-        model: plannerModel,
-        code: warning.code,
-        path: 'stream',
-        message: warning.message,
-      }),
-    });
+      code: warning.code,
+      path: 'stream',
+      message: warning.message,
+    }),
+  };
+  let pre;
+  // 规划结果字段较多且由各处按需读取，保持 any 以贴合既有访问方式。
+  let brief: any;
+  try {
+    pre = await chatJSONDetailed(cfg, preParams);
     ensureModelResult('planner_pre', pre);
+    try {
+      brief = requireJSONObject(pre.text, phaseLabels.planner_pre);
+    } catch (parseError) {
+      if (isAbortError(parseError, p.signal)) throw parseError;
+      console.warn(`[V2 planner_pre] 返回非法 JSON，自动修复重试一次：${errorMessage(parseError)}`);
+      pre = await chatJSONDetailed(cfg, repairJSONParams(preParams, preMessages, pre.text));
+      ensureModelResult('planner_pre', pre);
+      brief = requireJSONObject(pre.text, phaseLabels.planner_pre);
+    }
     turnCalls.push({ phase: 'planner_pre', model: plannerModel, input: pre.trace, output: pre.text, thinking: pre.thinking, usage: pre.usage });
     emitUsage(p, 'planner_pre', plannerModel, pre.usage);
     emitPhase(p, 'planner_pre', plannerModel, 'completed', undefined, plannerToolsEnabled);
@@ -995,7 +1050,6 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     emitPhase(p, 'planner_pre', plannerModel, 'failed', error, plannerToolsEnabled);
     throw error;
   }
-  const brief = requireJSONObject(pre.text, phaseLabels.planner_pre) as any;
   // 随机事件绑定校验：合法绑定在提交阶段写入 activeBinding + lastPlan；非法时只写 lastPlan，
   // 并把原因送进活动流（random_event_binding_invalid），避免错误目标进入调度状态。
   const randomEventBindingCheck = checkPlannerRandomEventBinding(p, brief);

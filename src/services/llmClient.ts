@@ -3,6 +3,7 @@
 import { readSSEDetailed, type StreamResult } from '@/lib/sse';
 import { joinThinking, splitThinkingFromText } from '@/lib/thinking';
 import { normalizeLlmUsage } from '@/lib/llmUsage';
+import { isRetryableHttpStatus, retryDelayMs, sleepWithAbort } from '@/lib/retry';
 import type { LlmUsage } from '@/types/llm';
 import type { AgentPromptTrace } from '@/types/ledger';
 
@@ -278,6 +279,41 @@ export async function chatStreamDetailed(
   if (!p.model) throw new Error('未选择模型');
 
   const url = chatEndpoint(cfg.baseUrl);
+  const MAX_TRANSPORT_RETRIES = 2;
+
+  /**
+   * 传输层重试：只重试"还没开始读流"的失败（网络错误、429、5xx）。
+   * 一旦响应开始流式返回就不再重试——重发会重复计费且可能与已透出的正文对不上。
+   */
+  const fetchWithTransportRetry = async (body: Record<string, unknown>): Promise<Response> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_TRANSPORT_RETRIES; attempt += 1) {
+      if (p.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cfg.apiKey}`,
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify(body),
+          signal: p.signal,
+        });
+        if (!res.ok && isRetryableHttpStatus(res.status) && attempt < MAX_TRANSPORT_RETRIES) {
+          await sleepWithAbort(retryDelayMs(attempt + 1), p.signal);
+          continue;
+        }
+        return res;
+      } catch (error) {
+        if (p.signal?.aborted) throw error;
+        lastError = error;
+        if (attempt >= MAX_TRANSPORT_RETRIES) throw error;
+        await sleepWithAbort(retryDelayMs(attempt + 1), p.signal);
+      }
+    }
+    throw lastError ?? new Error('模型请求失败：未知网络错误');
+  };
 
   const requestStreamOnce = async (
     params: ChatStreamParams,
@@ -286,31 +322,13 @@ export async function chatStreamDetailed(
     const buildBody = (useUsage: boolean) => buildChatBody(params, true, useUsage);
     let body = buildBody(includeUsage);
 
-    let res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cfg.apiKey}`,
-        Accept: 'text/event-stream',
-      },
-      body: JSON.stringify(body),
-      signal: params.signal,
-    });
+    let res = await fetchWithTransportRetry(body);
 
     if (!res.ok) {
       const msg = await readErrorBody(res);
       if (includeUsage && shouldRetryWithoutStreamOptions(msg)) {
         body = buildBody(false);
-        res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${cfg.apiKey}`,
-            Accept: 'text/event-stream',
-          },
-          body: JSON.stringify(body),
-          signal: params.signal,
-        });
+        res = await fetchWithTransportRetry(body);
         if (res.ok) {
           return readSSEDetailed(res, {
             onDelta: params.onDelta,

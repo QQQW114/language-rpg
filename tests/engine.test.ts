@@ -403,13 +403,31 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
     });
   });
 
-  it('planner_pre 返回非法 JSON 时抛错且不调用故事阶段', async () => {
+  it('planner_pre 返回非法 JSON 时自动修复重试一次；两次都失败才抛错且不调用故事阶段', async () => {
     const request = makeRequest();
     await withFetchMock(
       phaseHandler({ brief: () => chatSSE([contentFrame('这不是 JSON'), DONE_FRAME]) }),
       async (mock) => {
         await assert.rejects(() => runTurnV2(request), /不是有效 JSON/);
-        assert.equal(mock.requests.length, 1, '故事阶段不应被调用');
+        assert.equal(mock.requests.length, 2, '应重试一次规划，且故事阶段不应被调用');
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'planner_pre']);
+      },
+    );
+  });
+
+  it('planner_pre 首次非法 JSON、修复重试返回合法 JSON 时正常继续', async () => {
+    let preCount = 0;
+    await withFetchMock(
+      phaseHandler({
+        brief: () => (++preCount === 1
+          ? chatSSE([contentFrame('这不是 JSON'), DONE_FRAME])
+          : jsonStream(BRIEF)),
+      }),
+      async (mock) => {
+        const result = await runTurnV2(makeRequest());
+        assert.equal(result.state.turn, 3);
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'planner_pre', 'story', 'planner_post']);
+        assert.ok(lastUserPromptOf(mock.requests[1]).includes('不是合法 JSON'), '修复重试应附带修复指令');
       },
     );
   });
@@ -446,13 +464,31 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
     );
   });
 
-  it('planner_post 返回非法 JSON 时抛错（此时故事已生成）', async () => {
+  it('planner_post 返回非法 JSON 时自动修复重试一次；两次都失败才抛错', async () => {
     const request = makeRequest();
     await withFetchMock(
       phaseHandler({ post: () => chatSSE([contentFrame('null'), DONE_FRAME]) }),
       async (mock) => {
         await assert.rejects(() => runTurnV2(request), /不是有效 JSON/);
-        assert.equal(mock.requests.length, 3);
+        assert.equal(mock.requests.length, 4, '应为 3 阶段 + 1 次结算修复重试');
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'planner_post', 'planner_post']);
+      },
+    );
+  });
+
+  it('planner_post 首次非法 JSON、修复重试返回合法 JSON 时成功提交', async () => {
+    let postCount = 0;
+    await withFetchMock(
+      phaseHandler({
+        post: () => (++postCount === 1
+          ? chatSSE([contentFrame('null'), DONE_FRAME])
+          : jsonStream(POST_PATCH)),
+      }),
+      async (mock) => {
+        const result = await runTurnV2(makeRequest());
+        assert.equal(result.state.turn, 3);
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'planner_post', 'planner_post']);
+        assert.ok(lastUserPromptOf(mock.requests[3]).includes('不是合法 JSON'), '修复重试应附带修复指令');
       },
     );
   });
@@ -1188,7 +1224,8 @@ describe('engine.runTurnV2 / runTurnSettlementV2 — 结算失败续跑', () => 
     const request = makeRequest();
     const { failure, requests } = await capturePostFailure(request, httpFailure);
 
-    assert.deepEqual(requests.map(phaseOf), ['planner_pre', 'story', 'planner_post']);
+    // HTTP 500 现在会先做传输层重试（2 次，共 3 次结算请求），失败语义不变。
+    assert.deepEqual(requests.map(phaseOf), ['planner_pre', 'story', 'planner_post', 'planner_post', 'planner_post']);
     assert.match(failure.message, /模型请求失败（500）/);
     const partial: TurnPartialV2 = failure.partial;
     assert.equal(partial.story, STORY_TEXT);
@@ -1312,7 +1349,8 @@ describe('engine.runTurnV2 / runTurnSettlementV2 — 结算失败续跑', () => 
         () => runTurnSettlementV2(makeRequest(), first.partial),
         (error: unknown) => { secondFailure = error; return true; },
       );
-      assert.equal(mock.requests.length, 1);
+      assert.equal(mock.requests.length, 3, '传输层会重试 2 次（共 3 次结算请求）');
+      assert.deepEqual(mock.requests.map(phaseOf), ['planner_post', 'planner_post', 'planner_post']);
     });
     assert.ok(secondFailure instanceof TurnPostFailureV2, `再次失败仍应是 TurnPostFailureV2，实际：${String(secondFailure)}`);
     const second = secondFailure as TurnPostFailureV2;
