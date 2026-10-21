@@ -754,7 +754,13 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
  * 可能与首次执行不同（例如提示词漏了导演视角注入），导致同一回合出现两套结算语义。
  */
 interface TurnRuntimeV2 {
-  cfg: { baseUrl: string; apiKey: string };
+  /** planner_pre / planner_post 使用的全局连接。 */
+  plannerCfg: { baseUrl: string; apiKey: string };
+  /**
+   * story 使用的连接：`storyApiBaseUrl` / `storyApiKey` 留空时分别继承全局。
+   * 两字段都留空时与 `plannerCfg` 完全一致（旧行为零变化）。
+   */
+  storyCfg: { baseUrl: string; apiKey: string };
   plannerModel: string;
   storyModel: string;
   plannerToolsEnabled: boolean;
@@ -775,36 +781,49 @@ interface TurnRuntimeV2 {
 }
 
 function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2 {
-  const cfg = { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey };
+  const plannerCfg = { baseUrl: p.settings.apiBaseUrl, apiKey: p.settings.apiKey };
+  // 混合端点：story 可独立配置连接。base 与 key 分别 trim 后判断，留空 = 分别继承全局；
+  // 默认设置下 storyCfg 与 plannerCfg 逐字节相同，因此旧设置/旧存档行为完全不变。
+  const storyBaseOverride = String(p.settings.storyApiBaseUrl ?? '').trim();
+  const storyKeyOverride = String(p.settings.storyApiKey ?? '').trim();
+  const storyCfg = {
+    baseUrl: storyBaseOverride || plannerCfg.baseUrl,
+    apiKey: storyKeyOverride || plannerCfg.apiKey,
+  };
   const plannerModel = resolvePlannerModel(p.settings);
   const storyModel = resolveStoryModel(p.settings);
   const plannerToolsEnabled = p.settings.plannerToolsEnabled === true;
   const plannerToolMaxCalls = Math.max(1, Math.min(6, Math.round(Number(p.settings.plannerToolMaxCalls) || 2)));
   // 官方判定抽到 webSearch.ts：设置页与引擎共用一份，避免两处漂移。
-  const isOfficialDeepSeek = isOfficialDeepSeekEndpoint(p.settings.apiBaseUrl);
+  // 注意：联网搜索、规划 JSON 模式与规划思考强度只认 planner/全局 base——story 覆盖不影响它们。
+  const isOfficialDeepSeek = isOfficialDeepSeekEndpoint(plannerCfg.baseUrl);
+  // story 端点的官方判定单独计算：混合端点下 story 可能是第三方反代，专属参数要按它自己的端点决定。
+  const isOfficialStoryEndpoint = isOfficialDeepSeekEndpoint(storyCfg.baseUrl);
   // 联网搜索默认关闭，且只有官方地址 + 有 Key 时才可用：非官方服务没有该接口，
   // 请求会 404/401，既浪费一次工具轮次也会让模型困惑。
   const webSearchAllowed = plannerToolsEnabled
     && p.settings.plannerWebSearchEnabled === true
     && isOfficialDeepSeek
-    && !!String(cfg.apiKey ?? '').trim();
+    && !!String(plannerCfg.apiKey ?? '').trim();
   const plannerJsonEnabled = p.settings.plannerJsonMode === 'enabled' || (p.settings.plannerJsonMode === 'auto' && isOfficialDeepSeek);
   const thinking = p.settings.thinkingMode === 'enabled' ? 'enabled' as const : p.settings.thinkingMode === 'disabled' ? 'disabled' as const : undefined;
   // 思考强度按模型解析：思考行为的差异来自模型本身，所以首选"每个模型一个档位"，
   // 换模型时自动带上它自己的设置。解析优先级：逐阶段覆盖 → 按模型覆盖 → 全局档位。
   // 关闭思考时显式发送 `thinking: {type:'disabled'}`——官方文档说明思考模式
   // **默认开启**，所以"什么都不发"会退回默认开启而不是关闭。
-  const reasoningEffortFor = (phase: 'planner_pre' | 'story' | 'planner_post', model: string) => {
-    if (!isOfficialDeepSeek || p.settings.thinkingMode === 'disabled') return undefined;
+  // `endpointOfficial` 由该阶段实际使用的端点决定：混合端点下 story 若是第三方反代，
+  // 不能在请求里塞它不认识的 reasoning_effort。
+  const reasoningEffortFor = (phase: 'planner_pre' | 'story' | 'planner_post', model: string, endpointOfficial: boolean) => {
+    if (!endpointOfficial || p.settings.thinkingMode === 'disabled') return undefined;
     const byPhase = p.settings.reasoningEffortByPhase?.[phase];
     if (byPhase) return byPhase;
     const byModel = p.settings.reasoningEffortByModel?.[model.trim()];
     if (byModel) return byModel;
     return p.settings.reasoningEffortByModel?.[''] ?? p.settings.reasoningEffort;
   };
-  const reasoningEffort = reasoningEffortFor('planner_pre', plannerModel);
-  const storyReasoningEffort = reasoningEffortFor('story', storyModel);
-  const postReasoningEffort = reasoningEffortFor('planner_post', plannerModel);
+  const reasoningEffort = reasoningEffortFor('planner_pre', plannerModel, isOfficialDeepSeek);
+  const storyReasoningEffort = reasoningEffortFor('story', storyModel, isOfficialStoryEndpoint);
+  const postReasoningEffort = reasoningEffortFor('planner_post', plannerModel, isOfficialDeepSeek);
   const roleInjects = p.settings.roleInjects;
   // 导演视角只在执笔模式下生效；游历模式仍按玩家行动处理。
   const directorPerspective = state.mode === 'author' && p.settings.inputPerspective === 'director';
@@ -825,7 +844,8 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
     roleInjects?.post,
   );
   return {
-    cfg,
+    plannerCfg,
+    storyCfg,
     plannerModel,
     storyModel,
     plannerToolsEnabled,
@@ -930,7 +950,7 @@ async function runPostAndCommitV2(
   let post: ChatResult;
   let parsed: Record<string, unknown>;
   try {
-    post = await chatJSONDetailed(runtime.cfg, postParams);
+    post = await chatJSONDetailed(runtime.plannerCfg, postParams);
     ensureModelResult('planner_post', post);
     // 解析放进 try：非法 JSON 同样属于“结算失败”，必须给出可续跑的 partial，
     // 而不是一个整轮作废的普通错误。
@@ -941,7 +961,7 @@ async function runPostAndCommitV2(
       // 反代/模型偶发在结算 JSON 前后夹解释或代码块：先自动修复重试一次，
       // 只重发 planner_post，不重跑规划与正文。
       console.warn(`[V2 planner_post] 返回非法 JSON，自动修复重试一次：${errorMessage(parseError)}`);
-      post = await chatJSONDetailed(runtime.cfg, repairJSONParams(postParams, postMessages, post.text));
+      post = await chatJSONDetailed(runtime.plannerCfg, repairJSONParams(postParams, postMessages, post.text));
       ensureModelResult('planner_post', post);
       parsed = requireJSONObject(post.text, phaseLabels.planner_post);
     }
@@ -993,7 +1013,8 @@ async function runPostAndCommitV2(
 export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   const runtime = resolveTurnRuntime(p, p.state);
   const {
-    cfg,
+    plannerCfg,
+    storyCfg,
     plannerModel,
     storyModel,
     plannerToolsEnabled,
@@ -1086,14 +1107,14 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   // 规划结果字段较多且由各处按需读取，保持 any 以贴合既有访问方式。
   let brief: any;
   try {
-    pre = await chatJSONDetailed(cfg, preParams);
+    pre = await chatJSONDetailed(plannerCfg, preParams);
     ensureModelResult('planner_pre', pre);
     try {
       brief = requireJSONObject(pre.text, phaseLabels.planner_pre);
     } catch (parseError) {
       if (isAbortError(parseError, p.signal)) throw parseError;
       console.warn(`[V2 planner_pre] 返回非法 JSON，自动修复重试一次：${errorMessage(parseError)}`);
-      pre = await chatJSONDetailed(cfg, repairJSONParams(preParams, preMessages, pre.text));
+      pre = await chatJSONDetailed(plannerCfg, repairJSONParams(preParams, preMessages, pre.text));
       ensureModelResult('planner_pre', pre);
       brief = requireJSONObject(pre.text, phaseLabels.planner_pre);
     }
@@ -1125,7 +1146,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   emitPhase(p, 'story', storyModel, 'started');
   let story;
   try {
-    story = await chatStreamDetailed(cfg, {
+    // story 可走独立连接（混合端点）；planner_pre / planner_post 始终用 plannerCfg。
+    story = await chatStreamDetailed(storyCfg, {
       model: storyModel,
       temperature: p.settings.temperatureStory,
       maxTokens: p.settings.storyMaxTokens || undefined,

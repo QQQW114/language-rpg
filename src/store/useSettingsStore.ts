@@ -81,6 +81,9 @@ export function normalizeSettings(value?: Partial<AppSettings>): AppSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...value,
+    // 故事阶段独立连接（混合端点）：缺字段/坏值一律空串 = 继承全局；base/key 分别独立继承。
+    storyApiBaseUrl: typeof value?.storyApiBaseUrl === 'string' ? value.storyApiBaseUrl : '',
+    storyApiKey: typeof value?.storyApiKey === 'string' ? value.storyApiKey : '',
     plannerContextPreset: preset,
     plannerContextTokens,
     plannerToolsEnabled: value?.plannerToolsEnabled === true,

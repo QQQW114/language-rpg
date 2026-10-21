@@ -2295,3 +2295,205 @@ describe('engine.runTurnV2 — 文风 profile 与结算 JSON 约束', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// K. 混合端点：故事阶段独立连接（planner 仍用全局）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 故事阶段独立连接（混合端点）', () => {
+  const PLANNER_BASE = 'https://planner.invalid/v1';
+  const STORY_BASE = 'https://story.invalid/v1';
+
+  /** 混合端点请求：默认全局 planner 连接 + story 覆盖，可再叠加其它设置。 */
+  const hybridRequest = (
+    settings: Partial<AppSettings> = {},
+    overrides: Parameters<typeof makeRequest>[0] = {},
+  ) => makeRequest({
+    ...overrides,
+    settings: {
+      apiBaseUrl: PLANNER_BASE,
+      apiKey: 'planner-key',
+      storyApiBaseUrl: STORY_BASE,
+      storyApiKey: 'story-key',
+      ...settings,
+    },
+  });
+
+  const urlsOf = (requests: RecordedRequest[]) => requests.map((request) => request.url);
+  const authOf = (requests: RecordedRequest[]) => requests.map((request) => request.headers.Authorization);
+  const modelsOf = (requests: RecordedRequest[]) => requests.map((request) => String(request.body?.model ?? ''));
+  const effortOf = (request: RecordedRequest) => (request.body as { reasoning_effort?: string } | undefined)?.reasoning_effort;
+  const toolNamesOf = (request: RecordedRequest): string[] => (
+    Array.isArray(request.body?.tools)
+      ? request.body.tools.map((tool: any) => String(tool?.function?.name ?? ''))
+      : []
+  );
+
+  it('story 用独立 base/key，planner_pre 与 planner_post 仍走全局 base/key；密钥不进结果/活动流', async () => {
+    const activity: ModelActivityV2[] = [];
+    const request = hybridRequest({}, { hooks: { onModelActivity: (item) => activity.push(item) } });
+
+    const result = await withFetchMock(phaseHandler(), async (mock) => {
+      const output = await runTurnV2(request);
+      assert.equal(mock.requests.length, 3);
+      assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'planner_post']);
+      assert.deepEqual(urlsOf(mock.requests), [
+        `${PLANNER_BASE}/chat/completions`,
+        `${STORY_BASE}/chat/completions`,
+        `${PLANNER_BASE}/chat/completions`,
+      ]);
+      assert.deepEqual(authOf(mock.requests), ['Bearer planner-key', 'Bearer story-key', 'Bearer planner-key']);
+      assert.deepEqual(modelsOf(mock.requests), ['test-planner-model', 'test-story-model', 'test-planner-model']);
+      return output;
+    });
+
+    assert.equal(result.state.turn, request.state.turn + 1, '混合端点回合照常提交');
+    // secrets 回归：两把 key 都不得出现在返回结果、活动流或回合记录（含三阶段 trace）中。
+    const serialized = JSON.stringify({ result, activity });
+    assert.ok(!serialized.includes('planner-key'), '结果/活动流不得包含全局 API Key');
+    assert.ok(!serialized.includes('story-key'), '结果/活动流不得包含故事独立 API Key');
+    assert.ok(!JSON.stringify(result.state.turnRecords ?? []).includes('story-key'));
+  });
+
+  it('留空继承：默认三阶段全走全局；base/key 可分别独立继承', async () => {
+    // A) 完全不填 story 连接（DEFAULT_SETTINGS 里是空串）→ 与旧行为完全一致
+    const globalOnly = makeRequest({ settings: { apiBaseUrl: PLANNER_BASE, apiKey: 'global-key' } });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(globalOnly);
+      assert.equal(mock.requests.length, 3);
+      for (const recorded of mock.requests) {
+        assert.equal(recorded.url, `${PLANNER_BASE}/chat/completions`);
+        assert.equal(recorded.headers.Authorization, 'Bearer global-key');
+      }
+    });
+
+    // B) 只覆盖 story base：URL 用覆盖值，Key 仍继承全局
+    const baseOnly = makeRequest({
+      settings: { apiBaseUrl: PLANNER_BASE, apiKey: 'global-key', storyApiBaseUrl: STORY_BASE },
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(baseOnly);
+      assert.equal(mock.requests[1].url, `${STORY_BASE}/chat/completions`);
+      assert.equal(mock.requests[1].headers.Authorization, 'Bearer global-key', '未填 story key 时继承全局 key');
+      assert.equal(mock.requests[0].url, `${PLANNER_BASE}/chat/completions`);
+      assert.equal(mock.requests[2].url, `${PLANNER_BASE}/chat/completions`);
+    });
+
+    // C) 只覆盖 story key：URL 仍继承全局，Key 用独立值（planner 不受影响）
+    const keyOnly = makeRequest({
+      settings: { apiBaseUrl: PLANNER_BASE, apiKey: 'global-key', storyApiKey: 'story-only-key' },
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(keyOnly);
+      assert.equal(mock.requests[1].url, `${PLANNER_BASE}/chat/completions`);
+      assert.equal(mock.requests[1].headers.Authorization, 'Bearer story-only-key');
+      assert.equal(mock.requests[0].headers.Authorization, 'Bearer global-key');
+      assert.equal(mock.requests[2].headers.Authorization, 'Bearer global-key');
+    });
+  });
+
+  it('web_search 官方判定只看全局 base，不受 story 覆盖影响', async () => {
+    // 全局官方 + story 反代：planner_pre 仍挂 web_search，story 请求发往反代
+    const globalOfficial = hybridRequest({
+      apiBaseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'ds-key',
+      storyApiBaseUrl: 'https://story.example/v1',
+      plannerToolsEnabled: true,
+      plannerWebSearchEnabled: true,
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(globalOfficial);
+      assert.deepEqual(toolNamesOf(mock.requests[0]), ['search_story_context', 'web_search']);
+      assert.equal(mock.requests[1].url, 'https://story.example/v1/chat/completions');
+    });
+
+    // 全局非官方 + story 覆盖官方 deepseek：仍不挂 web_search（判定不看 story 覆盖）
+    const storyOfficial = hybridRequest({
+      storyApiBaseUrl: 'https://api.deepseek.com/v1',
+      storyApiKey: 'ds-key',
+      plannerToolsEnabled: true,
+      plannerWebSearchEnabled: true,
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(storyOfficial);
+      assert.deepEqual(toolNamesOf(mock.requests[0]), ['search_story_context']);
+      assert.equal(mock.requests[1].url, 'https://api.deepseek.com/v1/chat/completions');
+    });
+  });
+
+  it('reasoning_effort 按阶段端点判定：pre/post 看全局，story 看覆盖端点', async () => {
+    // A) 全局官方 + story 反代：story 不得收到它不认识的 reasoning_effort
+    const officialPlanner = hybridRequest({
+      apiBaseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'ds-key',
+      storyApiBaseUrl: 'https://story.example/v1',
+      thinkingMode: 'enabled',
+      reasoningEffort: 'high',
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(officialPlanner);
+      assert.equal(effortOf(mock.requests[0]), 'high', 'planner_pre 用全局官方端点，应发 high');
+      assert.equal(effortOf(mock.requests[1]), undefined, 'story 反代不得收到 reasoning_effort');
+      assert.equal(effortOf(mock.requests[2]), 'high', 'planner_post 与 planner_pre 一致');
+    });
+
+    // B) 全局非官方 + story 覆盖官方：只有 story 发
+    const officialStory = hybridRequest({
+      storyApiBaseUrl: 'https://api.deepseek.com/v1',
+      storyApiKey: 'ds-key',
+      thinkingMode: 'enabled',
+      reasoningEffort: 'max',
+    });
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(officialStory);
+      assert.equal(effortOf(mock.requests[0]), undefined, '全局非官方：planner 不发 reasoning_effort');
+      assert.equal(effortOf(mock.requests[1]), 'max', 'story 覆盖官方端点：应发 max');
+      assert.equal(effortOf(mock.requests[2]), undefined);
+    });
+
+    // C) zero-change：story 留空时三阶段与旧实现一致（全局官方 → 都发）
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({
+        settings: {
+          apiBaseUrl: 'https://api.deepseek.com/v1',
+          apiKey: 'ds-key',
+          thinkingMode: 'enabled',
+          reasoningEffort: 'low',
+        },
+      }));
+      for (const recorded of mock.requests) {
+        assert.equal(effortOf(recorded), 'low');
+      }
+    });
+  });
+
+  it('结算续跑只走全局连接：planner_post 不会使用 story 独立 base/key', async () => {
+    const request = hybridRequest();
+    let failure: TurnPostFailureV2 | undefined;
+    await withFetchMock(
+      phaseHandler({
+        // 用 400（不可重试）触发结算失败：语义与 500 相同，但不触发传输层重试，测试更快。
+        post: () => new Response(JSON.stringify({ error: { message: 'internal error' } }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+      }),
+      async () => {
+        try {
+          await runTurnV2(request);
+        } catch (error) {
+          failure = error as TurnPostFailureV2;
+        }
+      },
+    );
+    assert.ok(failure instanceof TurnPostFailureV2, 'planner_post 失败应可续跑');
+
+    await withFetchMock(phaseHandler(), async (mock) => {
+      const output = await runTurnSettlementV2(request, failure!.partial);
+      assert.equal(mock.requests.length, 1, '续跑只重跑一次结算');
+      assert.equal(mock.requests[0].url, `${PLANNER_BASE}/chat/completions`);
+      assert.equal(mock.requests[0].headers.Authorization, 'Bearer planner-key');
+      assert.equal(output.state.turn, request.state.turn + 1);
+    });
+  });
+});
+

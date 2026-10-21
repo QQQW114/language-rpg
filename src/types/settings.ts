@@ -30,6 +30,21 @@ export interface AppSettings {
   apiBaseUrl: string;
   apiKey: string;
   storyModel: string;
+  /**
+   * 故事阶段独立 API Base URL（可选，混合端点）。
+   *
+   * 留空 / 缺失 = 继承全局 `apiBaseUrl`。典型用法：planner_pre / planner_post 走官方
+   * DeepSeek（前缀缓存、JSON 稳定），story 走更强的第三方模型或反向代理。
+   * base 与 key 分别独立继承，可以只覆盖其中一项。
+   */
+  storyApiBaseUrl?: string;
+  /**
+   * 故事阶段独立 API Key（可选，混合端点）。
+   *
+   * 留空 / 缺失 = 继承全局 `apiKey`。只作用于 story 阶段；不会写入日志、活动流、
+   * 回合记录或导出报告（与全局 API Key 一样仅保存在浏览器本地存储）。
+   */
+  storyApiKey?: string;
   plannerModel: string;
   temperatureStory: number;
   storyMaxTokens: number;
@@ -83,6 +98,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   apiBaseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
   storyModel: 'deepseek-v4-pro',
+  // 空串表示继承全局连接；默认不强制玩家配置独立端点（旧设置 normalize 后同为空串）。
+  storyApiBaseUrl: '',
+  storyApiKey: '',
   plannerModel: 'deepseek-v4-pro',
   temperatureStory: 0.9,
   storyMaxTokens: 0,

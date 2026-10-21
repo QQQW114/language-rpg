@@ -60,6 +60,9 @@ export default function SettingsPage() {
     && customTokenNumber <= 1_000_000;
   // 联网搜索只对官方 DeepSeek 地址生效；非官方地址只提示、不阻止保存（与工具开关一致的宽松策略）。
   const officialDeepSeekBase = isOfficialDeepSeekEndpoint(draft.apiBaseUrl);
+  // 故事阶段独立连接：留空 = 继承全局；base 与 key 分别独立继承。
+  const storyBaseInherited = !String(draft.storyApiBaseUrl ?? '').trim();
+  const storyKeyInherited = !String(draft.storyApiKey ?? '').trim();
 
   const chooseContextPreset = (preset: PlannerContextPreset) => {
     const presetTokens = preset === 'custom' ? undefined : PLANNER_CONTEXT_PRESET_TOKENS[preset];
@@ -493,6 +496,38 @@ export default function SettingsPage() {
         onChange={(event) => setDraft({ ...draft, storyModel: event.target.value })}
         hint="只负责故事正文"
       />
+
+      <div className="mb-4 rounded-md border border-parchment-600/45 bg-parchment-900/35 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Globe size={15} className="text-gold/75" />
+          <span className="text-sm text-parchment-100">故事模型独立连接（可选，留空继承上方）</span>
+          <span className="rounded border border-gold/35 bg-gold/10 px-1.5 py-0.5 text-[10px] tracking-wider text-gold/75">混合端点</span>
+        </div>
+        <p className="mt-1.5 text-xs leading-relaxed text-parchment-200/55">
+          写前规划与写后结算始终使用上方全局连接；这里配置的连接只作用于故事正文。典型用法：规划/结算走官方 DeepSeek（前缀缓存与 JSON 更稳），故事走 Gemini 等更强的模型或反向代理。API Base URL 与 API Key 分别留空即分别继承上方全局值，可以只覆盖其中一项。
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Input
+            label="故事阶段 API Base URL（可选）"
+            value={draft.storyApiBaseUrl ?? ''}
+            onChange={(event) => setDraft({ ...draft, storyApiBaseUrl: event.target.value })}
+            placeholder={draft.apiBaseUrl || 'https://api.deepseek.com/v1'}
+            hint={storyBaseInherited
+              ? `留空：继承全局 Base URL${draft.apiBaseUrl ? `（${draft.apiBaseUrl}）` : ''}`
+              : '仅故事阶段使用此地址'}
+          />
+          <Input
+            label="故事阶段 API Key（可选）"
+            type="password"
+            autoComplete="off"
+            value={draft.storyApiKey ?? ''}
+            onChange={(event) => setDraft({ ...draft, storyApiKey: event.target.value })}
+            hint={storyKeyInherited
+              ? '留空：继承上方全局 API Key（不回显）'
+              : '仅故事阶段使用此 Key；仅保存在当前浏览器本地存储，不写入日志/活动流/导出报告'}
+          />
+        </div>
+      </div>
 
           <div className="mt-7 flex justify-end gap-3">
             <Button variant="ghost" onClick={() => navigate(-1)}>{'取消'}</Button>
