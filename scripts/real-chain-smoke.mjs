@@ -30,7 +30,8 @@ import { build } from 'esbuild';
 import './e2e-localstorage-stub.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const outDir = path.join(root, 'test-runs', 'real-chain-bundle');
+// 每次运行使用独立打包目录：允许并行跑多个预设，避免多个进程同时重写同一 bundle。
+const outDir = path.join(root, 'test-runs', 'real-chain-bundle', `${Date.now().toString(36)}-${process.pid}`);
 await mkdir(outDir, { recursive: true });
 
 const API_BASE = String(process.env.LRPG_API_BASE || '').replace(/\/+$/, '');
@@ -47,6 +48,8 @@ const MAX_TOKENS = Number.isFinite(rawMaxTokens) && rawMaxTokens > 0
   ? Math.max(512, Math.min(16000, Math.floor(rawMaxTokens)))
   : 0;
 const MAX_RETRIES = Math.max(1, Math.min(8, Number(process.env.LRPG_RETRIES || 5)));
+// 报告路径：并行跑多个预设时可分开写，避免互相覆盖。
+const REPORT_FILE = String(process.env.LRPG_REPORT_FILE || 'test-runs/real-chain-report.json');
 // 默认关闭工具（真实游玩默认也不开）；LRPG_TOOLS=1 时启用规划模型上下文检索工具。
 const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
 // 官方联网搜索开关（仅官方 DeepSeek Base 生效）；LRPG_WEB_SEARCH=1 时同时启用工具。
@@ -172,11 +175,14 @@ globalThis.fetch = async (input, init = {}) => {
 // ---------------------------------------------------------------------------
 // 建旅程 + 跑回合
 // ---------------------------------------------------------------------------
-const outline = PRESET_OUTLINES[0];
-const background = PRESET_BACKGROUNDS[0];
-const worldFacts = PRESET_WORLDBOOKS[0]?.entries ?? [];
+// 可用 LRPG_OUTLINE_ID 指定内置故事（默认第一个）；出身与世界书按故事的推荐字段自动选择。
+const OUTLINE_ID = String(process.env.LRPG_OUTLINE_ID || '');
+const outline = (OUTLINE_ID ? PRESET_OUTLINES.find((item) => item.id === OUTLINE_ID) : undefined) ?? PRESET_OUTLINES[0];
+const background = PRESET_BACKGROUNDS.find((item) => outline.backgroundIds?.includes(item.id)) ?? PRESET_BACKGROUNDS[0];
+const worldBook = PRESET_WORLDBOOKS.find((book) => outline.worldBookIds?.includes(book.id)) ?? PRESET_WORLDBOOKS[0];
+const worldFacts = worldBook?.entries ?? [];
 const saveId = useGameStoreV2.getState().create({
-  name: `真实链路冒烟 · ${new Date().toLocaleString('zh-CN')}`,
+  name: `真实链路冒烟 · ${outline.title} · ${new Date().toLocaleString('zh-CN')}`,
   mode: 'author',
   outline,
   background,
@@ -327,7 +333,20 @@ async function runOneTurn(input, turnIndex) {
   };
 }
 
-const report = { runId: RUN_ID, apiBase: API_BASE, model: MODEL, settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED }, turns: [], requests: requestLog };
+const report = {
+  runId: RUN_ID,
+  apiBase: API_BASE,
+  model: MODEL,
+  preset: {
+    outlineId: outline.id,
+    outlineTitle: outline.title,
+    backgroundId: background?.id,
+    worldBookId: worldBook?.id,
+  },
+  settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
+  turns: [],
+  requests: requestLog,
+};
 const TURN_ATTEMPTS = 2;
 let failed = false;
 for (let index = 0; index < TURNS; index += 1) {
@@ -431,8 +450,8 @@ if (evaluation) {
 }
 
 report.requests = requestLog;
-await writeFile(path.join(root, 'test-runs', 'real-chain-report.json'), JSON.stringify(report, null, 2), 'utf8');
+await writeFile(path.isAbsolute(REPORT_FILE) ? REPORT_FILE : path.join(root, REPORT_FILE), JSON.stringify(report, null, 2), 'utf8');
 const okTurns = report.turns.length;
 console.log(`\n[real-chain] 汇总：完成 ${okTurns}/${TURNS} 回合 · 请求 ${requestLog.length} 次（重试 ${requestLog.filter((item) => item.attempt > 1).length} 次）`);
-console.log(`[real-chain] 报告：test-runs/real-chain-report.json`);
+console.log(`[real-chain] 报告：${REPORT_FILE}`);
 process.exit(failed || okTurns === 0 ? 1 : 0);
