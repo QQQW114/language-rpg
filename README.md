@@ -130,6 +130,7 @@ npm run test:real
 - `LRPG_REPORT_FILE`：自定义报告路径（并行跑多个预设时分开写，互不覆盖）；
 - `LRPG_CHECKPOINT_FILE`：检查点路径（默认 `test-runs/real-chain-checkpoint.json`，每回合成功后写完整存档快照）；
 - `LRPG_RESUME`：指向检查点文件，从最后一个成功回合继续跑（不再从头重来）；
+- `LRPG_TURN_TIMEOUT_MS`：单回合超时毫秒（默认 `480000`；反代挂死时中止并按可重试错误处理）；
 - `LRPG_INPUTS_FILE`：外部输入列表，每行一条玩家输入（空行与 `#` 开头忽略）；
 - `LRPG_TOOLS=1`：启用规划模型上下文检索工具；
 - `LRPG_WEB_SEARCH=1`：启用官方 DeepSeek 联网搜索（仅官方 API Base 生效；查询会发给 DeepSeek，按成功请求计费）。

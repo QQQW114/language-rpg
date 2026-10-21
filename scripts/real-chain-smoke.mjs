@@ -54,6 +54,8 @@ const REPORT_FILE = String(process.env.LRPG_REPORT_FILE || 'test-runs/real-chain
 const CHECKPOINT_FILE = String(process.env.LRPG_CHECKPOINT_FILE || 'test-runs/real-chain-checkpoint.json');
 const RESUME_FILE = String(process.env.LRPG_RESUME || '');
 const KEEP_CHECKPOINT = process.env.LRPG_KEEP_CHECKPOINT === '1';
+// 单回合看门狗：反代偶发请求挂死（无任何输出）时中止本回合并按瞬时错误重试。
+const TURN_TIMEOUT_MS = Math.max(60000, Number(process.env.LRPG_TURN_TIMEOUT_MS || 480000));
 // 默认关闭工具（真实游玩默认也不开）；LRPG_TOOLS=1 时启用规划模型上下文检索工具。
 const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
 // 官方联网搜索开关（仅官方 DeepSeek Base 生效）；LRPG_WEB_SEARCH=1 时同时启用工具。
@@ -253,6 +255,8 @@ async function runOneTurn(input, turnIndex) {
     outline: save.outline,
     background: save.background,
     worldFacts: save.worldFacts,
+    // 反代/网络偶发挂死：到时间直接 abort，由外层按可重试错误处理。
+    signal: AbortSignal.timeout(TURN_TIMEOUT_MS),
   };
   const callbacks = {
     onStoryDelta: (delta) => { story += delta; },
