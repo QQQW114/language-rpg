@@ -18,7 +18,8 @@
  *   node scripts/real-chain-smoke.mjs
  *
  * 可选：LRPG_TURNS=2（默认 2）、LRPG_MAX_TOKENS=2500、LRPG_RETRIES=5、
- *       LRPG_TOOLS=1（启用规划模型 search_story_context 工具，默认关闭）。
+ *       LRPG_TOOLS=1（启用规划模型 search_story_context 工具，默认关闭）、
+ *       LRPG_AUTONOMY=standard（推进权限 strict/standard/free，默认 standard）。
  * 产物：test-runs/real-chain-report.json（被 gitignore）。
  */
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
@@ -60,8 +61,19 @@ const TURN_TIMEOUT_MS = Math.max(60000, Number(process.env.LRPG_TURN_TIMEOUT_MS 
 const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
 // 官方联网搜索开关（仅官方 DeepSeek Base 生效）；LRPG_WEB_SEARCH=1 时同时启用工具。
 const WEB_SEARCH_ENABLED = process.env.LRPG_WEB_SEARCH === '1';
+// 推进权限（storyAutonomy）：strict / standard / free，默认 standard；非法值回退 standard。
+const VALID_AUTONOMY = ['strict', 'standard', 'free'];
+const AUTONOMY = (() => {
+  const raw = String(process.env.LRPG_AUTONOMY || 'standard').trim().toLowerCase();
+  if (!VALID_AUTONOMY.includes(raw)) {
+    console.warn(`[real-chain] LRPG_AUTONOMY=${raw} 不合法（可选 ${VALID_AUTONOMY.join('/')}），回退 standard。`);
+    return 'standard';
+  }
+  return raw;
+})();
 const RUN_ID = `lau_rpg-smoke-${Date.now().toString(36)}`;
 let requestSeq = 0;
+console.log(`[real-chain] autonomy=${AUTONOMY}`);
 
 // ---------------------------------------------------------------------------
 // 打包真实源码
@@ -354,6 +366,20 @@ let saveId = '';
 let startIndex = 0;
 let report;
 
+/**
+ * 把推进权限写进存档 state。
+ *
+ * create() 的入参没有 state（它总是用 storyAutonomy:'standard' 新建），
+ * 所以只能建好后用 setState 覆盖；测试环境用内存 localStorage，persist 副作用无妨。
+ */
+const applyAutonomy = (id, autonomy) => {
+  useGameStoreV2.setState((state) => {
+    const save = state.saves[id];
+    if (!save) return {};
+    return { saves: { ...state.saves, [id]: { ...save, state: { ...save.state, storyAutonomy: autonomy } } } };
+  });
+};
+
 if (resumePath) {
   const checkpoint = JSON.parse(readFileSync(resumePath, 'utf8'));
   const saved = checkpoint.save;
@@ -361,19 +387,24 @@ if (resumePath) {
   if (checkpoint.model && checkpoint.model !== MODEL) {
     console.warn(`[real-chain] 检查点模型=${checkpoint.model}，当前 LRPG_MODEL=${MODEL}；按当前配置续跑。`);
   }
+  const savedAutonomy = saved.state.storyAutonomy ?? 'standard';
+  if (savedAutonomy !== AUTONOMY) {
+    console.warn(`[real-chain] 检查点 autonomy=${savedAutonomy}，当前 LRPG_AUTONOMY=${AUTONOMY}；按当前配置续跑。`);
+  }
   saveId = saved.id;
   outline = saved.outline ?? outline;
   background = saved.background ?? background;
   worldFacts = saved.worldFacts ?? worldFacts;
   worldBook = PRESET_WORLDBOOKS.find((book) => outline.worldBookIds?.includes(book.id)) ?? worldBook;
   useGameStoreV2.setState((state) => ({ saves: { ...state.saves, [saveId]: saved }, activeId: saveId }));
+  applyAutonomy(saveId, AUTONOMY);
   startIndex = Number(checkpoint.nextIndex) || checkpoint.report?.turns?.length || 0;
   report = {
     ...(checkpoint.report ?? {}),
     runId: checkpoint.runId ?? RUN_ID,
     apiBase: API_BASE,
     model: MODEL,
-    preset: checkpoint.preset ?? checkpoint.report?.preset,
+    preset: { ...(checkpoint.preset ?? checkpoint.report?.preset ?? {}), autonomy: AUTONOMY },
     settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
     turns: checkpoint.report?.turns ?? [],
     requests: requestLog,
@@ -389,6 +420,7 @@ if (resumePath) {
     worldFacts,
     randomEvent: { enabled: true, triggerIntervalMin: 1, triggerIntervalMax: 1 },
   });
+  applyAutonomy(saveId, AUTONOMY);
   report = {
     runId: RUN_ID,
     apiBase: API_BASE,
@@ -398,6 +430,7 @@ if (resumePath) {
       outlineTitle: outline.title,
       backgroundId: background?.id,
       worldBookId: worldBook?.id,
+      autonomy: AUTONOMY,
     },
     settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
     turns: [],
