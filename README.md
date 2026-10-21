@@ -1,6 +1,8 @@
-# 言灵 · Language RPG v0.4
+# 言灵 · Language RPG v0.5.2
 
-纯前端、双模型驱动的中文互动小说AGENT。
+纯前端、双模型驱动的中文互动小说 AGENT。
+
+> **在线体验**：<https://qqqw114.github.io/language-rpg/>（纯前端、无后端；首次使用请先到「模型与连接设置」填入自己的 API Base URL、API Key 与模型名。内置 3 个预设故事：《错位青春》《余温代行人》《赝品修复师》。）
 
 ## 核心架构
 
@@ -124,6 +126,8 @@ npm run test:real
 可选环境变量：
 
 - `LRPG_TURNS`（1~40，默认 2）、`LRPG_MAX_TOKENS`（`0` 表示不限输出，默认 `0`）、`LRPG_RETRIES`；
+- `LRPG_OUTLINE_ID`：选择一个内置预设故事（自动带上其推荐出身与世界书）；
+- `LRPG_REPORT_FILE`：自定义报告路径（并行跑多个预设时分开写，互不覆盖）；
 - `LRPG_INPUTS_FILE`：外部输入列表，每行一条玩家输入（空行与 `#` 开头忽略）；
 - `LRPG_TOOLS=1`：启用规划模型上下文检索工具；
 - `LRPG_WEB_SEARCH=1`：启用官方 DeepSeek 联网搜索（仅官方 API Base 生效；查询会发给 DeepSeek，按成功请求计费）。
@@ -137,7 +141,11 @@ npm run test:real
 - [`docs/destiny-driven-story-core.md`](docs/destiny-driven-story-core.md)：产品定位与最高设计约束，改提示词前必读。
 - [`docs/act-system-plan.md`](docs/act-system-plan.md)：幕系统改造的决议记录与实施计划（D1–D10、P1–P6 步骤、验收口径）。
 - [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)：与代码同步的实现状态（协议字段、状态结构、测试体系）。
+- [`docs/prompt-list.md`](docs/prompt-list.md)：当前提示词结构（Prompt Pack v2.1）。
+- [`docs/prompt-design-log.md`](docs/prompt-design-log.md)：提示词评审结论、A/B 数据、过拟合审计与模型分级建议。
+- [`docs/preset-authoring.md`](docs/preset-authoring.md)：预设故事 / 世界书 / 出身的编写规范与导入格式。
 - [`CHANGELOG.md`](CHANGELOG.md)：版本更新记录。
+- [`docs/release-notes-v0.5.2.md`](docs/release-notes-v0.5.2.md)：当前发行版说明。
 
 ## 技术栈
 
