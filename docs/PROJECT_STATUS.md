@@ -160,7 +160,7 @@ planner_pre 的工具由程序按设置决定是否挂载（故事 / 写后结�
 
 `GameStateV2` 当前持久化字段：
 
-- 基础：`revision / turn / phase / mode / narrativePace / history / summary / latestProgress / lastCommitId`
+- 基础：`revision / turn / phase / mode / narrativePace / storyAutonomy / history / summary / latestProgress / lastCommitId`（`storyAutonomy = strict | standard | free`，缺省 standard，旧档 hydrate 自动补）
 - 场景：`currentScene`
 - 人物：`characters`（含 `aliases / status / knownFacts`）
 - 关系：`relationships`
@@ -272,7 +272,7 @@ planner_pre 的工具由程序按设置决定是否挂载（故事 / 写后结�
 
 ## 9. 测试体系
 
-- 单元测试：离线（esbuild 打包 + `node:test`，模型调用 mock `fetch`），当前 **562 条用例 / 20 个测试文件**；
+- 单元测试：离线（esbuild 打包 + `node:test`，模型调用 mock `fetch`），当前 **564 条用例 / 20 个测试文件**；
 - 脚本测试：Patch/命运状态回归、引擎端到端 mock 链路（e2e 43 条断言）、存档体积与写入可靠性、故事链路脚本（无 Key 自动 dry-run）；
 - 真实链路冒烟：`npm run test:real`（需外部 API，支持 1–40 回合长局与分阶段缓存统计，见下）。
 
