@@ -66,6 +66,7 @@ export function makeState(overrides: Record<string, unknown> = {}): GameStateV2 
     phase: 'generating' as const,
     mode: 'author' as const,
     narrativePace: 'standard' as const,
+    storyAutonomy: 'standard' as const,
     history: [],
     summary: '旧摘要',
     latestProgress: '旧进展',

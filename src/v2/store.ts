@@ -170,6 +170,7 @@ export function sanitizeGameStateV2(raw: unknown, outline?: unknown): GameStateV
     phase: raw.phase === 'input' || raw.phase === 'generating' || raw.phase === 'ended' ? raw.phase : 'input',
     mode: raw.mode === 'adventure' ? 'adventure' : 'author',
     narrativePace: raw.narrativePace === 'slow' || raw.narrativePace === 'standard' || raw.narrativePace === 'fast' || raw.narrativePace === 'timeskip' ? raw.narrativePace : 'standard',
+    storyAutonomy: raw.storyAutonomy === 'strict' || raw.storyAutonomy === 'standard' || raw.storyAutonomy === 'free' ? raw.storyAutonomy : 'standard',
     history,
     summary: typeof raw.summary === 'string' ? raw.summary : '',
     latestProgress: typeof raw.latestProgress === 'string' ? raw.latestProgress : undefined,
@@ -461,6 +462,7 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
         phase: 'input',
         mode: p.mode,
         narrativePace: 'standard',
+        storyAutonomy: 'standard',
         history: startScene
           ? [{ id: genId('msg'), role: 'assistant', content: startScene, turn: 0, createdAt: now }]
           : [],

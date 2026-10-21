@@ -5,6 +5,16 @@ import type { AgentPromptTrace } from '@/types/ledger';
 
 export type JourneyModeV2 = 'author' | 'adventure';
 export type NarrativePaceV2 = 'slow' | 'standard' | 'fast' | 'timeskip';
+
+/**
+ * 故事推进权限（与叙事速度解耦）：
+ * - `strict` 严格遵循：只写玩家输入明确要求/直接必然产生的内容，不自行推进；
+ * - `standard` 标准推进：承接玩家输入后，沿主线自然推进一小步；
+ * - `free` 自由发散：在守世界书/大纲命运方向的前提下，自行安排场景与转折。
+ *
+ * 缺省/非法值按 `standard` 处理；叙事速度继续只负责写作节奏与篇幅感。
+ */
+export type StoryAutonomyV2 = 'strict' | 'standard' | 'free';
 export type RandomEventIntensityV2 = 'related' | 'progress' | 'destiny';
 
 /** 随机事件必须绑定的目标类型：故事节 / 线程 / 关系 / 最终命运锚。 */
@@ -400,6 +410,8 @@ export interface GameStateV2 {
   phase: 'input' | 'generating' | 'ended';
   mode: JourneyModeV2;
   narrativePace: NarrativePaceV2;
+  /** 故事推进权限；缺省按 standard（旧存档/旧夹具无需迁移）。 */
+  storyAutonomy?: StoryAutonomyV2;
   history: MessageV2[];
   summary: string;
   latestProgress?: string;

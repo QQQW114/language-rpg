@@ -2125,3 +2125,37 @@ describe('engine.runTurnV2 — 规划模型官方联网搜索', () => {
   });
 });
 
+describe('engine.runTurnV2 — 故事推进权限（与叙事速度解耦的骨架）', () => {
+  it('strict / free 两档都注入 planner_pre 与 story；缺省为 standard', async () => {
+    const cases = [
+      ['strict', '严格遵循：'],
+      ['free', '自由发散：'],
+    ] as const;
+    for (const [autonomy, marker] of cases) {
+      await withFetchMock(phaseHandler(), async (mock) => {
+        await runTurnV2(makeRequest({ state: { storyAutonomy: autonomy } }));
+        const plannerUser = lastUserPromptOf(mock.requests[0]);
+        const storyUser = lastUserPromptOf(mock.requests[1]);
+        assert.ok(plannerUser.includes('【STORY_AUTONOMY】'), `planner_pre 应注入推进权限（${autonomy}）`);
+        assert.ok(plannerUser.includes(marker), `planner_pre 应包含 ${marker}`);
+        assert.ok(storyUser.includes('【STORY_AUTONOMY】'), `story 应注入推进权限（${autonomy}）`);
+        assert.ok(storyUser.includes(marker), `story 应包含 ${marker}`);
+      });
+    }
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest());
+      assert.ok(lastUserPromptOf(mock.requests[0]).includes('标准推进：'), '缺省应为标准推进');
+      assert.ok(lastUserPromptOf(mock.requests[1]).includes('标准推进：'), '缺省应为标准推进');
+    });
+  });
+
+  it('story 的叙事节奏仍排在推进权限之前，且 user#2 仍以【NARRATIVE_PACE】开头', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: { storyAutonomy: 'free' } }));
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyUser.startsWith('【NARRATIVE_PACE】'), '缓存前缀断言：story user#2 必须以叙事节奏开头');
+      assert.ok(storyUser.indexOf('【NARRATIVE_PACE】') < storyUser.indexOf('【STORY_AUTONOMY】'), '推进权限排在叙事节奏之后');
+    });
+  });
+});
+

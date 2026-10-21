@@ -357,6 +357,22 @@ function paceInstruction(p: TurnRequestV2) {
 }
 
 /**
+ * 故事推进权限（与叙事速度解耦的骨架）。
+ *
+ * 只注入本回合的可变区，不进稳定前缀；具体措辞后续由外部评审统一打磨。
+ * 叙事速度（paceInstruction）继续负责写作节奏/篇幅感；本块只回答"故事能自己走多远"。
+ */
+function storyAutonomyInstruction(p: TurnRequestV2) {
+  const mode = p.state.storyAutonomy ?? 'standard';
+  const instructions = {
+    strict: '严格遵循：本轮只写玩家输入明确要求、或由该行动直接必然产生的动作、反应与结果。不得自行推进剧情、时间、新事件或新场景，不得替玩家做选择；玩家说到哪就写到哪，玩家说停就停。',
+    standard: '标准推进：先完整承接玩家输入，再允许沿大纲主线自然推进一小步（一个新信息、一个小转折或一次关系变化），保持主线感；不得跳到下一场景/下一幕，也不得替玩家做重大选择。',
+    free: '自由发散：在遵守世界书、已有事实与命运大纲方向的前提下，可自行安排场景推进、人物反应与情节转折，主动把故事向下一阶段推动；仍不得替玩家做重大选择，不得越过 stopBoundary 之后的内容。',
+  } as const;
+  return instructions[mode] ?? instructions.standard;
+}
+
+/**
  * 上一回合的节奏纠偏块（D8）。
  *
  * 只读取 `turnRecords` 最后一条的 `pacing`：明确 `needsCorrection === true` 才生成
@@ -931,7 +947,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
     // 固定输出模板行仍排在最前（可复用前缀）；三幕窗口、动态世界书与节奏纠偏只出现在模板之后。
-    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n${paceCorrectionAlert ? `${paceCorrectionAlert}\n` : ''}【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
+    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n${paceCorrectionAlert ? `${paceCorrectionAlert}\n` : ''}【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   let pre;
@@ -1007,7 +1023,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
         // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
         // story 的 user 消息以【NARRATIVE_PACE】开头）。
-        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${writingExecutionAnchor}` },
+        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${writingExecutionAnchor}` },
       ],
       onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {

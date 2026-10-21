@@ -50,6 +50,7 @@ import type {
   RandomEventResolutionV2,
   RandomEventTargetKindV2,
   RelationshipV2,
+  StoryAutonomyV2,
   StoryBeatRuntimeV2,
   StoryThreadV2,
   TurnPartialV2,
@@ -62,6 +63,13 @@ const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> 
   { id: 'standard', label: '标准', hint: '完成一次主要行动或一个场景' },
   { id: 'fast', label: '快叙事', hint: '按事件发展推进一组行动' },
   { id: 'timeskip', label: '时间跨越', hint: '概述数天以上，保留关键节点' },
+];
+
+/** 故事推进权限：与叙事速度解耦，控制模型能自己把故事推多远。 */
+const AUTONOMY_OPTIONS: Array<{ id: StoryAutonomyV2; label: string; hint: string }> = [
+  { id: 'strict', label: '严格遵循', hint: '玩家说到哪就写到哪，不自行推进剧情' },
+  { id: 'standard', label: '标准推进', hint: '承接行动后沿主线自然推进一小步' },
+  { id: 'free', label: '自由发散', hint: '允许模型自行安排场景推进与情节转折' },
 ];
 
 const BEAT_STATUS: Record<StoryBeatRuntimeV2['status'], string> = {
@@ -1277,11 +1285,21 @@ export default function GamePageV2() {
 
   const pace = save.state.narrativePace ?? 'standard';
   const paceInfo = PACE_OPTIONS.find((x) => x.id === pace) ?? PACE_OPTIONS[1];
+  const autonomy = save.state.storyAutonomy ?? 'standard';
+  const autonomyInfo = AUTONOMY_OPTIONS.find((x) => x.id === autonomy) ?? AUTONOMY_OPTIONS[1];
   const setPace = (next: NarrativePaceV2) => {
     if (next !== pace) {
       useGameStoreV2.getState().update(save.id, (current) => ({
         ...current,
         state: { ...current.state, narrativePace: next },
+      }));
+    }
+  };
+  const setAutonomy = (next: StoryAutonomyV2) => {
+    if (next !== autonomy) {
+      useGameStoreV2.getState().update(save.id, (current) => ({
+        ...current,
+        state: { ...current.state, storyAutonomy: next },
       }));
     }
   };
@@ -1828,6 +1846,27 @@ export default function GamePageV2() {
                   ))}
                 </div>
               </div>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="text-[10px] tracking-[.18em] text-parchment-200/45">推进权限</span>
+                <div className="flex flex-wrap gap-1">
+                  {AUTONOMY_OPTIONS.map((option) => (
+                    <button
+                      type="button"
+                      key={option.id}
+                      title={option.hint}
+                      onClick={() => setAutonomy(option.id)}
+                      className={`rounded-md px-2 py-1 text-[11px] transition ${
+                        autonomy === option.id
+                          ? 'bg-gold/15 text-gold-light ring-1 ring-gold/50'
+                          : 'text-parchment-200/55 hover:bg-parchment-700/50 hover:text-parchment-100'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[10px] text-parchment-200/35">{autonomyInfo.hint}</span>
+              </div>
               {editingLastTurn && (
                 <div className="mb-3 rounded-lg border border-gold/30 bg-gold/5 px-3 py-2 text-xs text-parchment-200/70">
                   当前仅在编辑副本，原故事尚未删除。点击取消将保留原回合；只有确认后才会撤销并重新请求。
@@ -1843,7 +1882,7 @@ export default function GamePageV2() {
                     else enqueue(input);
                   }
                 }}
-                placeholder={`${paceInfo.hint}。描述你想做什么……`}
+                placeholder={`${paceInfo.hint} · ${autonomyInfo.hint}。描述你想做什么……`}
                 className="min-h-[110px] w-full resize-y rounded-lg border border-parchment-600/35 bg-ink/45 px-3 py-3 font-serif text-[15px] leading-7 text-parchment-50 outline-none transition focus:border-gold/70 placeholder:text-parchment-200/35"
               />
               <div className="mt-2 flex items-center justify-between gap-2">
