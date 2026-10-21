@@ -19,7 +19,9 @@
  *
  * 可选：LRPG_TURNS=2（默认 2）、LRPG_MAX_TOKENS=2500、LRPG_RETRIES=5、
  *       LRPG_TOOLS=1（启用规划模型 search_story_context 工具，默认关闭）、
- *       LRPG_AUTONOMY=standard（推进权限 strict/standard/free，默认 standard）。
+ *       LRPG_AUTONOMY=standard（推进权限 strict/standard/free，默认 standard）、
+ *       LRPG_STORY_API_BASE / LRPG_STORY_API_KEY / LRPG_STORY_MODEL
+ *       （混合端点：story 阶段独立连接与模型；留空分别继承全局，默认与旧行为一致）。
  * 产物：test-runs/real-chain-report.json（被 gitignore）。
  */
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
@@ -42,6 +44,11 @@ if (!API_BASE || !API_KEY) {
   process.exit(2);
 }
 const MODEL = String(process.env.LRPG_MODEL || 'minimax/minimax-m3.1-flash:free');
+// 混合端点（T2）：story 阶段可独立配置 base / key / model；留空分别继承全局。
+// 只记录 URL，apiKey 不会写进报告 / 检查点 / 日志。
+const STORY_API_BASE = String(process.env.LRPG_STORY_API_BASE || '').replace(/\/+$/, '');
+const STORY_API_KEY = String(process.env.LRPG_STORY_API_KEY || '');
+const STORY_MODEL = String(process.env.LRPG_STORY_MODEL || MODEL);
 const TURNS = Math.max(1, Math.min(40, Number(process.env.LRPG_TURNS || 2)));
 // 0 = 不限制输出（与真实游玩默认一致）；正数则夹到 [512, 16000]。
 const rawMaxTokens = Number(process.env.LRPG_MAX_TOKENS || 0);
@@ -74,6 +81,9 @@ const AUTONOMY = (() => {
 const RUN_ID = `lau_rpg-smoke-${Date.now().toString(36)}`;
 let requestSeq = 0;
 console.log(`[real-chain] autonomy=${AUTONOMY}`);
+if (STORY_API_BASE || STORY_MODEL !== MODEL) {
+  console.log(`[real-chain] hybrid: storyApiBase=${STORY_API_BASE || '(inherit)'} storyModel=${STORY_MODEL}`);
+}
 
 // ---------------------------------------------------------------------------
 // 打包真实源码
@@ -108,7 +118,10 @@ const settings = {
   apiBaseUrl: API_BASE,
   apiKey: API_KEY,
   plannerModel: MODEL,
-  storyModel: MODEL,
+  storyModel: STORY_MODEL,
+  // 混合端点：仅显式提供时写入；空串 = 引擎侧按“分别继承全局”处理（与 UI 留空语义一致）。
+  ...(STORY_API_BASE ? { storyApiBaseUrl: STORY_API_BASE } : {}),
+  ...(STORY_API_KEY ? { storyApiKey: STORY_API_KEY } : {}),
   temperatureStory: 0.8,
   storyMaxTokens: MAX_TOKENS,
   plannerJsonMode: 'enabled',
@@ -140,7 +153,10 @@ const classifyPhase = (bodyText) => {
 
 globalThis.fetch = async (input, init = {}) => {
   const url = typeof input === 'string' ? input : String(input?.url ?? '');
-  if (!url.startsWith(API_BASE)) return realFetch(input, init);
+  // 混合端点：planner_post/planner_pre 走全局 base，story 可走 LRPG_STORY_API_BASE。
+  // 两个 base 相同时（未配置混合端点）行为与单一 base 完全一致。
+  const endpoint = url.startsWith(API_BASE) ? 'planner' : (STORY_API_BASE && url.startsWith(STORY_API_BASE) ? 'story' : '');
+  if (!endpoint) return realFetch(input, init);
   const seq = ++requestSeq;
   const phase = classifyPhase(init.body);
   const startedAt = Date.now();
@@ -155,7 +171,7 @@ globalThis.fetch = async (input, init = {}) => {
       } catch { /* 非 JSON 请求体原样发送 */ }
     }
     const headers = new Headers(init.headers ?? {});
-    headers.set('X-Request-Id', `${RUN_ID}-${phase}-${seq}-a${attempt}`);
+    headers.set('X-Request-Id', `${RUN_ID}-${endpoint}-${phase}-${seq}-a${attempt}`);
     let response;
     let networkError;
     try {
@@ -165,7 +181,7 @@ globalThis.fetch = async (input, init = {}) => {
     }
     const elapsed = Math.round(Date.now() - startedAt);
     if (response?.ok) {
-      requestLog.push({ seq, phase, attempt, status: response.status, elapsed, seed: seedFor(attempt) });
+      requestLog.push({ seq, endpoint, phase, attempt, status: response.status, elapsed, seed: seedFor(attempt) });
       return response;
     }
     const status = response?.status ?? 0;
@@ -175,7 +191,7 @@ globalThis.fetch = async (input, init = {}) => {
     const rateLimited = status === 429;
     const serverError = status >= 500 || !!networkError;
     requestLog.push({
-      seq, phase, attempt, status: status || 'NETWORK', elapsed, seed: seedFor(attempt),
+      seq, endpoint, phase, attempt, status: status || 'NETWORK', elapsed, seed: seedFor(attempt),
       error: (errorText || String(networkError ?? '')).slice(0, 160),
     });
     if ((!freeTier && !rateLimited && !serverError) || attempt === MAX_RETRIES) return response ?? Promise.reject(networkError);
@@ -184,7 +200,7 @@ globalThis.fetch = async (input, init = {}) => {
       : rateLimited
         ? 8000 + Math.floor(Math.random() * 7000)
         : 1500 + Math.floor(Math.random() * 1500);
-    console.log(`[real-chain] ${phase} 第 ${attempt} 次失败（${status || '网络'}${freeTier ? ' · 换 session' : ''}），${delay}ms 后重试`);
+    console.log(`[real-chain] ${endpoint}/${phase} 第 ${attempt} 次失败（${status || '网络'}${freeTier ? ' · 换 session' : ''}），${delay}ms 后重试`);
     await sleep(delay);
   }
   throw new Error('[real-chain] 重试耗尽');
@@ -404,7 +420,14 @@ if (resumePath) {
     runId: checkpoint.runId ?? RUN_ID,
     apiBase: API_BASE,
     model: MODEL,
-    preset: { ...(checkpoint.preset ?? checkpoint.report?.preset ?? {}), autonomy: AUTONOMY },
+    preset: {
+      ...(checkpoint.preset ?? checkpoint.report?.preset ?? {}),
+      autonomy: AUTONOMY,
+      plannerModel: MODEL,
+      storyModel: STORY_MODEL,
+      // 只记录 URL（不记录 key）；未配置混合端点时标为 inherit。
+      storyApiBase: STORY_API_BASE || '(inherit)',
+    },
     settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
     turns: checkpoint.report?.turns ?? [],
     requests: requestLog,
@@ -431,6 +454,10 @@ if (resumePath) {
       backgroundId: background?.id,
       worldBookId: worldBook?.id,
       autonomy: AUTONOMY,
+      plannerModel: MODEL,
+      storyModel: STORY_MODEL,
+      // 只记录 URL（不记录 key）；未配置混合端点时标为 inherit。
+      storyApiBase: STORY_API_BASE || '(inherit)',
     },
     settings: { storyMaxTokens: MAX_TOKENS, plannerToolsEnabled: TOOLS_ENABLED },
     turns: [],
