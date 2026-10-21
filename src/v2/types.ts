@@ -46,6 +46,25 @@ export type ModelActivityV2 =
     error?: string;
   }
   | {
+    /**
+     * story 阶段内部自动重试信号（阶段级重试，T3）。
+     *
+     * 发出时上一次 story 尝试已经通过 `onStoryDelta` 实时透出过部分正文/思考，
+     * 消费方（游戏页）必须丢弃本轮流式预览（stream / streamBuffer）并清空 story 思考，
+     * 否则重试得到的正文会拼在半截文本后面。重试本身不改变阶段状态（仍为 started），
+     * 因此不是 `phase` 事件，单独用这个类型区分，避免面板把阶段误判为失败。
+     */
+    type: 'phase_restart';
+    phase: 'story';
+    model: string;
+    /** 即将开始的尝试序号（1 为首次尝试；2 表示第一次重试）。 */
+    attempt: number;
+    /** 本阶段允许的最大尝试次数。 */
+    maxAttempts: number;
+    /** 触发重试的失败原因（截断/供应商错误/网络瞬时错误等），已截断为可读长度。 */
+    reason: string;
+  }
+  | {
     type: 'thinking_delta';
     phase: ModelPhaseV2;
     model: string;

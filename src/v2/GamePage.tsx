@@ -62,6 +62,27 @@ import type { StoryAct } from '@/types/content';
 /** 回合失败时自动重跑整回合的次数（不含结算单独重试）。 */
 const MAX_TURN_AUTO_RETRIES = 1;
 
+/**
+ * story 阶段内部自动重试（engine 的 `phase_restart` 信号）到达时，要清空的流式预览。
+ *
+ * 失败的那次尝试已经通过 `onStoryDelta` 实时透出过正文；engine 会用同一份请求重跑 story
+ * 并重新流式输出，若不先清空，界面会把"半截正文 + 完整正文"拼在一起。
+ * 返回值分别写回 `stream` state 与 `streamBufferRef`；抽成纯函数便于单测。
+ */
+export function clearedStoryStreamPreview(): { stream: ''; streamBuffer: '' } {
+  return { stream: '', streamBuffer: '' };
+}
+
+/**
+ * story 重试信号到达时重置思考内容：只清 story 通道，planner_pre / planner_post 已经
+ * 产出的思考保留（否则司辰仪面板里前两阶段的思考会凭空消失）。纯函数，便于单测。
+ */
+export function clearStoryThinking(
+  thinking: Record<ModelPhaseV2, string>,
+): Record<ModelPhaseV2, string> {
+  return { ...thinking, story: '' };
+}
+
 const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> = [
   { id: 'slow', label: '慢叙事', hint: '细致到每个动作，只推进很小节拍' },
   { id: 'standard', label: '标准', hint: '完成一次主要行动或一个场景' },
@@ -1210,13 +1231,23 @@ export default function GamePageV2() {
             }
           },
           onModelActivity: (activity) => {
+            if (runIdRef.current !== runId) return;
+            if (activity.type === 'phase_restart' && activity.phase === 'story') {
+              // engine 在 story 内部自动重试前发出该信号：失败尝试已经透出的流式预览必须
+              // 立即丢弃，否则重试正文会与半截文本拼接。清理逻辑见文件顶部的纯函数。
+              const cleared = clearedStoryStreamPreview();
+              streamBufferRef.current = cleared.streamBuffer;
+              setStream(cleared.stream);
+              setThinking((current) => clearStoryThinking(current));
+            }
             if (
-              runIdRef.current === runId
-              && (activity.type === 'phase'
-                || activity.type === 'tool'
-                || activity.type === 'usage'
-                || activity.type === 'warning')
+              activity.type === 'phase'
+              || activity.type === 'tool'
+              || activity.type === 'usage'
+              || activity.type === 'warning'
+              || activity.type === 'phase_restart'
             ) {
+              // phase_restart 本身不渲染，但一并留档，便于活动流按顺序还原"哪一次尝试中断了"。
               setActivities((current) => [...current, activity]);
             }
           },

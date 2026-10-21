@@ -11,6 +11,7 @@ import { resolvePlannerModel, resolveStoryModel } from '@/lib/agentModels';
 import { normalizeChoices } from '@/lib/actions';
 import { extractJSON, genId } from '@/lib/utils';
 import { joinThinking } from '@/lib/thinking';
+import { isRetryableTurnError } from '@/lib/retry';
 import type { LlmUsage } from '@/types/llm';
 import type { RoleInjectConfig } from '@/types/settings';
 import type { WorldBookEntry } from '@/types/content';
@@ -264,6 +265,46 @@ const PROVIDER_ERROR_TEXT_PATTERN = /(?:could not be submitted|sensitive words|c
 
 export function looksLikeProviderErrorText(rawStory: string): boolean {
   return PROVIDER_ERROR_TEXT_PATTERN.test(String(rawStory ?? ''));
+}
+
+/**
+ * story 阶段最多尝试次数（首次 + 1 次重试）。
+ *
+ * 只发生在 engine 内部：planner_pre 已成功返回合法规划后，story 因流式中断/截断/
+ * 供应商错误失败时，复用同一份 brief / 窗口 / 随机事件计划只重跑 story，
+ * 不再让前端整回合重来（gemini 单回合 117s，整轮重跑代价过高，且会重抽随机事件）。
+ * 上限固定为 2：内容审核这类稳定拒绝重试一次仍失败就放弃，交给整回合兜底重试。
+ */
+export const STORY_MAX_ATTEMPTS = 2;
+
+/**
+ * 判断 story 阶段失败是否值得在 engine 内部重试一次。
+ *
+ * 可重试：
+ * - 正文截断（过短 / 句尾缺终结标点，`isStoryStreamTruncated`）；
+ * - 反代把供应商错误当正文返回（`looksLikeProviderErrorText`，例如 sensitive words）；
+ * - `finish_reason=length|content_filter`（一次性抖动偏多；第二次仍失败就放弃）；
+ * - 网络/限流/5xx 等瞬时错误：复用 `lib/retry` 的回合级分类，保持与前端整轮重试同一口径。
+ *
+ * 不重试：用户取消（AbortSignal / AbortError / TimeoutError）、认证/权限类错误、
+ * planner_pre 抛出的错误（永远不会进入本分类）。最终失败仍抛原始错误。
+ */
+export function isRetryableStoryError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return false;
+  if (!error || typeof error !== 'object') return false;
+  const name = (error as { name?: unknown }).name;
+  // 取消/超时不是"再试一次可能成功"的瞬时错误：超时既可能来自用户主动取消，也可能来自
+  // 外部超时控制，重试会违背调用方的取消语义，因此一律不重试。
+  if (name === 'AbortError' || name === 'TimeoutError') return false;
+  const message = errorMessage(error);
+  if (!message.trim()) return false;
+  // engine 自己抛出的两类 story 质量失败（错误文案由本文件生成，按文案识别即可）。
+  if (/故事模型输出过短|供应商错误提示而非正文/.test(message)) return true;
+  // ensureModelResult 对 finish_reason=length / content_filter 抛出的错误。
+  if (/模型输出达到上限而被截断|模型内容过滤中止了输出/.test(message)) return true;
+  // 网络/限流/5xx/空内容等瞬时错误：与 GamePage 的整回合重试共用同一份分类，
+  // 认证/取消类错误在那里已被排除。
+  return isRetryableTurnError(error);
 }
 
 /**
@@ -657,6 +698,38 @@ function plannerToolHandler(
     }
     return { error: `未知工具：${call.name}` };
   };
+}
+
+/**
+ * 通知 UI：story 阶段即将重试。
+ *
+ * 1. 结构化信号 `phase_restart`：游戏页据此丢弃失败尝试已透出的流式正文与 story 思考
+ *    （否则重试正文会拼在半截文本后面），并可用于统计自动重试次数。
+ * 2. warning 活动：复用既有「司辰仪」警告渲染，给玩家一条可读提示
+ *    「故事流中断，已自动重试」；面板不需要新增渲染分支。
+ *
+ * 重试不改变阶段状态：story 仍是 started，因此不发 `phase failed`，
+ * 避免面板把中间失败误显示成整轮失败。
+ */
+function emitStoryRestart(p: TurnRequestV2, model: string, attempt: number, reason: string) {
+  const briefReason = reason.replace(/\s+/g, ' ').trim().slice(0, 160);
+  emitActivity(p, {
+    type: 'phase_restart',
+    phase: 'story',
+    model,
+    attempt,
+    maxAttempts: STORY_MAX_ATTEMPTS,
+    reason: briefReason,
+  });
+  emitActivity(p, {
+    type: 'warning',
+    phase: 'story',
+    model,
+    code: 'story_stream_restarted',
+    path: 'story',
+    message: `故事流中断，已自动重试（第 ${attempt}/${STORY_MAX_ATTEMPTS} 次尝试）：${briefReason}`,
+  });
+  console.warn(`[V2 story] 故事流中断，自动重试 ${attempt}/${STORY_MAX_ATTEMPTS}：${briefReason}`);
 }
 
 function emitThinking(p: TurnRequestV2, phase: ModelPhaseV2, model: string, text: string) {
@@ -1143,48 +1216,78 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     paceCorrectionAlert,
   ].filter(Boolean).join('\n');
 
-  emitPhase(p, 'story', storyModel, 'started');
-  let story;
-  try {
-    // story 可走独立连接（混合端点）；planner_pre / planner_post 始终用 plannerCfg。
-    story = await chatStreamDetailed(storyCfg, {
-      model: storyModel,
-      temperature: p.settings.temperatureStory,
-      maxTokens: p.settings.storyMaxTokens || undefined,
-      signal: p.signal,
-      ...(thinking ? { thinking } : {}),
-      ...(storyReasoningEffort ? { reasoningEffort: storyReasoningEffort } : {}),
-      messages: [
-        { role: 'system', content: storyPrompt },
-        { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
-        // 固定写作要求在前、可变材料在后（理由同 planner_pre 的注释）。
-        // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
-        // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
-        // story 的 user 消息以【NARRATIVE_PACE】开头）。
-        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${buildWritingExecutionAnchor(storyProfile)}` },
-      ],
-      onThinkingDelta: (text) => collectThinking('story', storyModel, text),
-      onDelta: (text) => {
-        safelyNotify(() => p.onStoryDelta?.(text));
-        emitOutput(p, 'story', storyModel, text);
-      },
-    });
-    ensureModelResult('story', story);
-    if (looksLikeProviderErrorText(story.text)) {
-      throw new Error('故事模型返回的是供应商错误提示而非正文（疑似内容审核/密钥/限额/模型错误），未提交本回合；请重试或更换模型。');
-    }
-    if (isStoryStreamTruncated(story.text)) {
-      throw new Error(`故事模型输出过短或未写完（${String(story.text ?? '').trim().length} 字，句尾缺少终结标点，疑似流式截断），未提交本回合；请重试。`);
-    }
-    turnCalls.push({ phase: 'story', model: storyModel, input: story.trace, output: story.text, thinking: story.thinking, usage: story.usage });
-    emitUsage(p, 'story', storyModel, story.usage);
-    emitPhase(p, 'story', storyModel, 'completed');
-  } catch (error) {
-    emitPhase(p, 'story', storyModel, 'failed', error);
-    throw error;
-  }
-
+  // 本轮 commitId 在 story 之前确定：story 内部重试与后续 planner_post 必须共用同一个
+  // 提交标识；写后结算失败后的续跑（TurnPartialV2）也会复用它。
   const commitId = genId('commit');
+  // story 请求参数只构造一次：重试时必须复用同一轮 brief / 三幕窗口 / 动态世界书 /
+  // 随机事件计划 / beatsThisTurn / 节奏纠偏，不得重抽随机事件，也保证两次尝试的请求
+  // 逐字节相同（测试据此断言）。唯一按尝试变化的是流式回调（见下）。
+  const storyParams: Omit<Parameters<typeof chatStreamDetailed>[1], 'onDelta' | 'onThinkingDelta'> = {
+    model: storyModel,
+    temperature: p.settings.temperatureStory,
+    maxTokens: p.settings.storyMaxTokens || undefined,
+    signal: p.signal,
+    ...(thinking ? { thinking } : {}),
+    ...(storyReasoningEffort ? { reasoningEffort: storyReasoningEffort } : {}),
+    messages: [
+      { role: 'system', content: storyPrompt },
+      { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
+      // 固定写作要求在前、可变材料在后（理由同 planner_pre 的注释）。
+      // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
+      // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
+      // story 的 user 消息以【NARRATIVE_PACE】开头）。
+      { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${buildWritingExecutionAnchor(storyProfile)}` },
+    ],
+  };
+  emitPhase(p, 'story', storyModel, 'started');
+  let story: Awaited<ReturnType<typeof chatStreamDetailed>> | undefined;
+  // 当前尝试收集到的 story 思考增量；只有最终成功那次会并入 turnThinkingParts，
+  // 失败尝试的思考不进入回合留档（UI 侧由 phase_restart 信号清空实时思考）。
+  let storyThinkingParts: string[] = [];
+  for (let attempt = 1; attempt <= STORY_MAX_ATTEMPTS; attempt += 1) {
+    storyThinkingParts = [];
+    try {
+      // story 可走独立连接（混合端点）；planner_pre / planner_post 始终用 plannerCfg。
+      story = await chatStreamDetailed(storyCfg, {
+        ...storyParams,
+        onThinkingDelta: (text) => {
+          if (text) storyThinkingParts.push(text);
+          emitThinking(p, 'story', storyModel, text);
+        },
+        onDelta: (text) => {
+          safelyNotify(() => p.onStoryDelta?.(text));
+          emitOutput(p, 'story', storyModel, text);
+        },
+      });
+      ensureModelResult('story', story);
+      if (looksLikeProviderErrorText(story.text)) {
+        throw new Error('故事模型返回的是供应商错误提示而非正文（疑似内容审核/密钥/限额/模型错误），未提交本回合；请重试或更换模型。');
+      }
+      if (isStoryStreamTruncated(story.text)) {
+        throw new Error(`故事模型输出过短或未写完（${String(story.text ?? '').trim().length} 字，句尾缺少终结标点，疑似流式截断），未提交本回合；请重试。`);
+      }
+      break;
+    } catch (error) {
+      const finalAttempt = attempt >= STORY_MAX_ATTEMPTS;
+      if (finalAttempt || !isRetryableStoryError(error, p.signal)) {
+        // 最终失败行为不变：抛原始错误，GamePage 的整回合自动重试仍作为第二道防线。
+        emitPhase(p, 'story', storyModel, 'failed', error);
+        throw error;
+      }
+      // 阶段级重试：只重跑 story，复用同一份 storyParams（planner_pre 请求数保持 1 次）。
+      // 先发出 restart 信号让前端丢弃失败尝试已透出的流式正文与思考。
+      emitStoryRestart(p, storyModel, attempt + 1, errorMessage(error));
+    }
+  }
+  if (!story) {
+    // 循环要么 break 拿到 story，要么在 catch 中抛出；这里只做类型收窄与兜底。
+    throw new Error('故事模型未返回正文，请重试本回合。');
+  }
+  turnThinkingParts.push(...storyThinkingParts);
+  turnCalls.push({ phase: 'story', model: storyModel, input: story.trace, output: story.text, thinking: story.thinking, usage: story.usage });
+  emitUsage(p, 'story', storyModel, story.usage);
+  emitPhase(p, 'story', storyModel, 'completed');
+
   // planner_post + Patch 解析 + 提交 + history/turnRecord 组装统一走 runPostAndCommitV2：
   // 首次执行与“仅重试结算”共用同一份逻辑，避免两条路径漂移。
   return runPostAndCommitV2(p, runtime, {

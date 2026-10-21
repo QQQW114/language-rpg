@@ -9,7 +9,7 @@
  *   1. chat 格式三阶段完整回合（含工具调用轮）
  *   2. 真实 store 落盘：turn/revision/history/checkpoint/v3 存档结构
  *   3. 第二轮（多回合累积）与上下文注入（recent 历史、worldFacts）
- *   4. 失败路径：story 被 max_tokens 截断时必须整回合失败且不提交状态
+ *   4. 失败路径：story 被 max_tokens 截断时必须重试一次后整回合失败且不提交状态（v2.2.1 story 阶段自动重试）
  *   5. 非 2xx 错误透传（429）
  *   6. storyMaxTokens 传递与认证头字段
  *
@@ -378,6 +378,9 @@ requests.length = 0;
 script = [
   { kind: 'text', chunks: [JSON.stringify(PRE_BRIEF)] },
   { kind: 'text', chunks: ['半截正文……'], extra: { finishReason: 'length' } },
+  // v2.2.1 起 story 阶段内部会自动重试一次，因此准备第二次截断响应；
+  // 两次都失败才整回合失败，且仍不得调用 planner_post。
+  { kind: 'text', chunks: ['第二次仍然半截……'], extra: { finishReason: 'length' } },
 ];
 cursor = 0;
 let turnError;
@@ -386,7 +389,7 @@ try {
 } catch (error) { turnError = error; }
 check('story 截断时抛错', !!turnError, '未抛错');
 check('截断错误信息可读（含"上限/截断"字样）', /上限|截断/.test(String(turnError?.message)), String(turnError?.message));
-check('截断时未调用 planner_post（仅 2 次请求）', requests.length === 2, `实际 ${requests.length}`);
+check('截断时 story 自动重试一次后仍失败、未调用 planner_post（共 3 次请求）', requests.length === 3, `实际 ${requests.length}`);
 report.scenarios.push({ name: 'story 截断', requests: requests.length, error: String(turnError?.message) });
 
 // =====================================================================

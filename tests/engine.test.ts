@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeDestinyPatch, runTurnSettlementV2, runTurnV2, TurnPostFailureV2 } from '@/v2/engine';
+import { isRetryableStoryError, normalizeDestinyPatch, runTurnSettlementV2, runTurnV2, STORY_MAX_ATTEMPTS, TurnPostFailureV2 } from '@/v2/engine';
+import { clearStoryThinking, clearedStoryStreamPreview } from '@/v2/GamePage';
 import { PACE_LENGTH_LIMIT } from '@/v2/paceGuard';
 import type { AppSettings } from '@/types/settings';
 import type { GameStateV2, ModelActivityV2, ModelPhaseV2, ModelPhaseStatusV2, TurnPartialV2, TurnRequestV2 } from '@/v2/types';
@@ -452,14 +453,15 @@ describe('engine.runTurnV2 — 端到端（mock fetch）', () => {
     );
   });
 
-  it('故事阶段 finish_reason=length 时抛错且不调用 planner_post', async () => {
+  it('故事阶段 finish_reason=length 时内部重试一次仍失败，且不调用 planner_post', async () => {
     const request = makeRequest();
     await withFetchMock(
       phaseHandler({ story: () => storyStream({ finishReason: 'length' }) }),
       async (mock) => {
         await assert.rejects(() => runTurnV2(request), /模型输出达到上限而被截断/);
-        assert.equal(mock.requests.length, 2, 'planner_post 不应被调用');
-        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story']);
+        // T3 阶段级重试：story 首次截断后会复用 planner_pre 结果再尝试一次（共 2 次 story）。
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'story']);
+        assert.equal(mock.requests.length, 3, 'planner_post 不应被调用');
       },
     );
   });
@@ -2496,4 +2498,259 @@ describe('engine.runTurnV2 — 故事阶段独立连接（混合端点）', () =
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// L. T3 阶段级重试：story 失败复用已成功的 planner_pre，只重跑 story
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — story 阶段级重试（T3）', () => {
+  /** 短于 STORY_MIN_OUTPUT_CHARS 且句尾无终结标点：必然命中 isStoryStreamTruncated。 */
+  const TRUNCATED_STORY = '这里是一段被流式截断的半句正文还没有写到句尾';
+  const PROVIDER_ERROR_STORY = 'The prompt could not be submitted. The prompt contains sensitive words that violate the content policy. Please send feedback.';
+
+  it('story 首次截断、第二次成功：planner_pre 只 1 次、story 2 次，最终按正常三阶段提交', async () => {
+    const activity: ModelActivityV2[] = [];
+    const phases: Array<[ModelPhaseV2, ModelPhaseStatusV2]> = [];
+    const storyDeltas: string[] = [];
+    let storyCount = 0;
+    let result: Awaited<ReturnType<typeof runTurnV2>> | undefined;
+
+    await withFetchMock(
+      phaseHandler({
+        story: () => {
+          storyCount += 1;
+          return storyCount === 1
+            ? storyStream({ text: TRUNCATED_STORY, usage: { prompt_tokens: 11, completion_tokens: 3 } })
+            : storyStream({ usage: { prompt_tokens: 22, completion_tokens: 90 } });
+        },
+      }),
+      async (mock) => {
+        result = await runTurnV2(makeRequest({
+          hooks: {
+            onModelActivity: (item) => activity.push(item),
+            onPhaseChange: (phase, status) => phases.push([phase, status]),
+            onStoryDelta: (text) => storyDeltas.push(text),
+          },
+        }));
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'story', 'planner_post']);
+        // 重试必须复用同一份请求体：同一 brief / 三幕窗口 / 动态世界书 / 随机事件计划 / beatsThisTurn。
+        assert.equal(mock.requests[1].rawBody, mock.requests[2].rawBody, 'story 重试必须与首次请求逐字节相同');
+      },
+    );
+
+    assert.ok(result);
+    assert.equal(storyCount, 2, 'story 应恰好尝试 2 次');
+    assert.equal(result.story, STORY_TEXT, '最终提交的是重试成功那次正文');
+    // 回合留档只含三阶段；story 记录最终那次，usage 也来自成功尝试。
+    const record = result.state.turnRecords?.[0];
+    assert.ok(record, '应写入 turnRecord');
+    assert.deepEqual(record.calls.map((call) => call.phase), ['planner_pre', 'story', 'planner_post']);
+    assert.equal(record.calls[1].output, STORY_TEXT);
+    assert.equal(record.calls[1].usage?.promptTokens, 22, 'story 留档应记录最终成功尝试的 usage');
+    assert.equal(result.usage.story?.completionTokens, 90);
+    // 历史只写入成功正文。
+    assert.equal(result.state.history.at(-1)?.content, STORY_TEXT);
+    assert.ok(!(result.state.history.at(-1)?.content ?? '').includes(TRUNCATED_STORY));
+    // phase 回调：中间失败不发 failed，仍是一次 started → completed。
+    assert.deepEqual(phases, [
+      ['planner_pre', 'started'], ['planner_pre', 'completed'],
+      ['story', 'started'], ['story', 'completed'],
+      ['planner_post', 'started'], ['planner_post', 'completed'],
+    ]);
+    // UI：结构化重试信号 + 可读警告（前端据此清空流式预览）。
+    const restart = activity.find((item) => item.type === 'phase_restart');
+    assert.ok(restart, '应发出 phase_restart 信号');
+    if (restart?.type === 'phase_restart') {
+      assert.equal(restart.phase, 'story');
+      assert.equal(restart.attempt, 2);
+      assert.equal(restart.maxAttempts, STORY_MAX_ATTEMPTS);
+      assert.match(restart.reason, /过短|未写完|截断/);
+    }
+    const restartWarning = activity.find((item) => item.type === 'warning' && item.code === 'story_stream_restarted');
+    assert.ok(restartWarning, '应发出一条可读的自动重试警告');
+    if (restartWarning?.type === 'warning') {
+      assert.match(restartWarning.message, /故事流中断，已自动重试/);
+      assert.match(restartWarning.message, /第 2\/2 次尝试/);
+    }
+    // 失败尝试的正文增量确实透出过（所以前端必须清空），但不进入历史。
+    assert.ok(storyDeltas.join('').includes(TRUNCATED_STORY), '失败尝试的正文增量应已通过 onStoryDelta 透出');
+  });
+
+  it('反代把供应商错误文本当正文返回时，先自动重试一次再成功', async () => {
+    let storyCount = 0;
+    await withFetchMock(
+      phaseHandler({
+        story: () => {
+          storyCount += 1;
+          return storyCount === 1 ? storyStream({ text: PROVIDER_ERROR_STORY }) : storyStream();
+        },
+      }),
+      async (mock) => {
+        const result = await runTurnV2(makeRequest());
+        assert.equal(storyCount, 2, '供应商错误文本属于可重试错误');
+        assert.equal(result.story, STORY_TEXT);
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'story', 'planner_post']);
+      },
+    );
+  });
+
+  it('story 首次 finish_reason=content_filter、第二次成功：同一个 story 请求自动重试一次', async () => {
+    let storyCount = 0;
+    await withFetchMock(
+      phaseHandler({
+        story: () => {
+          storyCount += 1;
+          return storyCount === 1 ? storyStream({ finishReason: 'content_filter' }) : storyStream();
+        },
+      }),
+      async (mock) => {
+        const result = await runTurnV2(makeRequest());
+        assert.equal(storyCount, 2);
+        assert.equal(result.story, STORY_TEXT);
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'story', 'planner_post']);
+        assert.equal(mock.requests[1].rawBody, mock.requests[2].rawBody, '重试复用同一份 story 请求体');
+      },
+    );
+  });
+
+  it('重试复用随机事件计划：activeBinding / lastPlan / 调度数值不因重试而变化', async () => {
+    const dueRandomEvent = {
+      enabled: true,
+      nextTriggerTurn: 1,
+      pending: false,
+      intensity: 'related' as const,
+      triggerIntervalMin: 2,
+      triggerIntervalMax: 2,
+    };
+    const plannedBrief = {
+      ...BRIEF,
+      randomEvent: { planned: true, targetKind: 'beat', targetId: 'beat-1-1', summary: '让阿黎在雨夜交出旧信' },
+    };
+    const requestOf = () => makeRequest({ state: { randomEvent: { ...dueRandomEvent } } });
+    // 参照组：不触发重试的正常回合。
+    const normal = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(plannedBrief) }),
+      () => runTurnV2(requestOf()),
+    );
+    // 重试组：第一次 story 截断，第二次成功。
+    let storyCount = 0;
+    const retried = await withFetchMock(
+      phaseHandler({
+        brief: () => jsonStream(plannedBrief),
+        story: () => {
+          storyCount += 1;
+          return storyCount === 1 ? storyStream({ text: TRUNCATED_STORY }) : storyStream();
+        },
+      }),
+      () => runTurnV2(requestOf()),
+    );
+    assert.equal(storyCount, 2);
+    assert.equal(retried.state.randomEvent.activeBinding?.targetId, 'beat-1-1');
+    assert.equal(retried.state.randomEvent.lastPlan, '让阿黎在雨夜交出旧信');
+    assert.deepEqual(retried.state.randomEvent, normal.state.randomEvent, '随机事件锚点/数值不因 story 重试变化');
+    assert.deepEqual(retried.state.destiny, normal.state.destiny, '命运状态同样不因 story 重试变化');
+  });
+
+  it('用户取消（AbortSignal/AbortError）不触发 story 重试，直接抛原错误', async () => {
+    const controller = new AbortController();
+    let storyCount = 0;
+    await withFetchMock((recorded) => {
+      const system = systemPromptOf(recorded);
+      if (system.includes('写前规划 Agent')) return jsonStream(BRIEF);
+      storyCount += 1;
+      // 模拟用户取消：先 abort，再让请求以 AbortError 失败（llmClient 的首层传输重试同样不应重发）。
+      controller.abort();
+      throw new DOMException('Aborted', 'AbortError');
+    }, async (mock) => {
+      await assert.rejects(
+        () => runTurnV2(makeRequest({ hooks: { signal: controller.signal } })),
+        (error: unknown) => {
+          assert.equal((error as Error).name, 'AbortError', '应抛原始 AbortError');
+          return true;
+        },
+      );
+      assert.equal(storyCount, 1, '取消不应重试 story');
+      assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story']);
+    });
+  });
+
+  it('两次 story 都截断时仍抛原错误，且不进入 planner_post', async () => {
+    let storyCount = 0;
+    await withFetchMock(
+      phaseHandler({
+        story: () => {
+          storyCount += 1;
+          return storyStream({ text: TRUNCATED_STORY });
+        },
+      }),
+      async (mock) => {
+        await assert.rejects(() => runTurnV2(makeRequest()), /故事模型输出过短或未写完/);
+        assert.equal(storyCount, 2, '最多尝试 2 次');
+        assert.deepEqual(mock.requests.map(phaseOf), ['planner_pre', 'story', 'story']);
+      },
+    );
+  });
+});
+
+describe('engine.isRetryableStoryError — 阶段级重试边界', () => {
+  it('STORY_MAX_ATTEMPTS 固定为 2（首次 + 1 次重试）', () => {
+    assert.equal(STORY_MAX_ATTEMPTS, 2);
+  });
+
+  it('截断 / 供应商错误文本 / finish_reason=length|content_filter / 瞬时网络错误可重试', () => {
+    const retryable = [
+      new Error('故事模型输出过短或未写完（12 字，句尾缺少终结标点，疑似流式截断），未提交本回合；请重试。'),
+      new Error('故事模型返回的是供应商错误提示而非正文（疑似内容审核/密钥/限额/模型错误），未提交本回合；请重试或更换模型。'),
+      new Error('故事模型正在生成正文失败：模型输出达到上限而被截断，未提交本回合状态。'),
+      new Error('故事模型正在生成正文失败：模型内容过滤中止了输出。'),
+      new Error('模型请求失败（503）：upstream unavailable'),
+      new Error('fetch failed'),
+      new Error('请求超时（timeout）'),
+    ];
+    for (const error of retryable) {
+      assert.equal(isRetryableStoryError(error), true, `应可重试：${error.message}`);
+    }
+  });
+
+  it('取消 / 认证类 / 空错误不可重试', () => {
+    const nonRetryable = [
+      new Error('未配置 API Key，请先在设置中填写'),
+      new Error('模型请求失败（401）：unauthorized'),
+      new Error('模型请求失败（403）：permission denied'),
+      new Error(''),
+    ];
+    for (const error of nonRetryable) {
+      assert.equal(isRetryableStoryError(error), false, `不应重试：${JSON.stringify(error.message)}`);
+    }
+    for (const name of ['AbortError', 'TimeoutError']) {
+      const error = new Error('故事模型输出过短');
+      error.name = name;
+      assert.equal(isRetryableStoryError(error), false, `${name} 不应被当作可重试`);
+    }
+    const controller = new AbortController();
+    controller.abort();
+    assert.equal(isRetryableStoryError(new Error('fetch failed'), controller.signal), false, 'AbortSignal 已取消时不重试');
+  });
+});
+
+describe('GamePage — story 重试信号的流式清理（纯函数）', () => {
+  it('清空流式正文预览（stream 与 streamBuffer 两个写回点）', () => {
+    assert.deepEqual(clearedStoryStreamPreview(), { stream: '', streamBuffer: '' });
+  });
+
+  it('只清 story 思考，保留 planner_pre / planner_post 已产出的思考，且不修改入参', () => {
+    const thinking: Record<ModelPhaseV2, string> = {
+      planner_pre: '规划阶段思考',
+      story: '第一次尝试的半截思考',
+      planner_post: '结算阶段思考',
+    };
+    const cleared = clearStoryThinking(thinking);
+    assert.equal(cleared.story, '');
+    assert.equal(cleared.planner_pre, '规划阶段思考');
+    assert.equal(cleared.planner_post, '结算阶段思考');
+    assert.equal(thinking.story, '第一次尝试的半截思考', '纯函数不得修改入参');
+    assert.deepEqual(clearStoryThinking(cleared), cleared, '幂等：重复清理结果不变');
+  });
+});
+
 
