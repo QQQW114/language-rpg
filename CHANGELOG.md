@@ -2,7 +2,9 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
-## [未发布]
+## [0.6.0] - 2026-10-21
+
+> 发行说明：[`docs/release-notes-v0.6.0.md`](docs/release-notes-v0.6.0.md)
 
 ### 新增
 
@@ -14,10 +16,13 @@
   - story 截断防护升级为“长度 ≥120 且句尾必须有终结标点”，61 个真实回合扫描检出 3/3 断流、0 误杀；新增“供应商错误文本伪装成正文”识别（gemini 反代把敏感词审核错误当 story 返回，长度/标点都正常），命中即拒绝提交。
 - **故事推进权限骨架（与叙事速度解耦）**：新增 `GameStateV2.storyAutonomy`（`strict` 严格遵循 / `standard` 标准推进 / `free` 自由发散，缺省 `standard`，旧存档 hydrate 自动补默认值）。游戏页「自由行动」区新增三档切换，逐回合注入 `【STORY_AUTONOMY】` 到 planner_pre 与 story 的可变区。
 - 规划/写作提示词对推进权限的精细措辞、以及叙事速度的职责收窄，列入下一轮提示词评审；本次只落状态、UI 与注入骨架。
+- **提示词 v2.2.1（篇幅带单一来源）**：把单回合篇幅与展开幅度的唯一事实来源统一到 `【STORY_AUTONOMY】`。story 文风 profile 不再携带数值篇幅带（取代 v2.2 中 `compact` 800~1200 字 / `expressive` 900~1300 字的描述），只保留「正反微示范开关 + 近因锚点长短 + 笔法密度」；同时收掉三处第二套数字：① story system 新增明文优先级——profile / 近因锚点 / 叙事速度与 `【STORY_AUTONOMY】` 冲突时以后者为准；② planner_pre `stopBoundary` 不再说「轮数与篇幅由 STORY_AUTONOMY 与 NARRATIVE_PACE 共同决定」，改为「以 STORY_AUTONOMY 为准，叙事速度只调整镜头焦距与时间流速」；③ story 正文「2~3 个来回的当场对手戏」与 compact 近因锚点「充分展开 2~3 轮」的硬编码轮数删除，展开幅度统一回指 STORY_AUTONOMY。叙事速度四档自此只负责镜头与时间流速，不提供第二套篇幅目标；三阶段 JSON 契约、程序权威状态与前缀缓存结构不变。T4 真实链路验证（2026-10-21）确认单一来源跨模型生效：同 3 条输入下 strict / standard / free 均值 **638 / 1126 / 1477** 字、逐回合单调分离；deepseek 20 回合 p50 1275 / max 2002；gemini 20 回合 20/20、p50 1421 / max 1786、19/19 随机事件 resolved（单次采样 / 固定输入 / 反代无缓存）。
+- **混合端点（story 阶段独立连接，可选）**：设置新增可选 `storyApiBaseUrl` / `storyApiKey`，留空分别继承全局 `apiBaseUrl` / `apiKey`（可只覆盖其中一项）。engine 把运行参数拆成 `plannerCfg`（全局）与 `storyCfg`（story 覆盖）：planner_pre / planner_post / 结算与「仅重试结算」始终走全局，只有 story 走覆盖；联网搜索、规划 JSON 模式与规划思考强度仍只按全局端点判定；`reasoning_effort` 改为按各阶段实际端点判定（story 走非官方反代时不再发送它不认识的字段）。设置页新增「故事模型独立连接（可选）」区块，base / key 分别提示是否继承，独立 Key 只保存在浏览器本地、不回显/日志/活动流/导出报告；默认两字段为空串，旧设置 normalize 后行为零变化。
+- **story 阶段级自动重试（复用已成功的 planner_pre）**：story 因流式截断、供应商错误文本、`finish_reason=length/content_filter`、网络 / 429 / 5xx 等瞬时错误失败时，engine 内部最多尝试 **2 次**（首次 + 1 次重试）；重试复用同一份 `storyParams`（brief / 三幕窗口 / 随机事件计划 / 节拍 / 纠偏文本与 `commitId`），**不重跑 planner_pre、不重抽随机事件**。新增 `phase_restart` 活动信号与 `story_stream_restarted` 警告，游戏页据此清空失败尝试已透出的流式正文与 story 思考（保留规划 / 结算思考），不会拼出两段正文；失败尝试不进入 `turnRecord`。用户取消 / 超时 / 认证错误不重试；最终失败仍抛原始错误，由整回合重试兜底。
 
 ### 修复
 
-- **异常短正文被当成成功回合提交**：gemini-3.8f 真实长局里出现过 6 字正文（"下了课借口去"），流式输出被截断但 `finish_reason` 正常，旧逻辑只拒绝空串，于是把半句残文写进历史并推进状态。现在 story 阶段增加最小长度护栏（`STORY_MIN_OUTPUT_CHARS = 80`）：低于该长度直接判本回合失败、不提交，由前端/冒烟脚本重试。
+- **异常短正文被当成成功回合提交**：gemini-3.8f 真实长局里出现过 6 字正文（"下了课借口去"），流式输出被截断但 `finish_reason` 正常，旧逻辑只拒绝空串，于是把半句残文写进历史并推进状态。现在 story 阶段使用“长度 ≥120 且句尾必须有终结标点”的护栏（`STORY_MIN_OUTPUT_CHARS = 120` + `isStoryStreamTruncated`），并把供应商错误文本（内容审核/密钥/限额等）也判为失败；低于门槛直接判本回合失败、不提交，由前端/冒烟脚本重试。
 - **真实 Web 失败恢复（分层重试）**：
   - 传输层：网络错误 / 429 / 5xx 自动重试最多 2 次（指数退避），认证失败与用户取消不重试；
   - 解析层：planner_pre / planner_post 返回非法 JSON 时自动做一次 JSON 修复重试（只重发当前阶段，不重跑整轮），仍失败才报错；
@@ -26,7 +31,9 @@
 
 ### 测试
 
-- 单元测试 562 → **580 条 / 22 个测试文件**：新增推进权限三档注入、缺省值、叙事节奏前缀顺序 2 条；fixtures 补 `storyAutonomy` 以保持导入导出往返一致；新增异常短正文/半句断流/供应商错误文本拒绝、文风 profile、planner_post 引号约束、推进权限与节奏正交文案等 6 条；新增 planner JSON 修复重试、传输层 429/5xx 重试策略、`sleepWithAbort` 等 7 条；e2e 43 → **44 条**（429 重试 3 次、非法 JSON 修复重试各 1 条）。
+- 单元测试 562 → **580 条 / 23 个测试文件**：新增推进权限三档注入、缺省值、叙事节奏前缀顺序 2 条；fixtures 补 `storyAutonomy` 以保持导入导出往返一致；新增异常短正文/半句断流/供应商错误文本拒绝、文风 profile、planner_post 引号约束、推进权限与节奏正交文案等 6 条；新增 planner JSON 修复重试、传输层 429/5xx 重试策略、`sleepWithAbort` 等 7 条；e2e 43 → **44 条**（429 重试 3 次、非法 JSON 修复重试各 1 条）。v2.2.1 只重写 `tests/engine.test.ts` 的 profile 断言（验证单一来源与“system 不得写死篇幅带”），未新增用例，总数不变。
+- **混合端点与阶段级重试的测试**：单元测试 580 → **591**（混合端点：engine 5 条 + 新增 `tests/settings.test.ts` 6 条）→ **602**（阶段级重试：engine 11 条）；当前 **602 条 / 24 个测试文件**；e2e **44 条**（T3 更新了场景 3 的脚本：两次截断后触发阶段重试，断言数不变）。
+- **T4 v2.2.1 真实链路验证（2026-10-21）**：A 组 deepseek-flash × 错位青春 20 回合 20/20、60/60 请求 200，字数 p50 **1275** / max **2002**，3 次切幕；B/C/D strict / standard / free 各 3 回合均值 **638 / 1126 / 1477** 字（逐回合单调分离）；E/F gemini 3 回合组 3/3；G 组 gemini × 错位青春 20 回合 20/20、**62/62 请求 200**、0 内容审核拦截 / 0 结算失败，字数 p50 **1421** / max **1786**，延迟 p50 **116.7s**（约 deepseek 的 1.7 倍），**19/19 随机事件 resolved 且绑定合法**，3 次切幕终态 4/5（完成度 75%）；T12 一次 story 截断（65 字、无句尾标点）被 engine 拒绝提交，baseline（T3 之前）harness 整回合重跑成功、多花 2 次请求（T3 后应只重跑 story）；gemini 反代无缓存（暖机 pre 5.2% / story 0.4% / post 0%）。**H 组混合端点（T2b）**：planner/post deepseek-flash + story gemini，3/3 回合、9/9 请求 200（planner base 6 / story base 3），story 确实走独立 base 与独立模型，planner 缓存保留（pre 31.9% / post 28.3%）、story 0%。caveat：单次采样 / 固定输入 / 反代无缓存，详见 `test-runs/v22-validation.md`（被 gitignore）与 `docs/temp/gemini-4-argon-review/07-v2.2.1-validation-and-next-review.md`。
 
 ## [0.5.2] - 2026-10-20
 

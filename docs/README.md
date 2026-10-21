@@ -19,6 +19,7 @@
 - [`release-notes-v0.5.0.md`](release-notes-v0.5.0.md)：v0.5.0 发行说明（Prompt Pack v2.1、幕系统、阅读前端）。
 - [`release-notes-v0.5.1.md`](release-notes-v0.5.1.md)：v0.5.1 发行说明（新增两个内置预设与文档整理）。
 - [`release-notes-v0.5.2.md`](release-notes-v0.5.2.md)：v0.5.2 发行说明（故事推荐出身 + 两个预设主角）。
+- [`release-notes-v0.6.0.md`](release-notes-v0.6.0.md)：v0.6.0 发行说明（Prompt Pack v2.2/v2.2.1、失败恢复、混合端点、阶段级重试）。
 - [`release-notes-v0.3.0.md`](release-notes-v0.3.0.md)：v0.3.0 发布说明。
 
 仓库根目录另有：
