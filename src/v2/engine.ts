@@ -38,7 +38,7 @@ ${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 1. beatsThisTurn（必须在本轮落地的客观结果）：只写本轮要推进的原子节拍，数量由【STORY_AUTONOMY】决定（严格遵循 0~1 个、标准推进 1~2 个、自由发散 1~3 个；严格遵循档若玩家只做原地微动作/观察，允许只推进 active 节拍的局部而不强求本轮 satisfied）。每条用一句话写清本轮在到达stopBoundary之前必须已经实质达成的“客观事实、关系进展或情报结果”（供写后结算判定satisfied）。只写结果底线，不写动作流水账，不得激活窗口未列出的后续故事节。若玩家本轮输入已跨入新的一天或新场景，此前遗留的当日限时琐事（如“今晚某点前交表/核对”）自动视为已翻篇或改期，严禁在新时间线里继续复读旧死线阻塞当前故事节。
 2. writingBrief（戏剧张力与潜台词，严禁写成分镜脚本）：只描述本轮的场景处境、在场人物各自的真实意图或隐秘顾虑、以及双方互动的核心戏剧张力。严禁在writingBrief中替故事模型编写具体台词句子、严禁把多个设定关键词打包塞给单一角色念出、严禁规定“先看哪里、停顿几秒、怎么翻东西”等微动作步骤。对于前文已经发生过的日常重复流程（如变身、换装、查验随身证件、刷门禁、洗漱通勤等），若本轮无新意外，必须在writingBrief中指示“一笔带过日常流程，直接切入核心互动”。上一回合正文已经具体演过的对话包袱、玩梗或刚确认过的信息（如已聊过的逃课掩护、已点过的菜名），本轮严禁在writingBrief中安排角色重复再演一遍，必须往前推进新话头。
 3. creativeSpace（编剧自由度授权）：明确列出本轮交由故事模型自由发挥的空间（例如：如何通过日常琐事或打岔自然带出情报、如何用具体生活化小动作体现人物暗中留意或戒备，而非直白说破或干瞪眼）。
-4. stopBoundary（节拍兑现后的交互悬置切面）：单回合的交锋轮数与篇幅由【STORY_AUTONOMY】与【NARRATIVE_PACE】共同决定（标准/自由档通常包含2到3个回合的当场对话或行动博弈；严格遵循档只写直接反馈即可）。严禁在NPC刚抛出第一句招呼或开场提问时就过早停笔！必须先让beatsThisTurn的核心结果在场景中实质落地，再将stopBoundary设在“结果落地后顺势衍生出的新追问或新状况、正待主角回应的切面”，不得把边界后的动作或后续安排写入writingBrief。
+4. stopBoundary（节拍兑现后的交互悬置切面）：单回合的交锋轮数与篇幅以【STORY_AUTONOMY】为准（叙事速度只调整镜头焦距与时间流速，不提供第二套篇幅目标）。严禁在NPC刚抛出第一句招呼或开场提问时就过早停笔！必须先让beatsThisTurn的核心结果在场景中实质落地，再将stopBoundary设在“结果落地后顺势衍生出的新追问或新状况、正待主角回应的切面”，不得把边界后的动作或后续安排写入writingBrief。
 若本回合注入了【RANDOM_EVENT_CONTEXT】，randomEvent.planned为true时必须同时给出targetKind（beat|thread|relationship|reconvergence）、targetId（只能取自候选目标）与summary（≤80字）；优先回收列出的旧钩子。严禁无绑定的路人事件、纯氛围插曲或为凑事件新增无关角色。`;
 }
 
@@ -50,7 +50,10 @@ export type StoryProfile = 'compact' | 'expressive';
 
 /**
  * 按 story 模型自动选择文风 profile（v2.2 / gemini-4-argon 复审结论）。
- * 轻量蒸馏模型需要微示范与更硬的篇幅带；高表现力模型省掉微示范、改用更短锚点与更宽的篇幅带。
+ *
+ * profile 只控制**笔法密度**（是否带正反微示范）与**近因锚点长短**，不再携带数值篇幅带；
+ * 单回合篇幅与展开幅度由 `【STORY_AUTONOMY】` 统一给出（v2.2.1 单一事实来源），
+ * 否则同一回合会出现两套字数目标互相打架（尤其 strict / free 档）。
  */
 export function resolveStoryProfile(storyModel: string): StoryProfile {
   const model = String(storyModel ?? '').toLowerCase();
@@ -67,9 +70,9 @@ const STORY_MICRO_EXAMPLES = `【文风正反微示范（只学叙事手法与�
   √ 自然鲜活：那声应答落下的瞬间，前排女生的水笔斜着划出去半寸，在讲义边框上拉出一道歪斜的蓝痕。她捏着笔杆的指节往里收了收，偏过头望过来——目光撞上后排那张面孔的刹那，原本准备客套打招呼的嘴唇微微张开，又无声地抿紧了。`;
 
 function buildStorySystem(director: boolean, profile: StoryProfile): string {
-  const lengthLine = profile === 'expressive'
-    ? '2. 场景纵深与详略调度（单回合目标900~1300字，严禁超过1500字）：'
-    : '2. 场景纵深与详略调度（单回合自然篇幅800~1200字）：';
+  // v2.2.1：profile 不再写死数值篇幅带。【STORY_AUTONOMY】（user 消息可变区）是篇幅与
+  // 展开幅度的唯一来源，profile 只控制笔法密度（微示范开关）与近因锚点长短。
+  const lengthLine = '2. 场景纵深与详略调度（目标篇幅以【STORY_AUTONOMY】为准；profile 只控制笔法密度与示范开关）：';
   return `你是互动小说故事 Agent，只写中文小说正文。
 严格遵循权威状态、玩家输入、writingBrief、hardConstraints、forbiddenChanges和stopBoundary。worldFacts与canonicalFacts优先于常见套路。某一事实域变化时，只改变硬设定明确覆盖的范围，不得自动连带改写人物记忆、关系历史、物品数量或过去经历。
 ${director ? storyDirectorAgency : storyPlayerAgency}
@@ -81,8 +84,9 @@ ${director ? storyDirectorAgency : storyPlayerAgency}
 【叙事质感与场景纵深准则】
 1. 纯净文学叙事与自然指代：严禁将状态表中的分类标签（如“XX型舍友”“怀疑者”）当人名写进正文；初见路人可用当下特征临时指代，但一旦角色进入正式互动、自我介绍或落笔签名，必须自然给出并沿用其真实姓名或固定昵称（如“老陈”“林晓”），严禁把“抱书女生”这类临时外貌词跨场景当作固定人名使用。正文结尾严禁输出“【stopBoundary】”等任何系统标记、括号提示或JSON。
 ${lengthLine}
+   - 篇幅优先级：若其他块（profile/锚点/节奏）与【STORY_AUTONOMY】的篇幅目标冲突，以【STORY_AUTONOMY】为准。
    - 极简略写已确立的日常：前文已写过的身份切换、开柜换装、核对证件、刷门禁等重复日常流程，若无新异常一律压缩在1句话以内带过，不重复清点相同道具。
-   - 充分展开当场对手戏：通过2到3个来回的当场对手戏与具体行动把beatsThisTurn自然演出来；一旦对话或行动本身已体现结果，严禁在段末追加总结局势、复盘安全感或替读者归纳“双方轨迹未咬合/没人起疑”的解释性旁白。
+   - 充分展开当场对手戏：通过当场对手戏与具体行动把beatsThisTurn自然演出来（展开幅度与场景纵深以【STORY_AUTONOMY】为准）；一旦对话或行动本身已体现结果，严禁在段末追加总结局势、复盘安全感或替读者归纳“双方轨迹未咬合/没人起疑”的解释性旁白。
 3. 动作有效性与去套话化：人物的戒备、心虚或起疑，必须通过手头具体事务的变形（如写错笔画、拉链卡住、顺手拿话岔开）来折射，写出具体动作后绝不紧跟解释动机的心理旁白。保持语言平实克制，忌用“骤然/猝然/死死/硬生生/近乎失真/无限放大”等过度用力的高频渲染副词；忌用“不是A，而是某种B”的抽象概念解释句；忌将瞬间反应拆成“隔了两秒、先看A再看B、整个人定在那里”的慢镜头套话。
 4. 连载呼吸感与停笔切面：起笔直接切入当前动作或对话；在完整兑现本轮节拍结果后，于stopBoundary所指的交互悬置瞬间（对方抛出新追问或新状况、正待主角接招时）干脆停笔，不写总结升华与事后余波。
 
@@ -102,7 +106,8 @@ ${profile === 'compact' ? STORY_MICRO_EXAMPLES : ''}`;
  * 长上下文会稀释 system 里的文风要求（lost in the middle）：把最容易退化的几条规则
  * 固定在用户消息最后，模型落笔前最后看到的就是它们。放在【CURRENT_TURN_INPUT】之后，
  * 因此不改变 system / user#1 的前缀，也不影响缓存命中。
- * expressive（gemini 等强模型）使用更短锚点，避免刺激凑字数。
+ * expressive（gemini 等强模型）使用更短锚点，避免刺激凑字数；展开幅度与篇幅都交给
+ * `【STORY_AUTONOMY】`，锚点不再写死轮数（否则 strict 档会与锚点互相打架）。
  */
 function buildWritingExecutionAnchor(profile: StoryProfile): string {
   if (profile === 'expressive') {
@@ -110,7 +115,7 @@ function buildWritingExecutionAnchor(profile: StoryProfile): string {
 直接切入当下动作或对话；忌用过度渲染副词与段末总结旁白，在 STOP_BOUNDARY 处干脆停笔。`;
   }
   return `【WRITING_EXECUTION_ANCHOR】
-直接切入当下场景：日常旧流程一笔带过，将笔墨用于充分展开2~3轮鲜活的当场对手戏（篇幅按推进权限目标），扎实兑现本轮节拍结果后，在 STOP_BOUNDARY 处自然停笔（严禁输出任何系统标记）。`;
+直接切入当下场景：日常旧流程一笔带过，将笔墨用于充分展开当场的鲜活对手戏（展开幅度与篇幅均以【STORY_AUTONOMY】为准），扎实兑现本轮节拍结果后，在 STOP_BOUNDARY 处自然停笔（严禁输出任何系统标记）。`;
 }
 
 const plannerPostDirectorAgency = `玩家输入为导演指令，CURRENT_STORY按该指令实际发生；不得因其偏离世界规律或原路线而将其判定为冲突或需要修正。`;
@@ -408,8 +413,10 @@ function paceInstruction(p: TurnRequestV2) {
 /**
  * 故事推进权限（与叙事速度解耦）。
  *
- * 只注入本回合的可变区，不进稳定前缀；显式覆盖节拍数量、停笔距离与篇幅目标，
- * 避免 strict 与"每回合必须写满 800~1200 字"的旧规则互相打架。
+ * 只注入本回合的可变区，不进稳定前缀；显式覆盖节拍数量、停笔距离与篇幅目标。
+ * v2.2.1：这里是**篇幅与展开幅度的唯一事实来源**——story system 的 profile 文案已删除
+ * 数值篇幅带（原先 compact 800~1200 / expressive 900~1300 会与本块互相打架），
+ * 其他块（profile/近因锚点/叙事速度）只负责笔法、锚点与镜头，不再提供第二套字数目标。
  */
 function storyAutonomyInstruction(p: TurnRequestV2) {
   const mode = p.state.storyAutonomy ?? 'standard';

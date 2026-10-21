@@ -2231,24 +2231,48 @@ describe('engine.runTurnV2 — 异常短正文防护', () => {
 });
 
 describe('engine.runTurnV2 — 文风 profile 与结算 JSON 约束', () => {
-  it('expressive（gemini 等强模型）省略文风微示范并使用短锚点；compact 保留微示范', async () => {
+  it('文风 profile 只控制微示范与锚点长短；篇幅带唯一来源是 STORY_AUTONOMY（v2.2.1 回归）', async () => {
+    const systemLengths: number[] = [];
     await withFetchMock(phaseHandler(), async (mock) => {
       await runTurnV2(makeRequest({ settings: { storyModel: 'gemini-3.8-flash-high' } }));
+      const plannerSystem = systemPromptOf(mock.requests[0]);
       const system = systemPromptOf(mock.requests[1]);
       const user = lastUserPromptOf(mock.requests[1]);
+      systemLengths.push(system.length);
       assert.ok(!system.includes('文风正反微示范'), 'expressive 不应带文风微示范');
-      assert.ok(system.includes('单回合目标900~1300字'), 'expressive 应使用强模型篇幅带');
+      assert.ok(system.includes('目标篇幅以【STORY_AUTONOMY】为准'), 'expressive 的篇幅指引应指向 STORY_AUTONOMY');
+      assert.ok(
+        system.includes('若其他块（profile/锚点/节奏）与【STORY_AUTONOMY】的篇幅目标冲突，以【STORY_AUTONOMY】为准。'),
+        'story system 应声明 STORY_AUTONOMY 为篇幅单一来源',
+      );
+      assert.ok(!/\d+~\d+字/.test(system), `story system 不得再写死数值篇幅带（发现 ${/\d+~\d+字/.exec(system)?.[0] ?? '无'}）`);
       assert.ok(user.includes('忌用过度渲染副词与段末总结旁白'), 'expressive 应使用短锚点');
+      assert.ok(user.includes('【STORY_AUTONOMY】') && /\d+~\d+字/.test(user), '数值篇幅带只应出现在 STORY_AUTONOMY（story user）里');
+      // planner_pre 也不得有第二套篇幅目标：stopBoundary 只指向 STORY_AUTONOMY。
+      assert.ok(!/\d+~\d+字/.test(plannerSystem), 'planner_pre system 不得写死数值篇幅带');
+      assert.ok(
+        plannerSystem.includes('单回合的交锋轮数与篇幅以【STORY_AUTONOMY】为准'),
+        'planner stopBoundary 应把篇幅与轮数指向 STORY_AUTONOMY',
+      );
     });
 
     await withFetchMock(phaseHandler(), async (mock) => {
       await runTurnV2(makeRequest({ settings: { storyModel: 'deepseek-flash' } }));
       const system = systemPromptOf(mock.requests[1]);
       const user = lastUserPromptOf(mock.requests[1]);
+      systemLengths.push(system.length);
       assert.ok(system.includes('文风正反微示范'), 'compact 必须保留文风微示范');
-      assert.ok(system.includes('单回合自然篇幅800~1200字'), 'compact 应使用轻量模型篇幅带');
+      assert.ok(system.includes('目标篇幅以【STORY_AUTONOMY】为准'), 'compact 的篇幅指引应指向 STORY_AUTONOMY');
+      assert.ok(!/\d+~\d+字/.test(system), 'compact 的 story system 不得再写死数值篇幅带');
       assert.ok(user.includes('日常旧流程一笔带过'), 'compact 应使用完整锚点');
+      assert.ok(user.includes('【STORY_AUTONOMY】') && /\d+~\d+字/.test(user), '数值篇幅带只应出现在 STORY_AUTONOMY（story user）里');
+      // 近因锚点也不得写死展开轮数（否则 strict 档会与"充分展开"互相打架）。
+      assert.ok(!user.includes('2~3轮'), '近因锚点不得写死展开轮数');
+      assert.ok(user.includes('展开幅度与篇幅均以【STORY_AUTONOMY】为准'), 'compact 锚点应把展开幅度指向 STORY_AUTONOMY');
     });
+
+    // profile 差异仍然保留：compact 带微示范（system 更长），expressive 省掉。
+    assert.ok(systemLengths[1] > systemLengths[0], 'compact 的 system 应因微示范而长于 expressive');
   });
 
   it('planner_post system 明确要求字符串内引号改用中文引号（防 JSON 崩溃）', async () => {
