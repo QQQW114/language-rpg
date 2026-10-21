@@ -197,7 +197,7 @@ function postPatch(overrides = {}) {
   };
 }
 
-const STORY_TEXT = '雨点敲在伞面上，声音细密。林越在街口停下脚步，把伞沿压低了半分——对面门廊下站着一个人，正望着积水的路面。路灯把他的影子拖得很长，风从巷口卷过来，带着潮湿的纸箱气味。林越没急着开口，先把手插进外套口袋，摸到了那枚冰凉的钥匙。';
+const STORY_TEXT = '雨点敲在伞面上，声音细密。林越在街口停下脚步，把伞沿压低了半分——对面门廊下站着一个人，正望着积水的路面。路灯把他的影子拖得很长，风从巷口卷过来，带着潮湿的纸箱气味。林越没急着开口，先把手插进外套口袋，摸到了那枚冰凉的钥匙。他把钥匙在掌心掂了掂，才抬脚往门廊的方向迈过去。';
 
 /** 把 postPatch 的占位符替换成程序会注入的值，得到模型应返回的文本。 */
 function postPatchText(overrides = {}, commitId = 'commit-e2e-1', turn = 0) {
@@ -351,7 +351,7 @@ console.log('\n[场景 2] 第二轮：上下文累积与 recent 注入');
 requests.length = 0;
 script = [
   { kind: 'text', chunks: [JSON.stringify({ ...PRE_BRIEF, intent: '继续对话' })] },
-  { kind: 'text', chunks: ['“我在等人。”对方答道，声音被雨声压得很低。林越往前半步，伞面上的水顺着边缘滴下来，在两人之间的地面上敲出一小片深色。门廊里没有灯，只有远处店铺的招牌在雨雾里泛着模糊的红光。'] },
+  { kind: 'text', chunks: ['“我在等人。”对方答道，声音被雨声压得很低。林越往前半步，伞面上的水顺着边缘滴下来，在两人之间的地面上敲出一小片深色。门廊里没有灯，只有远处店铺的招牌在雨雾里泛着模糊的红光。他把伞收低，借着招牌的红光打量对方鞋边那道新鲜泥痕，心里先记下了一个大概。'] },
   { kind: 'text', chunks: [postPatchText({ roundSummary: '双方开始交谈。', latestProgress: '已与对方搭上话。', characters: [], relationships: [], threads: [], facts: [], scene: null, destiny: { ...postPatch().destiny, completionEstimate: 12, reason: '继续推进' } }, 'commit-e2e-2', 1)] },
 ];
 cursor = 0;

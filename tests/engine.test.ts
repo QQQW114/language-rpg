@@ -38,7 +38,7 @@ const BRIEF = {
   randomEvent: { planned: false, summary: '' },
 };
 
-const STORY_TEXT = '雨夜的街口很安静。阿黎压低声音，说出了一个地名。路灯在积水里碎成几片摇晃的光，远处有卷帘门落下的响动。她把伞往我这边偏了偏，又补了一句：今晚别走正街，巷口的修车铺亮着灯，那地方最近不太平。我记下那个地名，跟她约好天亮前在旧码头碰面。';
+const STORY_TEXT = '雨夜的街口很安静。阿黎压低声音，说出了一个地名。路灯在积水里碎成几片摇晃的光，远处有卷帘门落下的响动。她把伞往我这边偏了偏，又补了一句：今晚别走正街，巷口的修车铺亮着灯，那地方最近不太平。我记下那个地名，跟她约好天亮前在旧码头碰面。她收拢伞骨，先往巷口那盏忽明忽暗的路灯下走。';
 
 const POST_PATCH = {
   schemaVersion: 2,
@@ -1557,21 +1557,26 @@ describe('engine.runTurnV2 — 三幕窗口与 beatsThisTurn', () => {
     assert.equal(windowTextOf(first[0]), windowTextOf(second[0]));
   });
 
-  it('story 注入经裁剪的 beatsThisTurn：标准最多 3 条，慢叙事只留第 1 条', async () => {
+  it('story 注入经裁剪的 beatsThisTurn：数量由推进权限决定（standard 2 / strict 1 / free 3）', async () => {
     const brief = { ...BRIEF, beatsThisTurn: ['敲响门', '门内有人回应', '对方开门', '第 4 条应被裁掉'] };
     await withFetchMock(phaseHandler({ brief: () => jsonStream(brief) }), async (mock) => {
       await runTurnV2(makeRequest());
       const storyPrompt = lastUserPromptOf(mock.requests[1]);
-      assert.ok(storyPrompt.includes('【beatsThisTurn】["敲响门","门内有人回应","对方开门"]'), storyPrompt.slice(0, 160));
-      assert.ok(!storyPrompt.includes('第 4 条应被裁掉'));
+      assert.ok(storyPrompt.includes('【beatsThisTurn】["敲响门","门内有人回应"]'), storyPrompt.slice(0, 160));
+      assert.ok(!storyPrompt.includes('对方开门'));
       assert.ok(!lastUserPromptOf(mock.requests[0]).includes('【beatsThisTurn】['), 'planner_pre 只输出该字段，不注入清单（窗口红线里只有标签引用）');
     });
 
     await withFetchMock(phaseHandler({ brief: () => jsonStream(brief) }), async (mock) => {
-      await runTurnV2(makeRequest({ state: { narrativePace: 'slow' } }));
+      await runTurnV2(makeRequest({ state: { storyAutonomy: 'strict' } }));
       const storyPrompt = lastUserPromptOf(mock.requests[1]);
-      assert.ok(storyPrompt.includes('【beatsThisTurn】["敲响门"]'), '慢叙事只保留第 1 条');
+      assert.ok(storyPrompt.includes('【beatsThisTurn】["敲响门"]'), '严格遵循只保留第 1 条');
       assert.ok(!storyPrompt.includes('门内有人回应'));
+    });
+
+    await withFetchMock(phaseHandler({ brief: () => jsonStream(brief) }), async (mock) => {
+      await runTurnV2(makeRequest({ state: { storyAutonomy: 'free' } }));
+      assert.ok(lastUserPromptOf(mock.requests[1]).includes('【beatsThisTurn】["敲响门","门内有人回应","对方开门"]'), '自由发散保留 3 条');
     });
 
     // 坏输入（不是数组）退回空清单，不影响回合。
@@ -1879,7 +1884,7 @@ describe('engine.runTurnV2 — 节奏审计与下轮软纠偏', () => {
   });
 
   it('上一轮篇幅越界：下一轮 planner_pre 与 story 都注入纠偏块（窗口之后、权威状态之前），planner_post 不注入', async () => {
-    const longStory = '雨'.repeat(PACE_LENGTH_LIMIT + 1);
+    const longStory = `${'雨'.repeat(PACE_LENGTH_LIMIT)}。`;
     const first = await withFetchMock(
       phaseHandler({ story: storyWithText(longStory) }),
       () => runTurnV2(makeRequest()),
@@ -2166,8 +2171,8 @@ describe('engine.runTurnV2 — 规划模型官方联网搜索', () => {
 describe('engine.runTurnV2 — 故事推进权限（与叙事速度解耦的骨架）', () => {
   it('strict / free 两档都注入 planner_pre 与 story；缺省为 standard', async () => {
     const cases = [
-      ['strict', '严格遵循：'],
-      ['free', '自由发散：'],
+      ['strict', '严格遵循（玩家绝对主导）：'],
+      ['free', '自由发散（模型主动编排）：'],
     ] as const;
     for (const [autonomy, marker] of cases) {
       await withFetchMock(phaseHandler(), async (mock) => {
@@ -2182,8 +2187,8 @@ describe('engine.runTurnV2 — 故事推进权限（与叙事速度解耦的骨�
     }
     await withFetchMock(phaseHandler(), async (mock) => {
       await runTurnV2(makeRequest());
-      assert.ok(lastUserPromptOf(mock.requests[0]).includes('标准推进：'), '缺省应为标准推进');
-      assert.ok(lastUserPromptOf(mock.requests[1]).includes('标准推进：'), '缺省应为标准推进');
+      assert.ok(lastUserPromptOf(mock.requests[0]).includes('标准推进（主线协同）：'), '缺省应为标准推进');
+      assert.ok(lastUserPromptOf(mock.requests[1]).includes('标准推进（主线协同）：'), '缺省应为标准推进');
     });
   });
 
@@ -2203,6 +2208,65 @@ describe('engine.runTurnV2 — 异常短正文防护', () => {
       story: () => storyStream({ text: '下了课借口去' }),
     }), async () => {
       await assert.rejects(() => runTurnV2(makeRequest()), /过短/);
+    });
+  });
+
+  it('长度足够但句尾缺少终结标点（半句断流）同样判失败', async () => {
+    const halfSentence = STORY_TEXT.slice(0, -1);
+    await withFetchMock(phaseHandler({
+      story: () => storyStream({ text: halfSentence }),
+    }), async () => {
+      await assert.rejects(() => runTurnV2(makeRequest()), /未写完|截断/);
+    });
+  });
+
+  it('反代把供应商错误文本当正文返回时判失败、不提交', async () => {
+    const providerError = 'The prompt could not be submitted. The prompt contains sensitive words that violate the content policy. Please send feedback.';
+    await withFetchMock(phaseHandler({
+      story: () => storyStream({ text: providerError }),
+    }), async () => {
+      await assert.rejects(() => runTurnV2(makeRequest()), /供应商错误|内容审核/);
+    });
+  });
+});
+
+describe('engine.runTurnV2 — 文风 profile 与结算 JSON 约束', () => {
+  it('expressive（gemini 等强模型）省略文风微示范并使用短锚点；compact 保留微示范', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { storyModel: 'gemini-3.8-flash-high' } }));
+      const system = systemPromptOf(mock.requests[1]);
+      const user = lastUserPromptOf(mock.requests[1]);
+      assert.ok(!system.includes('文风正反微示范'), 'expressive 不应带文风微示范');
+      assert.ok(system.includes('单回合目标900~1300字'), 'expressive 应使用强模型篇幅带');
+      assert.ok(user.includes('忌用过度渲染副词与段末总结旁白'), 'expressive 应使用短锚点');
+    });
+
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ settings: { storyModel: 'deepseek-flash' } }));
+      const system = systemPromptOf(mock.requests[1]);
+      const user = lastUserPromptOf(mock.requests[1]);
+      assert.ok(system.includes('文风正反微示范'), 'compact 必须保留文风微示范');
+      assert.ok(system.includes('单回合自然篇幅800~1200字'), 'compact 应使用轻量模型篇幅带');
+      assert.ok(user.includes('日常旧流程一笔带过'), 'compact 应使用完整锚点');
+    });
+  });
+
+  it('planner_post system 明确要求字符串内引号改用中文引号（防 JSON 崩溃）', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest());
+      const postSystem = systemPromptOf(mock.requests[2]);
+      assert.ok(postSystem.includes('未转义的英文双引号'), '应包含引号转义约束');
+      assert.ok(postSystem.includes('「」'), '应给出中文引号替代方案');
+    });
+  });
+
+  it('叙事速度与推进权限使用 v2.2 正式文案（风格 / 权限正交）', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: { narrativePace: 'slow', storyAutonomy: 'strict' } }));
+      const user = lastUserPromptOf(mock.requests[1]);
+      assert.ok(user.includes('近景特写镜头'), '慢叙事应只描述镜头焦距');
+      assert.ok(user.includes('严格遵循（玩家绝对主导）'), '严格遵循应描述推进权限');
+      assert.ok(!user.includes('本轮只展开一个微小而连续的故事节拍'), '叙事速度不应再承担推进职责');
     });
   });
 });

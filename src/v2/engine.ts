@@ -35,10 +35,10 @@ ${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 允许补全资料空白，但只补本回合必要内容。不得预先决定玩家下一步，不得把“考虑、可能、打算”写成已完成决定。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：上一幕只作只读因果基线，当前幕是唯一可展开的施工区，下一幕只允许埋自然伏笔，更远的幕不得提前兑现；窗口未列出的字段表示大纲未提供，不得臆造。
 【规划粒度与反机械化铁律】
-1. beatsThisTurn（必须在本轮落地的客观结果）：只写本轮要推进的1到3个原子节拍（慢叙事只写1个），每条用一句话写清本轮在到达stopBoundary之前必须已经实质达成的“客观事实、关系进展或情报结果”（供写后结算判定satisfied）。只写结果底线，不写动作流水账，不得激活窗口未列出的后续故事节。若玩家本轮输入已跨入新的一天或新场景，此前遗留的当日限时琐事（如“今晚某点前交表/核对”）自动视为已翻篇或改期，严禁在新时间线里继续复读旧死线阻塞当前故事节。
-2. writingBrief（戏剧张力与潜台词，严禁写成分镜脚本）：只描述本轮的场景处境、在场人物各自的真实意图或隐秘顾虑、以及双方互动的核心戏剧张力。严禁在writingBrief中替故事模型编写具体台词句子、严禁把多个设定关键词打包塞给单一角色念出、严禁规定“先看哪里、停顿几秒、怎么翻东西”等微动作步骤。对于前文已经发生过的日常重复流程（如变身、换装、查验随身证件、刷门禁、洗漱通勤等），若本轮无新意外，必须在writingBrief中指示“一笔带过日常流程，直接切入核心互动”。
+1. beatsThisTurn（必须在本轮落地的客观结果）：只写本轮要推进的原子节拍，数量由【STORY_AUTONOMY】决定（严格遵循 0~1 个、标准推进 1~2 个、自由发散 1~3 个；严格遵循档若玩家只做原地微动作/观察，允许只推进 active 节拍的局部而不强求本轮 satisfied）。每条用一句话写清本轮在到达stopBoundary之前必须已经实质达成的“客观事实、关系进展或情报结果”（供写后结算判定satisfied）。只写结果底线，不写动作流水账，不得激活窗口未列出的后续故事节。若玩家本轮输入已跨入新的一天或新场景，此前遗留的当日限时琐事（如“今晚某点前交表/核对”）自动视为已翻篇或改期，严禁在新时间线里继续复读旧死线阻塞当前故事节。
+2. writingBrief（戏剧张力与潜台词，严禁写成分镜脚本）：只描述本轮的场景处境、在场人物各自的真实意图或隐秘顾虑、以及双方互动的核心戏剧张力。严禁在writingBrief中替故事模型编写具体台词句子、严禁把多个设定关键词打包塞给单一角色念出、严禁规定“先看哪里、停顿几秒、怎么翻东西”等微动作步骤。对于前文已经发生过的日常重复流程（如变身、换装、查验随身证件、刷门禁、洗漱通勤等），若本轮无新意外，必须在writingBrief中指示“一笔带过日常流程，直接切入核心互动”。上一回合正文已经具体演过的对话包袱、玩梗或刚确认过的信息（如已聊过的逃课掩护、已点过的菜名），本轮严禁在writingBrief中安排角色重复再演一遍，必须往前推进新话头。
 3. creativeSpace（编剧自由度授权）：明确列出本轮交由故事模型自由发挥的空间（例如：如何通过日常琐事或打岔自然带出情报、如何用具体生活化小动作体现人物暗中留意或戒备，而非直白说破或干瞪眼）。
-4. stopBoundary（节拍兑现后的交互悬置切面）：叙事速度约束的是单回合覆盖的故事时间与场景数量，但单回合必须包含饱满的当场交锋（通常2到3个回合的对话或行动博弈，自然形成800至1200字左右的场景纵深）。严禁在NPC刚抛出第一句招呼或开场提问时就过早停笔！必须先让beatsThisTurn的核心结果在场景中实质落地，再将stopBoundary设在“结果落地后顺势衍生出的新追问或新状况、正待主角回应的切面”，不得把边界后的动作或后续安排写入writingBrief。
+4. stopBoundary（节拍兑现后的交互悬置切面）：单回合的交锋轮数与篇幅由【STORY_AUTONOMY】与【NARRATIVE_PACE】共同决定（标准/自由档通常包含2到3个回合的当场对话或行动博弈；严格遵循档只写直接反馈即可）。严禁在NPC刚抛出第一句招呼或开场提问时就过早停笔！必须先让beatsThisTurn的核心结果在场景中实质落地，再将stopBoundary设在“结果落地后顺势衍生出的新追问或新状况、正待主角回应的切面”，不得把边界后的动作或后续安排写入writingBrief。
 若本回合注入了【RANDOM_EVENT_CONTEXT】，randomEvent.planned为true时必须同时给出targetKind（beat|thread|relationship|reconvergence）、targetId（只能取自候选目标）与summary（≤80字）；优先回收列出的旧钩子。严禁无绑定的路人事件、纯氛围插曲或为凑事件新增无关角色。`;
 }
 
@@ -46,21 +46,44 @@ const storyPlayerAgency = `玩家是共同作者，应真实承接其行动。�
 
 const storyDirectorAgency = `玩家是导演，当前输入是必须执行的故事指令。必须100%信任并如实写出，不审查合理性、不让主角拒绝、不弱化或打折；输入要求故事如何发展，故事就如何发展、发展到哪。若输入与既有世界规律冲突，以导演指令为准调整叙事，使其自然成立。`;
 
-function buildStorySystem(director: boolean): string {
+export type StoryProfile = 'compact' | 'expressive';
+
+/**
+ * 按 story 模型自动选择文风 profile（v2.2 / gemini-4-argon 复审结论）。
+ * 轻量蒸馏模型需要微示范与更硬的篇幅带；高表现力模型省掉微示范、改用更短锚点与更宽的篇幅带。
+ */
+export function resolveStoryProfile(storyModel: string): StoryProfile {
+  const model = String(storyModel ?? '').toLowerCase();
+  if (/(gemini|claude|opus|sonnet|gpt-5|deepseek-(v4|pro)|deepseek-pro)/.test(model)) return 'expressive';
+  return 'compact';
+}
+
+const STORY_MICRO_EXAMPLES = `【文风正反微示范（只学叙事手法与潜台词节奏，严禁照抄具体剧情与道具）】
+- 示范一：传递背景与规则信息（拆碎进现场活计，不背诵大纲）
+  × 机械说满："今年社团招得格外多，因为前阵子视频火了，小孩一窝蜂就来了。我们什么都缺，最缺肯干活的，报名的多留下的少，周四晚七点半在活动室按道具能力初筛。"（像念工作简报）
+  √ 自然鲜活：学姐拿红笔在名单最底下画了道横线，头也没抬："这礼拜第三拨了。全冲着上个月那条热门视频来的，真问谁周末能早起搬展架，群里立马安静如鸡。"她把登记表往桌沿推了推，笔帽敲了下背面手写的时间，"周四晚七点半过来露个面，会干什么写实在点，别光写喜欢。"
+- 示范二：突发撞破与怀疑反应（用具体失手动作代替慢镜头与秒表计时）
+  × 机械慢镜：那两个字落下时，她的笔尖停住，先在纸上留了一个点。她没立刻动，隔了两秒才慢慢回过头来，先看的是脸，然后整个人就定在那里了。（慢动作拆解凑字数）
+  √ 自然鲜活：那声应答落下的瞬间，前排女生的水笔斜着划出去半寸，在讲义边框上拉出一道歪斜的蓝痕。她捏着笔杆的指节往里收了收，偏过头望过来——目光撞上后排那张面孔的刹那，原本准备客套打招呼的嘴唇微微张开，又无声地抿紧了。`;
+
+function buildStorySystem(director: boolean, profile: StoryProfile): string {
+  const lengthLine = profile === 'expressive'
+    ? '2. 场景纵深与详略调度（单回合目标900~1300字，严禁超过1500字）：'
+    : '2. 场景纵深与详略调度（单回合自然篇幅800~1200字）：';
   return `你是互动小说故事 Agent，只写中文小说正文。
 严格遵循权威状态、玩家输入、writingBrief、hardConstraints、forbiddenChanges和stopBoundary。worldFacts与canonicalFacts优先于常见套路。某一事实域变化时，只改变硬设定明确覆盖的范围，不得自动连带改写人物记忆、关系历史、物品数量或过去经历。
 ${director ? storyDirectorAgency : storyPlayerAgency}
 允许出现服务于当前行动的普通环境、次要人物与生活插曲。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口权限：只展开当前幕施工契约允许的内容，上一幕只作因果基线，下一幕只允许埋伏笔，严禁提前兑现。
-【beatsThisTurn】是本轮唯一的节拍目标：必须自然兑现列出的1到3个节拍结果，不得自行激活未列出的故事节。
+【beatsThisTurn】是本轮唯一的节拍目标：必须自然兑现列出的节拍结果，不得自行激活未列出的故事节。
 【RANDOM_EVENT_CONTEXT】与【RANDOM_EVENT_PLAN】给出随机事件安排：必须自然融入当前场景与玩家行动，不得让角色瞬移或写成无关路人事件。
 
 【叙事质感与场景纵深准则】
 1. 纯净文学叙事与自然指代：严禁将状态表中的分类标签（如“XX型舍友”“怀疑者”）当人名写进正文；初见路人可用当下特征临时指代，但一旦角色进入正式互动、自我介绍或落笔签名，必须自然给出并沿用其真实姓名或固定昵称（如“老陈”“林晓”），严禁把“抱书女生”这类临时外貌词跨场景当作固定人名使用。正文结尾严禁输出“【stopBoundary】”等任何系统标记、括号提示或JSON。
-2. 场景纵深与详略调度（单回合自然篇幅800~1200字）：
+${lengthLine}
    - 极简略写已确立的日常：前文已写过的身份切换、开柜换装、核对证件、刷门禁等重复日常流程，若无新异常一律压缩在1句话以内带过，不重复清点相同道具。
-   - 充分展开当场对手戏：将省下的笔墨全部用于展开本轮的核心场景交锋。通过2到3个回合的言语试探、顺手干活中的拉扯、以及环境中的具体突发细节把beatsThisTurn的结果写透、写扎实，避免聊两句就匆忙停笔导致场景干瘪。
-3. 动作有效性与去套话化：人物的戒备、心虚或起疑，必须通过手头具体事务的变形（如写错笔画、拉链卡住、顺手拿话岔开）来折射，写出具体动作后绝不紧跟解释动机的心理旁白。保持语言鲜活克制，避免排比否定句（“不是A，不是B，而是C”）、机械顺序词链（“先…然后…接着…”）、秒表式慢镜头分解（“隔了两秒”“视线多停了半秒”）以及网文套话（“整个人定在那里”“空气安静了一瞬”）。
+   - 充分展开当场对手戏：通过2到3个来回的当场对手戏与具体行动把beatsThisTurn自然演出来；一旦对话或行动本身已体现结果，严禁在段末追加总结局势、复盘安全感或替读者归纳“双方轨迹未咬合/没人起疑”的解释性旁白。
+3. 动作有效性与去套话化：人物的戒备、心虚或起疑，必须通过手头具体事务的变形（如写错笔画、拉链卡住、顺手拿话岔开）来折射，写出具体动作后绝不紧跟解释动机的心理旁白。保持语言平实克制，忌用“骤然/猝然/死死/硬生生/近乎失真/无限放大”等过度用力的高频渲染副词；忌用“不是A，而是某种B”的抽象概念解释句；忌将瞬间反应拆成“隔了两秒、先看A再看B、整个人定在那里”的慢镜头套话。
 4. 连载呼吸感与停笔切面：起笔直接切入当前动作或对话；在完整兑现本轮节拍结果后，于stopBoundary所指的交互悬置瞬间（对方抛出新追问或新状况、正待主角接招时）干脆停笔，不写总结升华与事后余波。
 
 【泛化人物声线与潜台词准则（按角色关系与功能区分，不把话说满）】
@@ -70,13 +93,7 @@ ${director ? storyDirectorAgency : storyPlayerAgency}
 - 事务型前辈/组织者：干练、忙于手头具体活计，说话夹杂行话与现场指令；习惯边使唤人干活边随口甩出半截信息，语气实在，不讲官话套话。
 - 敏锐观察者/起疑熟人：表面保持日常礼貌或平淡分寸，试探时往往借着合情合理的日常由头（如传话、核对名单、顺口提及闲事）搭话，点到即止，留出话尾看主角反应。
 
-【文风正反微示范（只学叙事手法与潜台词节奏，严禁照抄具体剧情与道具）】
-- 示范一：传递背景与规则信息（拆碎进现场活计，不背诵大纲）
-  × 机械说满："今年社团招得格外多，因为前阵子视频火了，小孩一窝蜂就来了。我们什么都缺，最缺肯干活的，报名的多留下的少，周四晚七点半在活动室按道具能力初筛。"（像念工作简报）
-  √ 自然鲜活：学姐拿红笔在名单最底下画了道横线，头也没抬："这礼拜第三拨了。全冲着上个月那条热门视频来的，真问谁周末能早起搬展架，群里立马安静如鸡。"她把登记表往桌沿推了推，笔帽敲了下背面手写的时间，"周四晚七点半过来露个面，会干什么写实在点，别光写喜欢。"
-- 示范二：突发撞破与怀疑反应（用具体失手动作代替慢镜头与秒表计时）
-  × 机械慢镜：那两个字落下时，她的笔尖停住，先在纸上留了一个点。她没立刻动，隔了两秒才慢慢回过头来，先看的是脸，然后整个人就定在那里了。（慢动作拆解凑字数）
-  √ 自然鲜活：那声应答落下的瞬间，前排女生的水笔斜着划出去半寸，在讲义边框上拉出一道歪斜的蓝痕。她捏着笔杆的指节往里收了收，偏过头望过来——目光撞上后排那张面孔的刹那，原本准备客套打招呼的嘴唇微微张开，又无声地抿紧了。`;
+${profile === 'compact' ? STORY_MICRO_EXAMPLES : ''}`;
 }
 
 /**
@@ -85,9 +102,16 @@ ${director ? storyDirectorAgency : storyPlayerAgency}
  * 长上下文会稀释 system 里的文风要求（lost in the middle）：把最容易退化的几条规则
  * 固定在用户消息最后，模型落笔前最后看到的就是它们。放在【CURRENT_TURN_INPUT】之后，
  * 因此不改变 system / user#1 的前缀，也不影响缓存命中。
+ * expressive（gemini 等强模型）使用更短锚点，避免刺激凑字数。
  */
-const writingExecutionAnchor = `【WRITING_EXECUTION_ANCHOR】
-直接切入当下场景：日常旧流程一笔带过，将笔墨用于充分展开2~3轮鲜活的当场对手戏（约800~1200字），扎实兑现本轮节拍结果后，在 STOP_BOUNDARY 处自然停笔（严禁输出任何系统标记）。`;
+function buildWritingExecutionAnchor(profile: StoryProfile): string {
+  if (profile === 'expressive') {
+    return `【WRITING_EXECUTION_ANCHOR】
+直接切入当下动作或对话；忌用过度渲染副词与段末总结旁白，在 STOP_BOUNDARY 处干脆停笔。`;
+  }
+  return `【WRITING_EXECUTION_ANCHOR】
+直接切入当下场景：日常旧流程一笔带过，将笔墨用于充分展开2~3轮鲜活的当场对手戏（篇幅按推进权限目标），扎实兑现本轮节拍结果后，在 STOP_BOUNDARY 处自然停笔（严禁输出任何系统标记）。`;
+}
 
 const plannerPostDirectorAgency = `玩家输入为导演指令，CURRENT_STORY按该指令实际发生；不得因其偏离世界规律或原路线而将其判定为冲突或需要修正。`;
 
@@ -110,6 +134,7 @@ relationships只能使用fromId/toId/affinityDelta/label/note/reason。affinityD
 facts只保存正文新确认、且需要跨回合保持一致的长期硬事实（例如稳定身份、持续关系属性、固定地点/安排、能力边界或已确立的长期设定）。不保存氛围、临时动作、一次性场景细节、短期计划、想法、摘要、推测或已有worldFacts；这类内容即使出现在正文，也不要提交canonical fact。不要把stability写成temporary来绕过筛选，临时事实不进入持久状态。通常每轮只需0到3条，确有多个独立长期设定时才增加；没有新的长期硬事实必须输出空数组。每条必须使用结构化字段；禁止字符串facts，禁止kind/content格式，禁止推测事实。
 fact create通用示例：{"op":"create","subjectId":"char-a","predicate":"occupation","value":"医生","scope":"character","stability":"stable","confidence":"explicit","keywords":["职业","工作"],"evidenceQuote":"正文中的直接证据"}。
 枚举字段只能使用输出模板中列出的英文取值，不得翻译、不得自造同义词：status、kind、scope、stability、confidence、threads.status、beatChanges.status都是如此。程序按白名单解析，写到表外的值（例如把status写成"死亡"或"deceased"）会被静默改写或整条丢弃，状态就与你看到的正文不一致。
+所有输出必须为严格合法的JSON格式：在evidenceQuote、reason、roundSummary等字符串值内部引用正文台词或词语时，内部引号一律改用中文引号「」或『』或单引号，严禁在JSON字符串值内部出现未转义的英文双引号；字符串必须完整闭合，不得在JSON中途截断。
 故事节的superseded必须同时给出evidenceQuote与replacementBeatId（且该id必须是已存在的故事节），否则整条变更被丢弃。
 endingReached只在完成度达到100且全部故事节都已satisfied或superseded时才会真正生效；只是接近结尾时保持false，并在completionReason里说明还缺什么。`;
 }
@@ -213,10 +238,28 @@ function searchStoryContext(p: TurnRequestV2, args: Record<string, unknown>) {
 const DEFAULT_PLANNER_CONTEXT_TOKENS = 16_000;
 const STORY_RECENT_MESSAGE_COUNT = 8;
 /**
- * 正文最小长度：低于此值几乎必然是流式输出被截断/提前结束，而不是合法的短回合。
- * 真实长局里出现过 6 字正文（"下了课借口去"），旧逻辑只拒绝空串，于是这种回合被当成成功提交。
+ * 正文最小长度与流式截断判定（v2.2 / gemini-4-argon 复审结论）：
+ * 反代 SSE 断流经常发生在 200~700 字之间，finish_reason 仍是正常 stop，
+ * 但句子死在半句话中间（如"……仿佛从大一军训拍照那天起，档案"）。
+ * 只查空串/字数会漏掉这种"半句腰斩"，必须同时校验句尾终结标点。
  */
-export const STORY_MIN_OUTPUT_CHARS = 80;
+export const STORY_MIN_OUTPUT_CHARS = 120;
+
+export function isStoryStreamTruncated(rawStory: string, minChars = STORY_MIN_OUTPUT_CHARS): boolean {
+  const text = String(rawStory ?? '').trim();
+  if (text.length < minChars) return true;
+  return !/[。！？…—"”’'」』）》】.!?~]\s*$/u.test(text);
+}
+
+/**
+ * 某些 OpenAI 兼容反代/网关会把上游错误（内容审核、密钥、限额、模型不存在）当作
+ * 正常 completion 文本返回；长度与句尾标点都正常，必须单独识别，否则会被当正文提交。
+ */
+const PROVIDER_ERROR_TEXT_PATTERN = /(?:could not be submitted|sensitive words|content policy|send feedback|troubleshooting|api key not valid|invalid api key|insufficient quota|rate limit exceeded|model not found|permission denied)/i;
+
+export function looksLikeProviderErrorText(rawStory: string): boolean {
+  return PROVIDER_ERROR_TEXT_PATTERN.test(String(rawStory ?? ''));
+}
 
 /**
  * 只用于近期正文的软预算，不试图精确复刻任一供应商的 tokenizer。
@@ -352,27 +395,28 @@ function dynamicWorldFactsLine(facts: WorldBookEntry[]) {
 }
 
 function paceInstruction(p: TurnRequestV2) {
+  // 职责：只管镜头焦距与时间流速（v2.2 / gemini-4-argon 复审结论），不再承担"模型能自己推多远"。
   const instructions = {
-    slow: '慢叙事：本轮只展开一个微小而连续的故事节拍，例如一次关键动作、短暂观察或一小段对话。细致呈现真正发生的变化，但不要用重复心理、感官或环境描写人为拉长。停在最早的自然回应点，把动作结果、他人反应或下一步选择留给玩家继续参与。节奏不是硬字数限制。',
-    standard: '标准叙事：本轮聚焦玩家的一次主要行动或一个连续场景，只推进到该行动产生明确反馈、玩家可以再次回应的位置。不要把反馈之后的余波、转场、下一场互动和后续决定一并写完；即使它们顺理成章，也应留给下一回合。不要写成包含完整事件链的独立短篇，节奏不是硬字数限制。',
-    fast: '快叙事：本轮以事件发展为单位，可以推进一组直接相关的行动，概括次要过程并展开关键互动。速度指事件数量与故事时间跨度，不限制必要描写篇幅。',
-    timeskip: '时间跨越叙事：本轮允许跨越数天或更久，概述重复日常，重点展开命运节点、关系变化与关键结果。字数由需要保留的关键节点决定。',
+    slow: '慢叙事（近景特写镜头）：放慢叙事时间流速，聚焦当下这一刻的微表情、器物触感、环境氛围与字句间的潜台词交锋；同一场景内的动作与对话逐层细腻展开，不做时间跳跃，不切场景。',
+    standard: '标准叙事（中景常规镜头）：保持自然流畅的小说连载节奏，兼顾当场对话交锋与必要的环境动作过渡；允许在同一时间段内顺畅完成当前场景的起承与互动，略写无关紧要的过场。',
+    fast: '快叙事（远景紧凑镜头）：加快叙事节奏与信息密度，直奔核心冲突与关键对话结果；大幅压缩环境铺垫、寒暄与过渡动作，用利落的短句快速推进场面交锋。',
+    timeskip: '时间跨越（蒙太奇剪辑）：允许以凝练的过场叙事快速掠过数小时至数日的常规日常或准备期，将时间直接推进到下一个具有实质戏剧冲突的关键场景并展开当面交锋。',
   } as const;
   return instructions[p.state.narrativePace] ?? instructions.standard;
 }
 
 /**
- * 故事推进权限（与叙事速度解耦的骨架）。
+ * 故事推进权限（与叙事速度解耦）。
  *
- * 只注入本回合的可变区，不进稳定前缀；具体措辞后续由外部评审统一打磨。
- * 叙事速度（paceInstruction）继续负责写作节奏/篇幅感；本块只回答"故事能自己走多远"。
+ * 只注入本回合的可变区，不进稳定前缀；显式覆盖节拍数量、停笔距离与篇幅目标，
+ * 避免 strict 与"每回合必须写满 800~1200 字"的旧规则互相打架。
  */
 function storyAutonomyInstruction(p: TurnRequestV2) {
   const mode = p.state.storyAutonomy ?? 'standard';
   const instructions = {
-    strict: '严格遵循：本轮只写玩家输入明确要求、或由该行动直接必然产生的动作、反应与结果。不得自行推进剧情、时间、新事件或新场景，不得替玩家做选择；玩家说到哪就写到哪，玩家说停就停。',
-    standard: '标准推进：先完整承接玩家输入，再允许沿大纲主线自然推进一小步（一个新信息、一个小转折或一次关系变化），保持主线感；不得跳到下一场景/下一幕，也不得替玩家做重大选择。',
-    free: '自由发散：在遵守世界书、已有事实与命运大纲方向的前提下，可自行安排场景推进、人物反应与情节转折，主动把故事向下一阶段推动；仍不得替玩家做重大选择，不得越过 stopBoundary 之后的内容。',
+    strict: '严格遵循（玩家绝对主导）：玩家说到哪就只写到哪。只呈现玩家当前输入动作/台词所触发的直接物理反馈与在场人物的当即第一反应（自然篇幅400~800字即可，严禁为凑字数慢镜头注水）；不得替主角决定下一步行动，不得自行发起新的事件转折或强行转移场景，一旦给出直接反馈即刻停笔交还控制权。',
+    standard: '标准推进（主线协同）：真实承接玩家输入后，顺着当前场景与本轮beatsThisTurn自然推进2~3个来回的当场对手戏（自然篇幅800~1200字），确保本轮节拍的客观结果实质落地；随后在衍生出的新追问或新状况切面（stopBoundary）停笔，不替玩家做重大抉择。',
+    free: '自由发散（模型主动编排）：在遵循世界书硬设定与三幕窗口红线的前提下，授权你根据玩家给出的方向自主编排饱满的场景起承转合、引入合理的突发插曲或推进1~3个关联节拍（自然篇幅1000~1500字），主动把故事推向更具戏剧张力的关键节点，直至抵达stopBoundary处停笔。',
   } as const;
   return instructions[mode] ?? instructions.standard;
 }
@@ -642,7 +686,7 @@ function requireJSONObject(text: string, label: string): Record<string, unknown>
 
 /** JSON 解析失败时追加的修复指令：只要求重发合法 JSON，不改变原始任务。 */
 const JSON_REPAIR_INSTRUCTION =
-  '你上一次的输出不是合法 JSON 对象（可能带了解释、markdown 代码块或被截断）。请只重新输出一个能被 JSON.parse 直接解析的 JSON 对象：不要代码块、不要解释、不要任何前后缀，字段结构严格保持原要求。';
+  '你上一次的输出不是合法 JSON 对象（可能带了解释、markdown 代码块、字符串内含未转义英文双引号，或被截断）。请只重新输出一个能被 JSON.parse 直接解析、且完整闭合的 JSON 对象：不要代码块、不要解释、不要任何前后缀；所有字符串值内部引用台词或词语时，引号一律改用中文「」或『』或单引号，严禁未转义英文双引号。字段结构严格保持原要求。';
 
 function repairMessages(messages: ChatMessage[], badText: string): ChatMessage[] {
   return [
@@ -677,12 +721,9 @@ function normalizeActions(raw: unknown): ChoiceV2[] {
   return normalizeChoices(raw);
 }
 
-function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishReason?: string }, minChars = 0) {
+function ensureModelResult(phase: ModelPhaseV2, result: { text?: string; finishReason?: string }) {
   const label = phaseLabels[phase];
   if (!String(result.text ?? '').trim()) throw new Error(`${label}失败：模型返回了空内容，请重试本回合。`);
-  if (minChars > 0 && String(result.text ?? '').trim().length < minChars) {
-    throw new Error(`${label}失败：模型输出过短（${String(result.text ?? '').trim().length} 字，疑似流式截断），未提交本回合；请重试。`);
-  }
   if (result.finishReason === 'length' || result.finishReason === 'max_tokens') {
     throw new Error(`${label}失败：模型输出达到上限而被截断，未提交本回合状态。`);
   }
@@ -720,6 +761,8 @@ interface TurnRuntimeV2 {
   postReasoningEffort?: 'low' | 'high' | 'max';
   plannerPrePrompt: string;
   storyPrompt: string;
+  /** 文风 profile（compact / expressive），由 story 模型自动解析。 */
+  storyProfile: StoryProfile;
   plannerPostPrompt: string;
   shouldInjectPlanner: boolean;
 }
@@ -766,7 +809,9 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
     `${buildPlannerPreSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}${webSearchAllowed ? plannerWebSearchDiscipline : ''}`,
     shouldInjectPlanner ? roleInjects.planner : undefined,
   );
-  const storyPrompt = withRoleInject(buildStorySystem(directorPerspective), roleInjects?.story);
+  // 文风 profile：由 story 模型自动选择；强模型省掉微示范、锚点更短（复审结论 P1-4）。
+  const storyProfile = resolveStoryProfile(storyModel);
+  const storyPrompt = withRoleInject(buildStorySystem(directorPerspective, storyProfile), roleInjects?.story);
   // 写后结算只做状态提交，不检索历史，因此不注入工具纪律、不提供工具。
   const plannerPostPrompt = withRoleInject(
     buildPlannerPostSystem(directorPerspective),
@@ -786,6 +831,7 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
     postReasoningEffort,
     plannerPrePrompt,
     storyPrompt,
+    storyProfile,
     plannerPostPrompt,
     shouldInjectPlanner,
   };
@@ -952,6 +998,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     storyReasoningEffort,
     plannerPrePrompt,
     storyPrompt,
+    storyProfile,
   } = runtime;
   // 收集本回合所有阶段的思维链，导出与展示可共用。
   const turnThinkingParts: string[] = [];
@@ -1058,8 +1105,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     emitActivity(p, { type: 'warning', phase: 'planner_pre', model: plannerModel, ...randomEventBindingCheck.warning });
   }
   const randomEventPlanForStory = randomEventPlanToText(brief?.randomEvent) ?? '本回合无随机事件安排';
-  // 规划模型可能漏写或写多节拍：统一裁剪后再交给故事模型（慢叙事只保留 1 个，D8）。
-  const beatsThisTurn = normalizeBeatsThisTurn(brief?.beatsThisTurn, p.state.narrativePace);
+  // 规划模型可能漏写或写多节拍：按「推进权限」统一裁剪后再交给故事模型。
+  const beatsThisTurn = normalizeBeatsThisTurn(brief?.beatsThisTurn, p.state.storyAutonomy);
   const storyVariablePrelude = [
     stageActWindow,
     dynamicWorldFacts,
@@ -1085,7 +1132,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
         // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
         // story 的 user 消息以【NARRATIVE_PACE】开头）。
-        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${writingExecutionAnchor}` },
+        { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${buildWritingExecutionAnchor(storyProfile)}` },
       ],
       onThinkingDelta: (text) => collectThinking('story', storyModel, text),
       onDelta: (text) => {
@@ -1093,7 +1140,13 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
         emitOutput(p, 'story', storyModel, text);
       },
     });
-    ensureModelResult('story', story, STORY_MIN_OUTPUT_CHARS);
+    ensureModelResult('story', story);
+    if (looksLikeProviderErrorText(story.text)) {
+      throw new Error('故事模型返回的是供应商错误提示而非正文（疑似内容审核/密钥/限额/模型错误），未提交本回合；请重试或更换模型。');
+    }
+    if (isStoryStreamTruncated(story.text)) {
+      throw new Error(`故事模型输出过短或未写完（${String(story.text ?? '').trim().length} 字，句尾缺少终结标点，疑似流式截断），未提交本回合；请重试。`);
+    }
     turnCalls.push({ phase: 'story', model: storyModel, input: story.trace, output: story.text, thinking: story.thinking, usage: story.usage });
     emitUsage(p, 'story', storyModel, story.usage);
     emitPhase(p, 'story', storyModel, 'completed');

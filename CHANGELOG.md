@@ -6,7 +6,13 @@
 
 ### 新增
 
-- **故事推进权限骨架（与叙事速度解耦）**：新增 `GameStateV2.storyAutonomy`（`strict` 严格遵循 / `standard` 标准推进 / `free` 自由发散，缺省 `standard`，旧存档 hydrate 自动补默认值）。游戏页「自由行动」区新增三档切换，逐回合注入 `【STORY_AUTONOMY】` 到 planner_pre 与 story 的可变区；叙事速度（慢/标准/快/时间跨越）暂时保留原有语义，后续按外部评审拆分为纯写作风格。
+- **提示词 v2.2（gemini-4-argon 复审落地）**：
+  - story 去掉“把结果写透写扎实”的催写指令，禁止段末总结陈词；句式黑名单降级为通用文学原则（反浓妆副词、反“不是A而是抽象B”、反慢镜头套话）；
+  - 新增 `resolveStoryProfile()` 自动 profile：`compact`（正反微示范 + 800~1200 字 + 完整锚点）/ `expressive`（省略微示范 + 900~1300 字 + 38 字短锚点）；
+  - 叙事速度四档改为纯镜头焦距/剪辑节奏，`【STORY_AUTONOMY】` 三档改为正式文案并接管 `beatsThisTurn` 数量上限（strict 1 / standard 2 / free 3）；
+  - planner_pre 增加“已演过的包袱/台词/已确认信息不得复读”规则；planner_post 增加字符串内引号必须改用中文引号的 JSON 约束；
+  - story 截断防护升级为“长度 ≥120 且句尾必须有终结标点”，61 个真实回合扫描检出 3/3 断流、0 误杀；新增“供应商错误文本伪装成正文”识别（gemini 反代把敏感词审核错误当 story 返回，长度/标点都正常），命中即拒绝提交。
+- **故事推进权限骨架（与叙事速度解耦）**：新增 `GameStateV2.storyAutonomy`（`strict` 严格遵循 / `standard` 标准推进 / `free` 自由发散，缺省 `standard`，旧存档 hydrate 自动补默认值）。游戏页「自由行动」区新增三档切换，逐回合注入 `【STORY_AUTONOMY】` 到 planner_pre 与 story 的可变区。
 - 规划/写作提示词对推进权限的精细措辞、以及叙事速度的职责收窄，列入下一轮提示词评审；本次只落状态、UI 与注入骨架。
 
 ### 修复
@@ -20,7 +26,7 @@
 
 ### 测试
 
-- 单元测试 562 → **574 条 / 22 个测试文件**：新增推进权限三档注入、缺省值、叙事节奏前缀顺序 2 条；fixtures 补 `storyAutonomy` 以保持导入导出往返一致；新增异常短正文拒绝 1 条；新增 planner JSON 修复重试、传输层 429/5xx 重试策略、`sleepWithAbort` 等 7 条；e2e 43 → **44 条**（429 重试 3 次、非法 JSON 修复重试各 1 条）。
+- 单元测试 562 → **580 条 / 22 个测试文件**：新增推进权限三档注入、缺省值、叙事节奏前缀顺序 2 条；fixtures 补 `storyAutonomy` 以保持导入导出往返一致；新增异常短正文/半句断流/供应商错误文本拒绝、文风 profile、planner_post 引号约束、推进权限与节奏正交文案等 6 条；新增 planner JSON 修复重试、传输层 429/5xx 重试策略、`sleepWithAbort` 等 7 条；e2e 43 → **44 条**（429 重试 3 次、非法 JSON 修复重试各 1 条）。
 
 ## [0.5.2] - 2026-10-20
 

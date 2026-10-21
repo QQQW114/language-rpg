@@ -199,20 +199,26 @@ describe('actWindow.splitWorldFacts', () => {
 // normalizeBeatsThisTurn（D8）
 // ---------------------------------------------------------------------------
 
-describe('actWindow.normalizeBeatsThisTurn', () => {
-  it('标准叙事最多保留 3 条', () => {
+describe('actWindow.normalizeBeatsThisTurn（推进权限决定节拍数量）', () => {
+  it('strict 最多保留 1 条', () => {
+    const beats = normalizeBeatsThisTurn(['一', '二', '三', '四'], 'strict');
+    assert.deepEqual(beats, ['一']);
+    assert.equal(beats.length, 1);
+  });
+
+  it('standard 最多保留 2 条', () => {
     const beats = normalizeBeatsThisTurn(['一', '二', '三', '四'], 'standard');
-    assert.deepEqual(beats, ['一', '二', '三']);
-    assert.equal(beats.length, MAX_BEATS_THIS_TURN);
+    assert.deepEqual(beats, ['一', '二']);
+    assert.equal(beats.length, 2);
   });
 
-  it('慢叙事只保留第 1 条', () => {
-    assert.deepEqual(normalizeBeatsThisTurn(['敲响门', '门内有人回应', '对方开门'], 'slow'), ['敲响门']);
+  it('free 最多保留 3 条（MAX_BEATS_THIS_TURN）', () => {
+    assert.deepEqual(normalizeBeatsThisTurn(['一', '二', '三', '四'], 'free'), ['一', '二', '三']);
+    assert.equal(normalizeBeatsThisTurn(['一', '二', '三', '四'], 'free').length, MAX_BEATS_THIS_TURN);
   });
 
-  it('快叙事与时间跨越叙事保留最多 3 条', () => {
-    assert.deepEqual(normalizeBeatsThisTurn(['一', '二', '三', '四'], 'fast'), ['一', '二', '三']);
-    assert.deepEqual(normalizeBeatsThisTurn(['一', '二', '三', '四'], 'timeskip'), ['一', '二', '三']);
+  it('叙事速度不再参与裁剪：slow + standard 仍按推进权限保留 2 条', () => {
+    assert.deepEqual(normalizeBeatsThisTurn(['敲响门', '门内有人回应', '对方开门'], 'standard'), ['敲响门', '门内有人回应']);
   });
 
   it('trim + 去空 + 过滤非字符串脏值', () => {

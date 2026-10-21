@@ -442,7 +442,7 @@ for (let index = startIndex; index < TURNS; index += 1) {
       break;
     } catch (error) {
       lastError = error;
-      const transient = /空内容|empty|JSON|timeout|超时|aborted|network|fetch|过短|截断|terminated|ECONNRESET|socket/i.test(String(error?.message ?? error));
+      const transient = /空内容|empty|JSON|timeout|超时|aborted|network|fetch|过短|截断|terminated|ECONNRESET|socket|供应商错误|sensitive words|content policy|api key|rate limit/i.test(String(error?.message ?? error));
       console.error(`[real-chain] 第 ${index + 1} 回合第 ${attempt} 次失败${transient ? '（可重试）' : ''}：${error?.message ?? error}`);
       if (!transient || attempt === TURN_ATTEMPTS) break;
       console.log('[real-chain] 换一个 session seed 重跑本回合…');

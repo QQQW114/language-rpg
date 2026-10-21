@@ -13,7 +13,7 @@
  * 这里不读写全局状态、不 import engine，避免提示词逻辑与回合执行互相牵连。
  */
 import type { StoryAct, StoryBeat, StoryOutline, WorldBookEntry } from '@/types/content';
-import type { DestinyProgressV2, NarrativePaceV2, StoryBeatRuntimeV2 } from './types';
+import type { DestinyProgressV2, StoryAutonomyV2, StoryBeatRuntimeV2 } from './types';
 
 /** 常驻世界书注入上限。 */
 export const STABLE_WORLD_FACT_LIMIT = 20;
@@ -114,19 +114,24 @@ export function splitWorldFacts(p: WorldFactSplitInput): WorldFactSplit {
  * 把规划模型给出的 `beatsThisTurn` 裁剪成本轮可执行的节拍清单。
  *
  * 模型经常把整段剧情写成字符串数组（或混入非字符串脏值），因此只接受非空字符串、
- * 去首尾空白、最多 `MAX_BEATS_THIS_TURN` 条；慢叙事只保留第 1 条（D8）。
+ * 去首尾空白；数量上限由「故事推进权限」决定（v2.2 / gemini-4-argon 复审结论）：
+ * - strict 严格遵循：最多 1 条（允许 0 条）；
+ * - standard 标准推进：最多 2 条；
+ * - free 自由发散：最多 3 条。
+ * 叙事速度不再参与节拍数量裁剪（它只负责镜头焦距与节奏）。
  */
-export function normalizeBeatsThisTurn(raw: unknown, pace: NarrativePaceV2): string[] {
+export function normalizeBeatsThisTurn(raw: unknown, autonomy: StoryAutonomyV2 = 'standard'): string[] {
   if (!Array.isArray(raw)) return [];
+  const cap = autonomy === 'strict' ? 1 : autonomy === 'free' ? MAX_BEATS_THIS_TURN : 2;
   const beats: string[] = [];
   for (const item of raw) {
     if (typeof item !== 'string') continue;
     const text = item.trim();
     if (!text) continue;
     beats.push(text);
-    if (beats.length >= MAX_BEATS_THIS_TURN) break;
+    if (beats.length >= cap) break;
   }
-  return pace === 'slow' ? beats.slice(0, 1) : beats;
+  return beats;
 }
 
 // ---------------------------------------------------------------------------

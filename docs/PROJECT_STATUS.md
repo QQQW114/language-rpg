@@ -22,7 +22,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/v2/engine.ts` | 三阶段提示词、工具、回合执行；可变区注入三幕窗口 `【STAGE_AND_ACT_WINDOW】`、动态世界书、`beatsThisTurn`、随机事件上下文、`【PACE_CORRECTION_ALERT】` 与 `【STORY_AUTONOMY】`；planner JSON 解析失败时自动修复重试一次；结算失败抛 `TurnPostFailureV2`，`runTurnSettlementV2` 只重跑结算 |
+| `src/v2/engine.ts` | 三阶段提示词、工具、回合执行；可变区注入三幕窗口 `【STAGE_AND_ACT_WINDOW】`、动态世界书、`beatsThisTurn`、随机事件上下文、`【PACE_CORRECTION_ALERT】` 与 `【STORY_AUTONOMY】`；planner JSON 解析失败时自动修复重试一次；story 按模型自动选择 compact/expressive 文风 profile，并做"长度+句尾标点+供应商错误文本"三重截断防护；结算失败抛 `TurnPostFailureV2`，`runTurnSettlementV2` 只重跑结算 |
 | `src/v2/patch.ts` | 写后 Patch 校验、增量合并、程序权威幕状态机（自动推进 / 改道挂账 gate）、随机事件三态结算与调度、状态提交 |
 | `src/v2/types.ts` | V2 游戏状态、Patch 类型、幕历史 / 节奏审计 / 随机事件绑定类型与续跑中间结果 `TurnPartialV2` |
 | `src/v2/actWindow.ts` | 三幕聚焦窗口（≤900 字、6 级降级）、世界书稳定 / 动态拆分、`beatsThisTurn` 裁剪（纯函数） |
@@ -274,7 +274,7 @@ planner_pre 的工具由程序按设置决定是否挂载（故事 / 写后结�
 
 ## 9. 测试体系
 
-- 单元测试：离线（esbuild 打包 + `node:test`，模型调用 mock `fetch`），当前 **574 条用例 / 22 个测试文件**；
+- 单元测试：离线（esbuild 打包 + `node:test`，模型调用 mock `fetch`），当前 **580 条用例 / 22 个测试文件**；
 - 脚本测试：Patch/命运状态回归、引擎端到端 mock 链路（e2e 44 条断言）、存档体积与写入可靠性、故事链路脚本（无 Key 自动 dry-run）；
 - 真实链路冒烟：`npm run test:real`（需外部 API，支持 1–40 回合长局与分阶段缓存统计，见下）。
 
@@ -310,7 +310,7 @@ V1 多 Agent 版本的代码已在接手清理中删除（共 37 个文件：36 
 - `useContentStore` 持久化版本为 3：旧数据中的 `customEvents` / `customWorkspaceTemplates` 会被 `sanitizePersistedContent` 静默丢弃；
 - 活动面板不展示规划/结算模型原始 JSON 输出；
 - 路由级动态分包 + vendor 拆分后，主入口约 43 kB（gzip 16 kB），最大页面 chunk 为 GamePage（约 108 kB）；`/workshop` 与 `react-markdown` 均按需加载；
-- 结算续跑的中间结果只存在当前页面会话：刷新后未提交正文与「仅重试结算」入口会丢失（见 `known-issues.md` O）；普通回合失败已把输入写回草稿，刷新后可从输入框恢复（正文草稿仍会丢失）；
+- 结算续跑的中间结果只存在当前页面会话：刷新后未提交正文与「仅重试结算」入口会丢失（见 `known-issues.md` O）；普通回合失败已把输入写回草稿，刷新后可从输入框恢复（正文草稿仍会丢失）；story 正文低于 120 字、句尾缺少终结标点、或疑似供应商错误文本（内容审核/密钥/限额等）会被判为失败、不提交；
 - 存档导入复用 hydrate 规范化；高版本只读存档若被导出，会按当前结构裁剪、不保留未来版本的未知字段；
 - **节奏检测是保守启发式**：只覆盖固定收束句式与时间词表（尾 220 字叙述部分），意象式升华、换一种说法点题等写法会漏报；宁可漏报也不做"剧情警察"，检测结果只影响下一轮提示词，不回滚正文。0.5.0 起统计时间推进词前会先剔除成对引号内的台词，并忽略「今天/明天/昨天/上周… + 时段词」这类日期指向组合，避免把角色台词与计划性回忆误判为叙事跨日；
 - **真实链路依赖外部供应商**：`npm run test:real` 需要可用的 `LRPG_API_BASE` / `LRPG_API_KEY` / `LRPG_MODEL`，脚本内置请求级重试与退避（网关按出口 IP 门禁、429、5xx），可跑 1–40 回合长局并输出分阶段缓存统计（`cacheSummary`）与长局评测（`evaluation`）；供应商额度或网络不可用时无法离线复现；

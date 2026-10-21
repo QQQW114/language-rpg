@@ -1,4 +1,4 @@
-# 当前提示词清单（Prompt Pack v2.1）
+# 当前提示词清单（Prompt Pack v2.2）
 
 当前 V2 提示词全部内嵌在 `src/v2/engine.ts`，没有独立的 `src/prompts/` 目录。三阶段分工：
 
@@ -6,14 +6,22 @@
 planner_pre（写前规划）→ story（写正文）→ planner_post（写后结算）→ 程序提交
 ```
 
-Prompt Pack v2.1 的设计原则：**规划只定「结果底线 + 戏剧切面」，故事模型独占场景、台词与详略调度**；三阶段 JSON 契约、程序权威状态与前缀缓存结构不变。
+Prompt Pack v2.2 的设计原则：**规划只定「结果底线 + 戏剧切面」，故事模型独占场景、台词与详略调度**；三阶段 JSON 契约、程序权威状态与前缀缓存结构不变。
+
+### v2.2（gemini-4-argon 复审后，2026-10-21）
+
+- 叙事速度四档改为**纯镜头焦距/剪辑节奏**文案；新增 `【STORY_AUTONOMY】` 三档（严格遵循 / 标准推进 / 自由发散）正式文案，并接管 `beatsThisTurn` 数量上限（1 / 2 / 3）。
+- story 去掉“把结果写透写扎实”的催写指令，禁止段末总结陈词；句式黑名单降级为通用文学原则（反浓妆副词、反“不是A而是抽象B”、反慢镜头套话）。
+- 按 story 模型自动解析文风 profile：`compact`（保留正反微示范、800~1200 字、完整锚点）/ `expressive`（省略微示范、900~1300 字、38 字短锚点）。
+- planner_pre 增加“已演过的包袱/台词/已确认信息不得复读”规则；planner_post 增加 evidenceQuote 等字符串内引号必须改中文引号的约束。
+- story 正文截断防护升级：<120 字或句尾缺少终结标点即判本回合失败、不提交；疑似供应商错误文本（内容审核/密钥/限额等）同样拒绝提交。
 
 ## 三个阶段的提示词函数
 
 | 模型 | 阶段 | 提示词构造 | 说明 |
 |---|---|---|---|
 | 规划模型 | 写前规划 | `buildPlannerPreSystem(director)` | 输出本回合写作约束 JSON；`beatsThisTurn` 只写必须在本轮落地的客观结果，`writingBrief` 只写处境/隐秘顾虑/戏剧张力，`stopBoundary` 是节拍兑现后的交互悬置切面 |
-| 故事模型 | 正文写作 | `buildStorySystem(director)` | 只输出中文小说正文；含场景纵深准则、泛化声线矩阵、正反微示范 |
+| 故事模型 | 正文写作 | `buildStorySystem(director, profile)` | 只输出中文小说正文；含场景纵深准则、泛化声线矩阵；`compact` 额外带正反微示范，`expressive` 不带 |
 | 规划模型 | 写后结算 | `buildPlannerPostSystem(director)` | 输出增量状态 Patch JSON；`satisfied` 按叙事功能实质兑现判定，已走完功能的 active 节拍需结案 |
 
 ## 消息拼装与缓存分区
@@ -40,7 +48,7 @@ planner_post：system（固定） + user（固定输出模板 + 权威状态 + �
 | `plannerPostDirectorAgency` | 写后结算在导演视角下的额外约束 |
 | `plannerToolDiscipline` / `plannerContextTool` | `search_story_context` 上下文检索工具与纪律 |
 | `plannerWebSearchDiscipline` / `plannerWebSearchTool` | `web_search` 官方联网搜索（默认关、仅官方端点） |
-| `writingExecutionAnchor` | story 用户消息末尾的近因锚点（v2.1 为一句 68 字） |
+| `writingExecutionAnchor` | story 用户消息末尾的近因锚点（compact 完整版 / expressive 38 字短版） |
 | `postShape` | 写后结算输出 JSON 模板 |
 | `paceInstruction(p)` / `randomEventInstruction(p)` | 叙事速度说明 / 随机事件三档指令 |
 
