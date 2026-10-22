@@ -869,3 +869,110 @@ describe('useGameStoreV2 — 随机事件历史与绑定（D7）', () => {
     assert.deepEqual(event.history, []);
   });
 });
+
+describe('useGameStoreV2 — 灵魂共创默认值与 soulProfile（v0.7.0 / T8）', () => {
+  const persistApi = () => (useGameStoreV2 as unknown as {
+    persist: { rehydrate: () => Promise<void> | void };
+  }).persist;
+
+  /** 上一版程序写下的存档（persist version 1）：没有 soulProfile，storyAutonomy 可能缺失。 */
+  const legacySave = (stateOverrides: Record<string, unknown> = {}) => ({
+    id: 'save-soul',
+    name: '旧档',
+    createdAt: 1,
+    updatedAt: 2,
+    worldFacts: [],
+    state: {
+      schemaVersion: 2,
+      revision: 1,
+      turn: 2,
+      phase: 'input',
+      mode: 'author',
+      history: [],
+      summary: '',
+      ...stateOverrides,
+    },
+  });
+
+  const hydrateLegacy = async (save: unknown): Promise<SaveV2> => {
+    seedPersisted('lrpg.v2', { saves: { 'save-soul': save }, activeId: 'save-soul' }, 1);
+    await persistApi().rehydrate();
+    const hydrated = useGameStoreV2.getState().saves['save-soul'];
+    assert.ok(hydrated, '旧档应被迁移后保留');
+    return hydrated;
+  };
+
+  it('create：新旅程默认 storyAutonomy=co_author，soulProfile 为空串', () => {
+    const id = store().create({ name: '新旅程', mode: 'author' });
+    const state = saveOf(id)!.state;
+    assert.equal(state.storyAutonomy, 'co_author');
+    assert.equal(state.soulProfile, '');
+  });
+
+  it('旧档缺 storyAutonomy / soulProfile 时回退 standard 与空串（新默认不改变旧档）', async () => {
+    const save = await hydrateLegacy(legacySave());
+    assert.equal(save.state.storyAutonomy, 'standard');
+    assert.equal(save.state.soulProfile, '');
+  });
+
+  it('hydrate 保留 co_author，soulProfile 压成单行并截断 120 字', async () => {
+    const save = await hydrateLegacy(legacySave({
+      storyAutonomy: 'co_author',
+      soulProfile: '  腹黑乐子人： 享受信息差与恶作剧\n反差  ',
+    }));
+    assert.equal(save.state.storyAutonomy, 'co_author');
+    assert.equal(save.state.soulProfile, '腹黑乐子人： 享受信息差与恶作剧 反差');
+
+    const long = await hydrateLegacy(legacySave({ storyAutonomy: 'co_author', soulProfile: '腹'.repeat(200) }));
+    assert.equal(long.state.soulProfile, '腹'.repeat(120));
+  });
+
+  it('非法 storyAutonomy / 非字符串 soulProfile 回退 standard 与空串', async () => {
+    const save = await hydrateLegacy(legacySave({ storyAutonomy: 'director', soulProfile: 42 }));
+    assert.equal(save.state.storyAutonomy, 'standard');
+    assert.equal(save.state.soulProfile, '');
+  });
+
+  it('soulProfile 随存档持久化到 localStorage（可持久化裁剪不丢字段）', () => {
+    const id = store().create({ name: '持久化', mode: 'author' });
+    store().update(id, (save) => ({ ...save, state: { ...save.state, soulProfile: '画像：谨慎的观察者' } }));
+    const persisted = readPersisted('lrpg.v2') as { state?: { saves?: Record<string, SaveV2> } };
+    assert.equal(persisted.state?.saves?.[id]?.state.soulProfile, '画像：谨慎的观察者');
+    assert.equal(persisted.state?.saves?.[id]?.state.storyAutonomy, 'co_author');
+  });
+
+  it('importSave 保留 co_author 与截断后的 soulProfile；缺字段旧档回退 standard/空串', () => {
+    const imported = store().importSave({
+      id: 'save-soul-import',
+      name: '导入',
+      createdAt: 1,
+      updatedAt: 2,
+      worldFacts: [],
+      state: {
+        schemaVersion: 2,
+        revision: 1,
+        turn: 2,
+        phase: 'input',
+        mode: 'author',
+        history: [],
+        summary: '',
+        storyAutonomy: 'co_author',
+        soulProfile: ` ${'腹'.repeat(150)}`,
+      },
+    } as unknown as SaveV2);
+    const state = saveOf(imported)!.state;
+    assert.equal(state.storyAutonomy, 'co_author');
+    assert.equal(state.soulProfile, '腹'.repeat(120));
+
+    const legacyImported = store().importSave({
+      id: 'save-soul-import-2',
+      name: '旧导入',
+      createdAt: 1,
+      updatedAt: 2,
+      worldFacts: [],
+      state: { schemaVersion: 2, revision: 1, turn: 2, phase: 'input', mode: 'author', history: [], summary: '' },
+    } as unknown as SaveV2);
+    assert.equal(saveOf(legacyImported)!.state.storyAutonomy, 'standard');
+    assert.equal(saveOf(legacyImported)!.state.soulProfile, '');
+  });
+});

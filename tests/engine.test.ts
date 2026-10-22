@@ -2204,6 +2204,299 @@ describe('engine.runTurnV2 — 故事推进权限（与叙事速度解耦的骨�
   });
 });
 
+// ---------------------------------------------------------------------------
+// K. 灵魂共创（co_author）与 soulAndIntent（v0.7.0 / T7）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 灵魂共创（co_author）与 soulAndIntent', () => {
+  /** 真实存档 T10 场景的灵魂画像：腹黑乐子人 + 讨厌查户口搭讪。 */
+  const CO_AUTHOR_SOUL = {
+    protagonistSoul: '腹黑乐子人：掌握秘密权柄的暗中观察者，享受身份信息差与恶作剧反差',
+    playerIntent: '把刚制造的老陈吹牛场面继续玩下去，欣赏直男室友被硬控的反应',
+    toneRegister: '冷幽默 / 轻小说式吐槽',
+    avoidTriggers: '突兀的陌生人查户口搭讪、被强塞的新NPC',
+  };
+
+  /** co_author 档请求：其它夹具不变，只换推进权限。 */
+  const coAuthorRequest = (overrides: Parameters<typeof makeRequest>[0] = {}) => makeRequest({
+    ...overrides,
+    state: { storyAutonomy: 'co_author', ...(overrides.state ?? {}) },
+  });
+
+  it('co_author 档：planner_pre 与 story 都注入灵魂共创文案；planner 有顺势嫁接/零节拍规则，story 有硬规则', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(coAuthorRequest());
+      const plannerSystem = systemPromptOf(mock.requests[0]);
+      const plannerUser = lastUserPromptOf(mock.requests[0]);
+      const storySystem = systemPromptOf(mock.requests[1]);
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+
+      // 可变区的推进权限文案：planner_pre 与 story 共用同一份。
+      for (const [label, user] of [['planner_pre', plannerUser], ['story', storyUser]] as const) {
+        assert.ok(user.includes('【STORY_AUTONOMY】灵魂共创（推演主角灵魂 · 顺势延伸）：'), `${label} 应注入 co_author 文案`);
+        assert.ok(user.includes('beatsThisTurn 0~1个'), `${label} 应说明零节拍许可`);
+        assert.ok(user.includes('空数组[]'), `${label} 应说明离场/独处时输出空数组`);
+        assert.ok(user.includes('严禁代写底牌'), `${label} 应禁止代写主角决定`);
+        assert.ok(user.includes('防御性免责文本'), `${label} 应禁止防御性免责文本`);
+        assert.ok(user.includes('800~1200'), `${label} 的篇幅目标来自 STORY_AUTONOMY（唯一来源）`);
+      }
+
+      // planner system：co_author 档专属的顺势嫁接规则。
+      assert.ok(plannerSystem.includes('【灵魂共创档 · 顺势嫁接规则】'), 'planner system 应追加 co_author 规则块');
+      assert.ok(plannerSystem.includes('soulAndIntent'), 'planner 规则应说明 soulAndIntent 必填');
+      assert.ok(plannerSystem.includes('严禁跨场景硬切'), '应禁止跨场景硬切/空投NPC');
+      assert.ok(plannerSystem.includes('允许零节拍'), '应显式允许零节拍');
+      assert.ok(plannerSystem.includes('70% 顺承'), 'writingBrief 应给出 70% 顺承 / 30% 环境反馈配比');
+      assert.ok(plannerSystem.includes('严禁在括号里写'), '应禁止括号防御性备注');
+      assert.ok(plannerSystem.includes('POV'), '应尊重玩家 POV/分镜');
+      assert.ok(plannerSystem.includes('其它档全部留空字符串'), '共享规则应说明其它档可省略 soulAndIntent');
+
+      // story system：主角意志/防御文本/debuff/POV 硬规则（无条件生效）。
+      assert.ok(storySystem.includes('【主角意志与世界反应（硬规则）】'), 'story system 应有硬规则块');
+      assert.ok(storySystem.includes('100%由玩家输入决定'), '主角决定必须归玩家');
+      assert.ok(storySystem.includes('严禁替主角写祈祷并自动完成变身'), '应点名禁止代写祈祷/变身');
+      assert.ok(storySystem.includes('禁止防御性免责旁白'), '应禁止防御性免责旁白');
+      assert.ok(storySystem.includes('严禁自行发明 debuff/反噬'), '世界书硬设定优先，禁止自行发明 debuff');
+      assert.ok(storySystem.includes('尊重玩家镜头权'), '应尊重玩家 POV/多视角');
+      assert.ok(storySystem.includes('外部世界归你'), '应要求世界反应鲜活，避免过度被动化');
+    });
+  });
+
+  it('其它档不追加 co_author 规则；缺省仍为 standard（旧存档行为不变）', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest());
+      const plannerSystem = systemPromptOf(mock.requests[0]);
+      assert.ok(!plannerSystem.includes('【灵魂共创档 · 顺势嫁接规则】'), 'standard 档不应追加 co_author 规则');
+      assert.ok(lastUserPromptOf(mock.requests[1]).includes('标准推进（主线协同）：'), '缺省仍为标准推进');
+      // story 的硬规则对所有档生效（v2.2 P0 质量修复），system 里应能看到。
+      assert.ok(systemPromptOf(mock.requests[1]).includes('主角意志归玩家'));
+    });
+  });
+
+  it('co_author 下 beatsThisTurn 允许空数组、最多 1 条：0 节拍回合照常提交', async () => {
+    const emptyBeats = { ...BRIEF, beatsThisTurn: [] };
+    await withFetchMock(phaseHandler({ brief: () => jsonStream(emptyBeats) }), async (mock) => {
+      const result = await runTurnV2(coAuthorRequest());
+      assert.ok(lastUserPromptOf(mock.requests[1]).includes('【beatsThisTurn】[]'), '零节拍必须原样交给 story');
+      assert.equal(result.state.turn, 3, '0 节拍回合照常提交，不报错、不卡幕');
+    });
+
+    const threeBeats = { ...BRIEF, beatsThisTurn: ['一', '二', '三'] };
+    await withFetchMock(phaseHandler({ brief: () => jsonStream(threeBeats) }), async (mock) => {
+      await runTurnV2(coAuthorRequest());
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyUser.includes('【beatsThisTurn】["一"]'), 'co_author 最多保留 1 条');
+      assert.ok(!storyUser.includes('"二"'));
+    });
+  });
+
+  it('soulAndIntent 注入【SOUL_AND_INTENT】：四字段完整、插在 writingBrief 之后、planner 模板带字段', async () => {
+    await withFetchMock(phaseHandler({ brief: () => jsonStream({ ...BRIEF, soulAndIntent: CO_AUTHOR_SOUL }) }), async (mock) => {
+      await runTurnV2(coAuthorRequest());
+      const plannerUser = lastUserPromptOf(mock.requests[0]);
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(plannerUser.includes('"soulAndIntent":{"protagonistSoul":"","playerIntent":"","toneRegister":"","avoidTriggers":""}'), 'planner 输出模板应含 soulAndIntent 四字段');
+      assert.ok(storyUser.includes('【SOUL_AND_INTENT】主角灵魂画像：'), storyUser.slice(0, 500));
+      assert.ok(storyUser.includes(CO_AUTHOR_SOUL.protagonistSoul));
+      assert.ok(storyUser.includes('｜本轮延伸意图：'));
+      assert.ok(storyUser.includes('｜语调基准：冷幽默 / 轻小说式吐槽'));
+      assert.ok(storyUser.includes('｜避雷边界：'));
+      assert.ok(storyUser.indexOf('【writingBrief】') < storyUser.indexOf('【SOUL_AND_INTENT】'), '灵魂块插在 writingBrief 之后');
+      assert.ok(storyUser.indexOf('【SOUL_AND_INTENT】') < storyUser.indexOf('【hardConstraints】'), '灵魂块在 hardConstraints 之前');
+    });
+  });
+
+  it('soulAndIntent 坏值/缺失/部分为空时不崩、不输出空标签；超长字段按 120/120/40/100 截断', async () => {
+    // 超长字段截断。
+    await withFetchMock(phaseHandler({
+      brief: () => jsonStream({
+        ...BRIEF,
+        soulAndIntent: { protagonistSoul: '腹'.repeat(200), playerIntent: '意'.repeat(200), toneRegister: '调'.repeat(80), avoidTriggers: '雷'.repeat(200) },
+      }),
+    }), async (mock) => {
+      await runTurnV2(coAuthorRequest());
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyUser.includes(`主角灵魂画像：${'腹'.repeat(120)}｜`), 'protagonistSoul 应截断到 120 字');
+      assert.ok(!storyUser.includes('腹'.repeat(121)));
+      assert.ok(storyUser.includes(`本轮延伸意图：${'意'.repeat(120)}｜`), 'playerIntent 应截断到 120 字');
+      assert.ok(storyUser.includes(`语调基准：${'调'.repeat(40)}｜`), 'toneRegister 应截断到 40 字');
+      assert.ok(storyUser.includes(`避雷边界：${'雷'.repeat(100)}`), 'avoidTriggers 应截断到 100 字');
+    });
+
+    // 只有部分字段：只注入存在的段，不出现空标签。
+    await withFetchMock(phaseHandler({
+      brief: () => jsonStream({ ...BRIEF, soulAndIntent: { toneRegister: '紧迫悬疑' } }),
+    }), async (mock) => {
+      await runTurnV2(coAuthorRequest());
+      const storyUser = lastUserPromptOf(mock.requests[1]);
+      assert.ok(storyUser.includes('【SOUL_AND_INTENT】语调基准：紧迫悬疑'), '仅存在的字段应注入');
+      assert.ok(!storyUser.includes('主角灵魂画像：'));
+      assert.ok(!storyUser.includes('｜本轮延伸意图：'));
+      assert.ok(!storyUser.includes('｜避雷边界：'));
+    });
+
+    // 坏值 / 全空：不崩、不注入空块。
+    for (const badSoul of ['不是对象', 42, null, {}, { protagonistSoul: 42, playerIntent: ['x'] }]) {
+      await withFetchMock(phaseHandler({ brief: () => jsonStream({ ...BRIEF, soulAndIntent: badSoul }) }), async (mock) => {
+        const result = await runTurnV2(coAuthorRequest());
+        assert.ok(!lastUserPromptOf(mock.requests[1]).includes('【SOUL_AND_INTENT】'), `坏值 ${JSON.stringify(badSoul)} 不应注入灵魂块`);
+        assert.equal(result.state.turn, 3);
+      });
+    }
+  });
+
+  it('soulAndIntent 只进可变区：同幕两回合的 system 与稳定上下文逐字节不变（缓存不回归）', async () => {
+    const state = makeState({ turn: 2, revision: 4, history: [], storyAutonomy: 'co_author' });
+    const first: RecordedRequest[] = [];
+    const second: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler({ brief: () => jsonStream({ ...BRIEF, soulAndIntent: { protagonistSoul: '甲型灵魂', toneRegister: '冷静' } }) }), async (mock) => {
+      await runTurnV2(makeRequest({ state }));
+      first.push(...mock.requests);
+    });
+    await withFetchMock(phaseHandler({ brief: () => jsonStream({ ...BRIEF, soulAndIntent: { protagonistSoul: '乙型灵魂', toneRegister: '促狭' } }) }), async (mock) => {
+      await runTurnV2(makeRequest({ state }));
+      second.push(...mock.requests);
+    });
+    for (const [phase, index] of [['planner_pre', 0], ['story', 1]] as const) {
+      assert.equal(systemPromptOf(first[index]), systemPromptOf(second[index]), `${phase}：system 必须逐字节相同`);
+      assert.equal(stableContextOf(first[index]), stableContextOf(second[index]), `${phase}：稳定上下文必须逐字节相同`);
+    }
+    const firstStoryUser = lastUserPromptOf(first[1]);
+    const secondStoryUser = lastUserPromptOf(second[1]);
+    assert.ok(firstStoryUser.includes('甲型灵魂') && secondStoryUser.includes('乙型灵魂'), '灵魂画像只应出现在可变区');
+    assert.ok(firstStoryUser.startsWith('【NARRATIVE_PACE】'), 'story user#2 仍以叙事节奏开头');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L. 灵魂画像 soulProfile 持久化与注入（v0.7.0 / T8）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 灵魂画像 soulProfile（持久化与注入）', () => {
+  /** 去掉 soulProfile 字段，模拟 v0.7.0 之前的旧存档状态（字段在类型上是可选的）。 */
+  const withoutSoulProfile = (state: GameStateV2): GameStateV2 => {
+    const { soulProfile: _ignored, ...rest } = state;
+    return rest as GameStateV2;
+  };
+
+  it('planner_post 的 soulProfile 落盘；下一轮 planner_pre / story / planner_post 都注入【SOUL_PROFILE】', async () => {
+    let firstState: GameStateV2 | undefined;
+    await withFetchMock(phaseHandler({
+      post: () => jsonStream({ ...POST_PATCH, soulProfile: '  腹黑乐子人： 享受信息差与恶作剧\n反差，不主动解释  ' }),
+    }), async () => {
+      const result = await runTurnV2(makeRequest({ state: { storyAutonomy: 'co_author' } }));
+      firstState = result.state;
+      // 落盘前压成单行：换行与连续空白折叠为单个空格，首尾 trim。
+      assert.equal(result.state.soulProfile, '腹黑乐子人： 享受信息差与恶作剧 反差，不主动解释');
+    });
+    assert.ok(firstState, '第一轮应成功');
+
+    const second: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: { ...firstState! } }));
+      second.push(...mock.requests);
+    });
+    const plannerUser = lastUserPromptOf(second[0]);
+    const storyUser = lastUserPromptOf(second[1]);
+    const postUser = lastUserPromptOf(second[2]);
+    for (const [label, user] of [['planner_pre', plannerUser], ['story', storyUser]] as const) {
+      assert.ok(user.includes('【SOUL_PROFILE】主角灵魂画像：腹黑乐子人'), `${label} 应注入持久化灵魂画像`);
+      const authorityAt = user.indexOf('【AUTHORITATIVE_STATE】');
+      const soulAt = user.indexOf('【SOUL_PROFILE】');
+      const inputAt = user.indexOf('【CURRENT_TURN_INPUT】');
+      assert.ok(authorityAt >= 0 && authorityAt < soulAt && soulAt < inputAt, `${label}：画像行应紧跟 AUTHORITATIVE_STATE、位于输入之前`);
+    }
+    // 结算模型需要看到当前画像，才能在"没有变化"时留空而不是每轮重写。
+    assert.ok(postUser.includes('【SOUL_PROFILE】主角灵魂画像：腹黑乐子人'), 'planner_post 也应看到当前画像');
+  });
+
+  it('soulProfile 空串 / 缺失 / 非字符串不覆盖旧画像；旧 state 无画像时不注入空标签', async () => {
+    const hasProfile = makeState({ storyAutonomy: 'co_author', soulProfile: '旧画像：谨慎的观察者' });
+    for (const emptySoul of ['', '   ', '\n\t', null, 42]) {
+      await withFetchMock(phaseHandler({
+        post: () => jsonStream({ ...POST_PATCH, soulProfile: emptySoul }),
+      }), async () => {
+        const result = await runTurnV2(makeRequest({ state: hasProfile }));
+        assert.equal(result.state.soulProfile, '旧画像：谨慎的观察者', `空值 ${JSON.stringify(emptySoul)} 不应覆盖旧画像`);
+      });
+    }
+
+    // 旧存档没有画像：不凭空写出空字段，也不注入空标签。
+    await withFetchMock(phaseHandler(), async (mock) => {
+      const legacyRequest = makeRequest({ state: { storyAutonomy: 'co_author' } });
+      legacyRequest.state = withoutSoulProfile(legacyRequest.state);
+      const result = await runTurnV2(legacyRequest);
+      assert.equal(result.state.soulProfile, undefined, '没有画像时不应凭空产生字段');
+      for (const request of mock.requests) {
+        assert.ok(!allPromptTextOf(request).includes('【SOUL_PROFILE】'), '无画像时不注入空标签');
+      }
+    });
+  });
+
+  it('planner_post 的超长 soulProfile 截断到 120 字，下一轮注入同样截断', async () => {
+    let state: GameStateV2 | undefined;
+    await withFetchMock(phaseHandler({
+      post: () => jsonStream({ ...POST_PATCH, soulProfile: '腹'.repeat(200) }),
+    }), async () => {
+      const result = await runTurnV2(makeRequest({ state: { storyAutonomy: 'co_author' } }));
+      state = result.state;
+      assert.equal(result.state.soulProfile, '腹'.repeat(120));
+    });
+    const next: RecordedRequest[] = [];
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: { ...state! } }));
+      next.push(...mock.requests);
+    });
+    assert.ok(lastUserPromptOf(next[0]).includes(`【SOUL_PROFILE】主角灵魂画像：${'腹'.repeat(120)}`));
+    assert.ok(!lastUserPromptOf(next[0]).includes('腹'.repeat(121)));
+  });
+
+  it('co_author 档结算规则要求按变化更新，其它档明确要求留空；固定模板始终含 soulProfile 字段', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: { storyAutonomy: 'co_author' } }));
+      const coAuthorSystem = systemPromptOf(mock.requests[2]);
+      assert.ok(coAuthorSystem.includes('soulProfile'), 'co_author 结算规则应说明 soulProfile');
+      assert.ok(coAuthorSystem.includes('新的稳定变化'), '应要求只有稳定变化时才更新');
+      assert.ok(coAuthorSystem.includes('留空字符串'), '应说明无变化留空');
+      const coAuthorUser = lastUserPromptOf(mock.requests[2]);
+      assert.ok(coAuthorUser.includes('"soulProfile":'), '固定输出模板必须含 soulProfile 字段（缓存前缀稳定）');
+    });
+
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest()); // 缺省 standard（旧存档行为）
+      const standardSystem = systemPromptOf(mock.requests[2]);
+      assert.ok(standardSystem.includes('不是灵魂共创'), 'standard 档应明确当前不是灵魂共创');
+      assert.ok(standardSystem.includes('必须留空字符串'), 'standard 档必须要求 soulProfile 留空');
+      assert.ok(lastUserPromptOf(mock.requests[2]).includes('"soulProfile":'), '固定模板对所有档一致');
+      // 旧档没有画像 → planner_pre / story 都不注入。
+      assert.ok(!lastUserPromptOf(mock.requests[0]).includes('【SOUL_PROFILE】'));
+      assert.ok(!lastUserPromptOf(mock.requests[1]).includes('【SOUL_PROFILE】'));
+    });
+  });
+
+  it('soulProfile 只进可变区：system 与稳定上下文不因画像变化而改变（缓存不回归）', async () => {
+    const runOnce = async (soulProfile: string) => {
+      const requests: RecordedRequest[] = [];
+      await withFetchMock(phaseHandler(), async (mock) => {
+        await runTurnV2(makeRequest({ state: makeState({ turn: 2, revision: 4, history: [], soulProfile }) }));
+        requests.push(...mock.requests);
+      });
+      return requests;
+    };
+    const withA = await runOnce('画像甲：冷幽默的观察者');
+    const withB = await runOnce('画像乙：冲动的行动派');
+    for (const [phase, index] of [['planner_pre', 0], ['story', 1], ['planner_post', 2]] as const) {
+      assert.equal(systemPromptOf(withA[index]), systemPromptOf(withB[index]), `${phase}：system 必须逐字节相同`);
+    }
+    for (const index of [0, 1]) {
+      assert.equal(stableContextOf(withA[index]), stableContextOf(withB[index]), '稳定上下文必须逐字节相同');
+    }
+    assert.ok(lastUserPromptOf(withA[1]).includes('画像甲') && lastUserPromptOf(withB[1]).includes('画像乙'), '画像只出现在可变区');
+    assert.ok(lastUserPromptOf(withA[1]).startsWith('【NARRATIVE_PACE】'), 'story user#2 仍以叙事节奏开头');
+    assert.ok(lastUserPromptOf(withA[1]).indexOf('【SOUL_PROFILE】') > lastUserPromptOf(withA[1]).indexOf('【AUTHORITATIVE_STATE】'));
+  });
+});
+
 describe('engine.runTurnV2 — 异常短正文防护', () => {
   it('正文低于最小长度时判失败、不提交（流式截断防护）', async () => {
     await withFetchMock(phaseHandler({

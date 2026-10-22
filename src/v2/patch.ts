@@ -7,6 +7,18 @@ const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const oneOf = <T extends string>(v: unknown, values: readonly T[], fallback: T): T => values.includes(v as T) ? v as T : fallback;
 
+/** 主角灵魂画像上限（字符）；与 store / engine 的截断保持一致。 */
+const SOUL_PROFILE_LIMIT = 120;
+/**
+ * 灵魂画像清洗：压成单行、去首尾空白、截断 120 字。
+ *
+ * 非字符串一律视为"未提交"（空串）；空串表示本轮没有变化，不覆盖旧画像。
+ * 压成单行是为了让 `【SOUL_PROFILE】` 只占提示词一行，不会被模型写出的换行截断。
+ */
+const cleanSoulProfile = (v: unknown): string => (
+  typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, SOUL_PROFILE_LIMIT) : ''
+);
+
 /** 清洗并去重字符串数组（去空、去重、限量）。新增与合并两条分支共用，避免规则漂移。 */
 const cleanList = (raw: unknown, max: number, limit: number): string[] => Array.from(new Set(
   (Array.isArray(raw) ? raw : []).map((x) => text(x, max)).filter(Boolean),
@@ -561,7 +573,12 @@ export function commitTurnPatchV2(
     };
   }
 
-  return { ...state, revision: state.revision + 1, summary: textOrPrevious(patch.roundSummary, state.summary, 5000), latestProgress: textOrPrevious(patch.latestProgress, state.latestProgress, 500), characters, relationships, inventory: inventory.filter((x) => x.quantity > 0), storyThreads: threads, facts, destiny, randomEvent, currentScene: patch.scene ? { id: text(patch.scene.id, 80) || state.currentScene?.id || genId('scene'), name: text(patch.scene.name, 50) || state.currentScene?.name || '未知地点', description: text(patch.scene.description, 240) || state.currentScene?.description, time: text(patch.scene.time, 40) || state.currentScene?.time, weather: text(patch.scene.weather, 40) || state.currentScene?.weather } : state.currentScene,
+  // 灵魂画像（v0.7.0）：planner_post 可选更新。空串/缺省表示"本轮没有变化"，保留旧值；
+  // 只有非空值才覆盖，避免模型每回合把同一段画像重写一遍造成漂移。
+  const requestedSoulProfile = cleanSoulProfile(patch.soulProfile);
+  const soulProfileNext = requestedSoulProfile || state.soulProfile;
+
+  return { ...state, revision: state.revision + 1, summary: textOrPrevious(patch.roundSummary, state.summary, 5000), latestProgress: textOrPrevious(patch.latestProgress, state.latestProgress, 500), ...(soulProfileNext !== undefined ? { soulProfile: soulProfileNext } : {}), characters, relationships, inventory: inventory.filter((x) => x.quantity > 0), storyThreads: threads, facts, destiny, randomEvent, currentScene: patch.scene ? { id: text(patch.scene.id, 80) || state.currentScene?.id || genId('scene'), name: text(patch.scene.name, 50) || state.currentScene?.name || '未知地点', description: text(patch.scene.description, 240) || state.currentScene?.description, time: text(patch.scene.time, 40) || state.currentScene?.time, weather: text(patch.scene.weather, 40) || state.currentScene?.weather } : state.currentScene,
     // 选项在这里再规整一次：任何绕过 engine 直接提交 Patch 的调用方都不该能写进空按钮。
     availableActions: state.mode === 'adventure' ? normalizeChoices(patch.actions) : [], lastCommitId: patch.commitId };
 }

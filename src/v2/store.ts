@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { genId } from '@/lib/utils';
 import { readRandomEventBinding } from './randomEvents';
 import type { Background, StoryOutline, WorldBookEntry } from '@/types/content';
-import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2, RandomEventHistoryItemV2, TurnRecordV2 } from './types';
+import type { GameStateV2, JourneyModeV2, LastTurnCheckpointV2, NarrativePaceV2, RandomEventHistoryItemV2, StoryAutonomyV2, TurnRecordV2 } from './types';
 
 export interface SaveV2 {
   id: string;
@@ -70,6 +70,17 @@ function outlineActsOf(raw: unknown): OutlineActLite[] {
 
 /** 故事节终态：只有它们算"本幕完成"，也参与结局门槛。 */
 const TERMINAL_BEAT_STATUSES: ReadonlySet<string> = new Set(['satisfied', 'superseded']);
+
+/** 主角灵魂画像的持久化上限（字符）；与 patch / engine 的截断规则保持一致。 */
+const SOUL_PROFILE_LIMIT = 120;
+
+/**
+ * 新旅程默认的故事推进权限（v0.7.0 灵魂共创）。
+ *
+ * 只用于 `create()`：旧存档有自己的 `storyAutonomy` 值（缺字段/非法值按 standard 迁移），
+ * 默认切换绝不能改变旧存档行为。
+ */
+const DEFAULT_STORY_AUTONOMY: StoryAutonomyV2 = 'co_author';
 
 /**
  * 存档字段兜底。
@@ -170,10 +181,15 @@ export function sanitizeGameStateV2(raw: unknown, outline?: unknown): GameStateV
     phase: raw.phase === 'input' || raw.phase === 'generating' || raw.phase === 'ended' ? raw.phase : 'input',
     mode: raw.mode === 'adventure' ? 'adventure' : 'author',
     narrativePace: raw.narrativePace === 'slow' || raw.narrativePace === 'standard' || raw.narrativePace === 'fast' || raw.narrativePace === 'timeskip' ? raw.narrativePace : 'standard',
-    storyAutonomy: raw.storyAutonomy === 'strict' || raw.storyAutonomy === 'standard' || raw.storyAutonomy === 'free' ? raw.storyAutonomy : 'standard',
+    // 白名单必须包含 v0.7.0 新增的 co_author：缺字段/非法值仍回退 standard，
+    // 保证旧存档行为不因"新旅程默认 co_author"而改变。
+    storyAutonomy: raw.storyAutonomy === 'strict' || raw.storyAutonomy === 'co_author' || raw.storyAutonomy === 'standard' || raw.storyAutonomy === 'free' ? raw.storyAutonomy : 'standard',
     history,
     summary: typeof raw.summary === 'string' ? raw.summary : '',
     latestProgress: typeof raw.latestProgress === 'string' ? raw.latestProgress : undefined,
+    // 灵魂画像（v0.7.0）：旧档缺失时补空串；已有值保留并压成单行、截断 120 字，
+    // 避免手改/导入的存档把多行文本注入提示词。
+    soulProfile: typeof raw.soulProfile === 'string' ? raw.soulProfile.replace(/\s+/g, ' ').trim().slice(0, SOUL_PROFILE_LIMIT) : '',
     currentScene,
     characters: objectsOf<GameStateV2['characters'][number]>(raw.characters)
       .filter((character) => typeof character.id === 'string' && character.id)
@@ -462,7 +478,10 @@ export const useGameStoreV2 = create<StoreV2>()(persist((set) => ({  saves: {},
         phase: 'input',
         mode: p.mode,
         narrativePace: 'standard',
-        storyAutonomy: 'standard',
+        // v0.7.0：新旅程默认灵魂共创（旧存档的 storyAutonomy 原样保留）。
+        storyAutonomy: DEFAULT_STORY_AUTONOMY,
+        // 灵魂画像要等正文跑过几轮才有内容；初始为空串（不注入提示词）。
+        soulProfile: '',
         history: startScene
           ? [{ id: genId('msg'), role: 'assistant', content: startScene, turn: 0, createdAt: now }]
           : [],

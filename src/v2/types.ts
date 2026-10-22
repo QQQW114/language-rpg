@@ -9,12 +9,16 @@ export type NarrativePaceV2 = 'slow' | 'standard' | 'fast' | 'timeskip';
 /**
  * 故事推进权限（与叙事速度解耦）：
  * - `strict` 严格遵循：只写玩家输入明确要求/直接必然产生的内容，不自行推进；
- * - `standard` 标准推进：承接玩家输入后，沿主线自然推进一小步；
+ * - `co_author` 灵魂共创（v0.7.0 新增）：先读懂玩家为主角注入的灵魂、语调与本轮意图，
+ *   80% 笔墨顺延玩家当前戏份，大纲节拍只在能顺着玩家动作余波自然长出来时才嫁接；
+ *   允许本轮 0 节拍（玩家离场/独处/收尾），详见 `【STORY_AUTONOMY】` 文案；
+ * - `standard` 主线推进（导演/主线主导）：承接玩家输入后，沿主线自然推进一小步；
  * - `free` 自由发散：在守世界书/大纲命运方向的前提下，自行安排场景与转折。
  *
- * 缺省/非法值按 `standard` 处理；叙事速度继续只负责写作节奏与篇幅感。
+ * 缺省/非法值按 `standard` 处理（旧存档迁移；新旅程默认值由 store 决定，T8 负责）。
+ * 叙事速度继续只负责写作节奏与篇幅感。
  */
-export type StoryAutonomyV2 = 'strict' | 'standard' | 'free';
+export type StoryAutonomyV2 = 'strict' | 'co_author' | 'standard' | 'free';
 export type RandomEventIntensityV2 = 'related' | 'progress' | 'destiny';
 
 /** 随机事件必须绑定的目标类型：故事节 / 线程 / 关系 / 最终命运锚。 */
@@ -434,6 +438,13 @@ export interface GameStateV2 {
   history: MessageV2[];
   summary: string;
   latestProgress?: string;
+  /**
+   * 主角灵魂画像（v0.7.0 灵魂共创）：从正文中主角的实际言行提炼出的性格弧光、
+   * 行事风格与喜好边界，≤120 字。由 planner_post 可选更新、patch 截断写入、
+   * hydrate 保留；它不是当前回合的意图，而是跨回合延续的角色底色。
+   * 缺省/空串表示尚未形成画像（旧存档无需迁移），不注入提示词。
+   */
+  soulProfile?: string;
   currentScene?: SceneV2;
   characters: CharacterV2[];
   relationships: RelationshipV2[];
@@ -457,6 +468,11 @@ export interface TurnPatchV2 {
   turn: number;
   roundSummary: string;
   latestProgress: string;
+  /**
+   * 主角灵魂画像（可选，仅灵魂共创档由 planner_post 填写，≤120 字）。
+   * 压成单行；无变化/看不出来时必须留空字符串——程序只在非空时覆盖旧值。
+   */
+  soulProfile?: string;
   characters?: Array<{ op: 'create' | 'update'; id: string; name?: string; aliases?: string[]; role?: string; description?: string; status?: CharacterV2['status']; addFacts?: string[]; reason?: string }>;
   relationships?: Array<{ fromId: string; toId: string; affinityDelta?: number; label?: string; note?: string; reason: string }>;
   inventory?: Array<{ op: 'grant' | 'consume' | 'update' | 'remove'; id?: string; name?: string; kind?: InventoryEntryV2['kind']; quantity?: number; description?: string; consumable?: boolean; reason: string }>;

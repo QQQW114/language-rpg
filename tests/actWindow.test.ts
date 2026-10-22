@@ -217,6 +217,12 @@ describe('actWindow.normalizeBeatsThisTurn（推进权限决定节拍数量）',
     assert.equal(normalizeBeatsThisTurn(['一', '二', '三', '四'], 'free').length, MAX_BEATS_THIS_TURN);
   });
 
+  it('co_author 最多保留 1 条，且允许 0 条（零节拍合法）', () => {
+    assert.deepEqual(normalizeBeatsThisTurn(['一', '二', '三', '四'], 'co_author'), ['一']);
+    assert.deepEqual(normalizeBeatsThisTurn([], 'co_author'), [], '0 节拍必须原样保留');
+    assert.deepEqual(normalizeBeatsThisTurn(['   ', null], 'co_author'), [], '空/坏值不会凑出节拍');
+  });
+
   it('叙事速度不再参与裁剪：slow + standard 仍按推进权限保留 2 条', () => {
     assert.deepEqual(normalizeBeatsThisTurn(['敲响门', '门内有人回应', '对方开门'], 'standard'), ['敲响门', '门内有人回应']);
   });

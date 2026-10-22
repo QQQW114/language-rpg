@@ -90,12 +90,21 @@ const PACE_OPTIONS: Array<{ id: NarrativePaceV2; label: string; hint: string }> 
   { id: 'timeskip', label: '时间跨越', hint: '概述数天以上，保留关键节点' },
 ];
 
-/** 故事推进权限：与叙事速度解耦，控制模型能自己把故事推多远。 */
+/**
+ * 故事推进权限：与叙事速度解耦，控制模型能自己把故事推多远。
+ *
+ * 0.7.0 起四档：strict / co_author（灵魂共创，新旅程默认，具体默认值由 store 负责）/
+ * standard / free。standard 的说明改为“导演/主线主导”，避免和灵魂共创混淆。
+ */
 const AUTONOMY_OPTIONS: Array<{ id: StoryAutonomyV2; label: string; hint: string }> = [
-  { id: 'strict', label: '严格遵循', hint: '玩家说到哪就写到哪，不自行推进剧情' },
-  { id: 'standard', label: '标准推进', hint: '承接行动后沿主线自然推进一小步' },
+  { id: 'strict', label: '严格跟随', hint: '玩家说到哪就写到哪，不自行推进剧情' },
+  { id: 'co_author', label: '灵魂共创', hint: '先读你的意图与主角灵魂，顺着你的戏往下写；允许本轮不推主线（推荐默认）' },
+  { id: 'standard', label: '主线推进', hint: '承接行动后沿主线自然推进一小步（导演/主线主导）' },
   { id: 'free', label: '自由发散', hint: '允许模型自行安排场景推进与情节转折' },
 ];
+
+/** 灵魂共创的补充说明：选中该档时显示在切换器下方（小字，不占默认视觉重量）。 */
+const CO_AUTHOR_DETAIL = '先读懂你给主角注入的性格与意图，顺着你的情绪与恶作剧写；没有自然节拍时允许本轮 0 推进，不强行换场景塞新角色。';
 
 const BEAT_STATUS: Record<StoryBeatRuntimeV2['status'], string> = {
   pending: '未展开',
@@ -1365,7 +1374,10 @@ export default function GamePageV2() {
   const pace = save.state.narrativePace ?? 'standard';
   const paceInfo = PACE_OPTIONS.find((x) => x.id === pace) ?? PACE_OPTIONS[1];
   const autonomy = save.state.storyAutonomy ?? 'standard';
-  const autonomyInfo = AUTONOMY_OPTIONS.find((x) => x.id === autonomy) ?? AUTONOMY_OPTIONS[1];
+  // 旧存档缺字段/非法值仍回退 standard 的说明（新旅程默认 co_author 由 store 决定，UI 不假设）。
+  const autonomyInfo = AUTONOMY_OPTIONS.find((x) => x.id === autonomy)
+    ?? AUTONOMY_OPTIONS.find((x) => x.id === 'standard')
+    ?? AUTONOMY_OPTIONS[0];
   const setPace = (next: NarrativePaceV2) => {
     if (next !== pace) {
       useGameStoreV2.getState().update(save.id, (current) => ({
@@ -1925,26 +1937,32 @@ export default function GamePageV2() {
                   ))}
                 </div>
               </div>
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <span className="text-[10px] tracking-[.18em] text-parchment-200/45">推进权限</span>
-                <div className="flex flex-wrap gap-1">
-                  {AUTONOMY_OPTIONS.map((option) => (
-                    <button
-                      type="button"
-                      key={option.id}
-                      title={option.hint}
-                      onClick={() => setAutonomy(option.id)}
-                      className={`rounded-md px-2 py-1 text-[11px] transition ${
-                        autonomy === option.id
-                          ? 'bg-gold/15 text-gold-light ring-1 ring-gold/50'
-                          : 'text-parchment-200/55 hover:bg-parchment-700/50 hover:text-parchment-100'
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+              <div className="mb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] tracking-[.18em] text-parchment-200/45">推进权限</span>
+                  <div className="flex flex-wrap gap-1">
+                    {AUTONOMY_OPTIONS.map((option) => (
+                      <button
+                        type="button"
+                        key={option.id}
+                        title={option.hint}
+                        onClick={() => setAutonomy(option.id)}
+                        className={`rounded-md px-2 py-1 text-[11px] transition ${
+                          autonomy === option.id
+                            ? 'bg-gold/15 text-gold-light ring-1 ring-gold/50'
+                            : 'text-parchment-200/55 hover:bg-parchment-700/50 hover:text-parchment-100'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="text-[10px] text-parchment-200/35">{autonomyInfo.hint}</span>
                 </div>
-                <span className="text-[10px] text-parchment-200/35">{autonomyInfo.hint}</span>
+                {/* 灵魂共创的补充说明：只在选中时显示，避免四档按钮行在窄屏上堆两层文字。 */}
+                {autonomy === 'co_author' && (
+                  <p className="mt-1.5 text-[10px] leading-relaxed text-parchment-200/40">{CO_AUTHOR_DETAIL}</p>
+                )}
               </div>
               {editingLastTurn && (
                 <div className="mb-3 rounded-lg border border-gold/30 bg-gold/5 px-3 py-2 text-xs text-parchment-200/70">

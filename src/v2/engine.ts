@@ -21,22 +21,40 @@ import { buildRandomEventContextBlock, buildRandomEventInstruction, listRandomEv
 import { buildStageAndActWindow, DYNAMIC_WORLD_FACT_LIMIT, normalizeBeatsThisTurn, splitWorldFacts, STABLE_WORLD_FACT_LIMIT } from './actWindow';
 import { analyzePace, buildPaceCorrectionAlert } from './paceGuard';
 import { formatWebSearchFailure, isOfficialDeepSeekEndpoint, plannerWebSearchDiscipline, plannerWebSearchTool, searchWeb, WEB_SEARCH_MAX_CALLS_PER_TURN } from './webSearch';
-import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, RandomEventBindingV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
+import type { ChoiceV2, GameStateV2, ModelActivityV2, ModelPhaseStatusV2, ModelPhaseV2, NarrativePaceV2, PatchWarningV2, RandomEventBindingV2, StoryAutonomyV2, TurnModelCallV2, TurnPatchV2, TurnPartialV2, TurnRecordV2, TurnRequestV2, TurnResultV2 } from './types';
 
 const plannerPrePlayerAgency = `优先级：玩家明确行动 > worldFacts硬设定 > canonicalFacts旅程正史 > 当前程序状态 > 近期正文 > 合理补全。
 玩家也是共同作者。不要把偏离当前路线的行动视为越权，不要机械拒绝；根据世界规律写出其合理结果，并允许玩家真正改变地点、身份、关系和抵达路径。`;
 
 const plannerPreDirectorAgency = `玩家是导演，当前输入是不可撤销的故事指令，拥有最高优先级。必须100%信任玩家输入：不审查合理性、不让主角拒绝或打折扣，输入要求故事如何发展，故事就如何发展、发展到哪。若输入与既有世界规律冲突，以导演指令为准调整叙事与世界表现，使其自然成立。`;
 
-function buildPlannerPreSystem(director: boolean): string {
+/**
+ * 灵魂共创档（co_author）的 planner 顺势嫁接规则。
+ *
+ * 只在 co_author 档追加，其它档保持原 planner 规则不变（旧存档行为稳定）。
+ * 核心：大纲节拍不是任务 KPI——只有能顺着玩家当前动作的余波自然长出来时才嫁接，
+ * 否则宁可是 0 节拍的一回合；绝不能跨场景硬切或空投 NPC。
+ */
+const plannerCoAuthorRules = `
+【灵魂共创档 · 顺势嫁接规则】
+1. 先把玩家的戏读懂演爽：soulAndIntent 必须提炼玩家为主角注入的性格灵魂、本轮真正想体验的乐趣、语调与雷区。大纲节拍只有在能顺着玩家当前动作/情绪的余波自然长出来时（如利用玩家刚制造的群聊八卦、现场动静或恶作剧后果引出交集）才允许激活；与玩家当前情绪频道不同的 pending 故事节一律不激活，严禁跨场景硬切、空投新NPC或为凑节拍制造巧合。
+2. 允许零节拍：玩家本轮明确离场/溜了/睡觉/结束、独处、静坐观察或单纯享受当前乐趣时，beatsThisTurn 必须输出空数组 []，不得强制补事件、不得卡幕；此时只把当下的余味与外部反响写透。0 节拍回合是合法的“角色塑造/日常延展回合”。
+3. writingBrief 配比：70% 顺承并放大玩家动作与情绪乐趣 + 30% 在场环境与人物对他的鲜活反馈（世界必须给玩家真实的反弹，配角不能变木头人）；严禁替主角写心理转折、祈祷、妥协或重大决定；严禁在括号里写“（非查户口、无侵犯感）”这类防御性设计备注——故事模型会把它泄漏成正文旁白。
+4. stopBoundary：停在玩家动作/情绪的余波或对手反应落地处；玩家明确离场/结束时，停在离场后的松弛余味或幕后反响（群聊炸锅、旁人议论），严禁再拦路塞新NPC。
+5. 尊重玩家指定的 POV/多视角/分割线分镜，按玩家给定的比例完整呈现该视角的戏份与信息差乐趣，不得压成几行背景板。
+6. 语调承接：玩家输入里的冷幽默、轻小说式比喻与游戏黑话按同一语调接住；worldFacts 硬设定优先，严禁把玩家的生活化吐槽改写成 debuff/反噬等苦大仇深剧情。`;
+
+function buildPlannerPreSystem(director: boolean, autonomy: StoryAutonomyV2 = 'standard'): string {
+  const coAuthorRules = autonomy === 'co_author' ? plannerCoAuthorRules : '';
   return `你是互动小说的写前规划 Agent，只做本回合写作约束，不扮演角色，不续写正文，只输出严格 JSON（json object）。
 ${director ? plannerPreDirectorAgency : plannerPrePlayerAgency}
 长期大纲描述的是必须逐步抵达的命运、人物成长和设定结局，不是固定路线。玩家改变路线后，规划关键角色、矛盾和事件功能如何自然迁移到新环境，使自由路径最终重新汇合到预设命运。
 偏离只影响抵达速度和路径，不取消长期命运。不要为了拉回大纲而立刻强塞关键角色；本轮只安排自然、可信的一步。
 允许补全资料空白，但只补本回合必要内容。不得预先决定玩家下一步，不得把“考虑、可能、打算”写成已完成决定。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口的读写权限：上一幕只作只读因果基线，当前幕是唯一可展开的施工区，下一幕只允许埋自然伏笔，更远的幕不得提前兑现；窗口未列出的字段表示大纲未提供，不得臆造。
+模板中的 soulAndIntent 用于灵魂共创档：co_author 档必须提炼 protagonistSoul / playerIntent / toneRegister / avoidTriggers 四个字段（各自 ≤120/120/40/100 字）；其它档全部留空字符串。${coAuthorRules}
 【规划粒度与反机械化铁律】
-1. beatsThisTurn（必须在本轮落地的客观结果）：只写本轮要推进的原子节拍，数量由【STORY_AUTONOMY】决定（严格遵循 0~1 个；标准推进 1 个，若本轮没有随机事件最多 2 个；自由发散 1~3 个；严格遵循档若玩家只做原地微动作/观察，允许只推进 active 节拍的局部而不强求本轮 satisfied）。每条用一句话写清本轮在到达stopBoundary之前必须已经实质达成的“客观事实、关系进展或情报结果”（供写后结算判定satisfied）。只写结果底线，不写动作流水账，不得激活窗口未列出的后续故事节。若玩家本轮输入已跨入新的一天或新场景，此前遗留的当日限时琐事（如“今晚某点前交表/核对”）自动视为已翻篇或改期，严禁在新时间线里继续复读旧死线阻塞当前故事节。
+1. beatsThisTurn（必须在本轮落地的客观结果）：只写本轮要推进的原子节拍，数量由【STORY_AUTONOMY】决定（严格遵循 0~1 个；标准推进 1 个，若本轮没有随机事件最多 2 个；自由发散 1~3 个；灵魂共创 0~1 个，玩家离场/独处/收尾时允许且应当输出空数组 []；严格遵循与灵魂共创档若玩家只做原地微动作/观察，允许只推进 active 节拍的局部而不强求本轮 satisfied）。每条用一句话写清本轮在到达stopBoundary之前必须已经实质达成的“客观事实、关系进展或情报结果”（供写后结算判定satisfied）。只写结果底线，不写动作流水账，不得激活窗口未列出的后续故事节。若玩家本轮输入已跨入新的一天或新场景，此前遗留的当日限时琐事（如“今晚某点前交表/核对”）自动视为已翻篇或改期，严禁在新时间线里继续复读旧死线阻塞当前故事节。
 2. writingBrief（戏剧张力与潜台词，严禁写成分镜脚本）：只描述本轮的场景处境、在场人物各自的真实意图或隐秘顾虑、以及双方互动的核心戏剧张力。严禁在writingBrief中替故事模型编写具体台词句子、严禁把多个设定关键词打包塞给单一角色念出、严禁规定“先看哪里、停顿几秒、怎么翻东西”等微动作步骤。对于前文已经发生过的日常重复流程（如变身、换装、查验随身证件、刷门禁、洗漱通勤等），若本轮无新意外，必须在writingBrief中指示“一笔带过日常流程，直接切入核心互动”。上一回合正文已经具体演过的对话包袱、玩梗或刚确认过的信息（如已聊过的逃课掩护、已点过的菜名），本轮严禁在writingBrief中安排角色重复再演一遍，必须往前推进新话头。
 3. creativeSpace（编剧自由度授权）：明确列出本轮交由故事模型自由发挥的空间（例如：如何通过日常琐事或打岔自然带出情报、如何用具体生活化小动作体现人物暗中留意或戒备，而非直白说破或干瞪眼）。
 4. stopBoundary（节拍兑现后的交互悬置切面）：单回合的交锋轮数与篇幅以【STORY_AUTONOMY】为准（叙事速度只调整镜头焦距与时间流速，不提供第二套篇幅目标）。严禁在NPC刚抛出第一句招呼或开场提问时就过早停笔！必须先让beatsThisTurn的核心结果在场景中实质落地，再将stopBoundary设在“结果落地后顺势衍生出的新追问或新状况、正待主角回应的切面”，不得把边界后的动作或后续安排写入writingBrief。
@@ -79,8 +97,15 @@ function buildStorySystem(director: boolean, profile: StoryProfile): string {
 ${director ? storyDirectorAgency : storyPlayerAgency}
 允许出现服务于当前行动的普通环境、次要人物与生活插曲。
 【STAGE_AND_ACT_WINDOW】给出三幕聚焦窗口权限：只展开当前幕施工契约允许的内容，上一幕只作因果基线，下一幕只允许埋伏笔，严禁提前兑现。
-【beatsThisTurn】是本轮唯一的节拍目标：必须自然兑现列出的节拍结果，不得自行激活未列出的故事节。
+【beatsThisTurn】是本轮唯一的节拍目标：必须自然兑现列出的节拍结果，不得自行激活未列出的故事节；空数组 [] 表示本轮是合法的零节拍回合，只写顺延玩家戏份与外部反响，不得自行补事件或强行开启新戏。
 【RANDOM_EVENT_CONTEXT】与【RANDOM_EVENT_PLAN】给出随机事件安排：必须自然融入当前场景与玩家行动，不得让角色瞬移或写成无关路人事件。
+
+【主角意志与世界反应（硬规则）】
+1. 主角意志归玩家：主角是否发动核心能力、是否妥协、是否祈祷、是否原谅或做重大决定，100%由玩家输入决定。你只写外部压迫、生理感官反应与NPC的鲜活回应，绝不替主角下决心（如玩家选择“装死等待”，只能把外部危机推到临界点，严禁替主角写祈祷并自动完成变身）。
+2. 禁止防御性免责旁白：严禁写“没有A的恶意，也没有B的盘问，只有C”这类向玩家解释设计意图的防御句式；直接写人物的具体动作、神态与现场反馈。
+3. 语调同频与世界书优先：玩家输入的冷幽默、轻小说式比喻与游戏黑话必须按同一语调承接，不得升级成严肃危机；worldFacts 硬设定优先，严禁自行发明 debuff/反噬（尤其世界书写明“无副作用”的异能）。
+4. 尊重玩家镜头权：玩家指定 POV/镜头切换/分割线多视角时，按玩家给定的分镜比例完整呈现该视角的戏份与信息差，不得压成背景板。
+5. 主角意志归玩家，外部世界归你：在场NPC面对主角举动的反应必须鲜活、有个性、符合逻辑且有力度；不得因为要尊重玩家决定就把配角写成不敢搭话的木头人。
 
 【叙事质感与场景纵深准则】
 1. 纯净文学叙事与自然指代：严禁将状态表中的分类标签（如“XX型舍友”“怀疑者”）当人名写进正文；初见路人可用当下特征临时指代，但一旦角色进入正式互动、自我介绍或落笔签名，必须自然给出并沿用其真实姓名或固定昵称（如“老陈”“林晓”），严禁把“抱书女生”这类临时外貌词跨场景当作固定人名使用。正文结尾严禁输出“【stopBoundary】”等任何系统标记、括号提示或JSON。
@@ -121,11 +146,24 @@ function buildWritingExecutionAnchor(profile: StoryProfile): string {
 
 const plannerPostDirectorAgency = `玩家输入为导演指令，CURRENT_STORY按该指令实际发生；不得因其偏离世界规律或原路线而将其判定为冲突或需要修正。`;
 
-function buildPlannerPostSystem(director: boolean): string {
+/**
+ * planner_post 的 soulProfile 规则（v0.7.0 / T8）。
+ *
+ * 灵魂画像只在灵魂共创档维护：其它档明确要求留空，避免旧存档（standard）凭空多出
+ * 一个"主角灵魂"字段、改变既有行为。程序侧对空串一律"不覆盖"，所以留空是安全的。
+ */
+function plannerPostSoulProfileRule(autonomy: StoryAutonomyV2): string {
+  return autonomy === 'co_author'
+    ? 'soulProfile：从CURRENT_STORY中主角的实际言行提炼"玩家把主角塑造了什么样的人"——性格弧光、行事风格、幽默方式与喜好边界，压成一句话（≤120字）。只有正文体现出新的稳定变化时才填写；本轮没有变化、看不出来或只是日常重复时留空字符串（程序只在非空时覆盖旧画像，留空不会丢失）。不要每轮重写同一段画像，也不要把临时情绪或本回合意图写成长期画像。'
+    : 'soulProfile：当前推进权限不是灵魂共创（co_author），必须留空字符串；不要填写。';
+}
+
+function buildPlannerPostSystem(director: boolean, autonomy: StoryAutonomyV2 = 'standard'): string {
   return `你是互动小说的写后审计与状态提交 Agent。你不是作者，不续写故事，不规划下一幕，不扮演角色。只依据本次提供的CURRENT_TURN_INPUT与CURRENT_STORY结算本回合，只输出严格 JSON（json object）。
 摘要、进度和Patch必须是CURRENT_STORY已经明确发生的内容；“准备、考虑、计划、可能”不能记为已完成行动。
 ${director ? plannerPostDirectorAgency : ''}
 每轮必须更新destiny，但只更新实际变化的故事节。故事完成度是当前全部事件与人物状态距离预设结尾的综合估值，可上升也可下降，不是累计积分。completionEstimate直接输出0到100的当前估值，并用completionReason说明已满足和仍缺少的核心结尾条件。
+${plannerPostSoulProfileRule(autonomy)}
 destiny.currentActId必须原样回显权威状态中的当前幕，不得自行填写新幕；幕推进只由程序按故事节完成情况判定，模型自报的幕不一致会被忽略并留警告。
 只有本幕剩余故事节因玩家改道确实需要跨幕兑现时，才把actTransition.proposeNextAct置为true，并用actTransition.actExitSummary以不超过2句话概括本幕为何收束；常规推进、只是提到下一幕或想加快节奏时都必须保持false（程序会按终态比例与挂账规则gate）。
 故事节状态含义：pending未到条件；available条件成熟；active正在发生；satisfied核心功能已由正文满足；weakened已满足结果被后续削弱；reframed因路线变化需换实现方式；superseded已由等价故事节承担。
@@ -213,6 +251,7 @@ const postShape = `{
   "schemaVersion":2,
   "roundSummary":"仅总结本轮正文",
   "latestProgress":"正文结束时的真实位置和状态",
+  "soulProfile":"主角在当前玩家塑造下展现的性格、行事风格与喜好边界（仅灵魂共创档，≤120字；无变化留空）",
   "characters":[{"op":"create|update","id":"stable-id","name":"仅create必填","aliases":[],"role":"","description":"","status":"active|absent|missing|dead|unknown","addFacts":[],"reason":"正文证据"}],
   "relationships":[{"fromId":"player","toId":"stable-id","affinityDelta":0,"label":"","note":"","reason":"正文证据"}],
   "inventory":[{"op":"grant|consume|update|remove","id":"existing-or-stable-id","name":"create时使用","kind":"item|ability|quest_item","quantity":1,"description":"","consumable":false,"reason":"正文证据"}],
@@ -463,10 +502,74 @@ function storyAutonomyInstruction(p: TurnRequestV2) {
   const mode = p.state.storyAutonomy ?? 'standard';
   const instructions = {
     strict: '严格遵循（玩家绝对主导）：玩家说到哪就只写到哪。只呈现玩家当前输入动作/台词所触发的直接物理反馈与在场人物的当即第一反应（自然篇幅400~800字即可，严禁为凑字数慢镜头注水）；不得替主角决定下一步行动，不得自行发起新的事件转折或强行转移场景，一旦给出直接反馈即刻停笔交还控制权。',
+    co_author: '灵魂共创（推演主角灵魂 · 顺势延伸）：1. 读懂并顺延主角灵魂（最高优先级）：先在soulAndIntent中准确提炼玩家为故事主角注入的性格灵魂、幽默语调与本轮核心意图，本轮80%以上的笔墨必须顺着玩家开启的情绪流、分镜视角（含多视角切换）与行动惯性往下推演，把玩家想看的戏剧反差与人物反应演透；在场NPC与外部世界要给出鲜活、有个性的真实反应，不得因为不替主角做主就把配角写成木头人。2. 严禁代写底牌与曲解玩笑：主角是否首次发动核心能力、是否妥协、祈祷或做重大决定，必须留给玩家亲自触发（如玩家选择“装死等待”，只能把外部危机推到临界点，严禁替主角写祈祷并自动完成变身）；玩家输入中的生活化吐槽或幽默转场（如“跑饿了去吃什么”），必须按轻松语调承接，严禁违背世界书“无副作用”设定自行编造低血糖、体力透支等苦大仇深的反噬。3. 节拍顺势嫁接与零节拍许可（beatsThisTurn 0~1个）：大纲节拍只有在能顺着玩家当前动作的余波自然长出来时（如直接利用玩家刚制造的群聊八卦或现场动静引出交集）才允许激活1个；若玩家本轮意图是离场收尾（如“溜了”）、独处、或单纯享受恶作剧余味，beatsThisTurn必须输出空数组[]，且必须将randomEvent.planned设为false，严禁在回合末尾换地图强塞新NPC或跨场景硬切任务。4. 自然篇幅与余韵停笔（目标800~1200字）：停笔切面（stopBoundary）应落在玩家当前行动引发的鲜活余波或对手反应上；当改动或重塑曾被玩家拒绝的桥段时，直接呈现自然场景，严禁在正文中写出“没有A的恶意，也没有B的盘问”之类向玩家解释设计意图的防御性免责文本。',
     standard: '标准推进（主线协同）：真实承接玩家输入后，顺着当前场景与本轮beatsThisTurn自然推进当场对手戏（目标篇幅800~1100字，硬上限不超过1200字；若本轮同时安排了随机事件，须与主线交锋合并在此篇幅内紧凑完成，不得额外拉长篇幅），确保本轮节拍的客观结果实质落地；随后在衍生出的新追问或新状况切面（stopBoundary）停笔，不替玩家做重大抉择。',
     free: '自由发散（模型主动编排）：在遵循世界书硬设定与三幕窗口红线的前提下，授权你根据玩家给出的方向自主编排饱满的场景起承转合、引入合理的突发插曲或推进1~3个关联节拍（自然篇幅1000~1500字），主动把故事推向更具戏剧张力的关键节点，直至抵达stopBoundary处停笔。',
   } as const;
   return instructions[mode] ?? instructions.standard;
+}
+
+/** 灵魂共创档 planner_pre 输出的四字段（`soulAndIntent`）字数上限与解析兜底。 */
+const SOUL_AND_INTENT_LIMITS = {
+  protagonistSoul: 120,
+  playerIntent: 120,
+  toneRegister: 40,
+  avoidTriggers: 100,
+} as const;
+
+interface SoulAndIntentV2 {
+  protagonistSoul: string;
+  playerIntent: string;
+  toneRegister: string;
+  avoidTriggers: string;
+}
+
+/**
+ * 解析 planner_pre 的 `soulAndIntent`（仅 co_author 档要求填写）。
+ *
+ * 向后兼容：缺失、非对象、字段非字符串一律退化为空串，不报错、不阻塞回合；
+ * 每个字段去空白、压单行并截断到约定字数（120/120/40/100）。
+ */
+function readSoulAndIntent(raw: unknown): SoulAndIntentV2 {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const clip = (value: unknown, max: number): string => (
+    typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : ''
+  );
+  return {
+    protagonistSoul: clip(source.protagonistSoul, SOUL_AND_INTENT_LIMITS.protagonistSoul),
+    playerIntent: clip(source.playerIntent, SOUL_AND_INTENT_LIMITS.playerIntent),
+    toneRegister: clip(source.toneRegister, SOUL_AND_INTENT_LIMITS.toneRegister),
+    avoidTriggers: clip(source.avoidTriggers, SOUL_AND_INTENT_LIMITS.avoidTriggers),
+  };
+}
+
+/**
+ * 把 soulAndIntent 格式化为 story 可变区的一行 `【SOUL_AND_INTENT】`。
+ *
+ * 四段任一为空则省略该段；四段全空返回空串（不注入空标签，旧存档/其它档行为不变）。
+ */
+function soulAndIntentLine(soul: SoulAndIntentV2): string {
+  const parts: string[] = [];
+  if (soul.protagonistSoul) parts.push(`主角灵魂画像：${soul.protagonistSoul}`);
+  if (soul.playerIntent) parts.push(`本轮延伸意图：${soul.playerIntent}`);
+  if (soul.toneRegister) parts.push(`语调基准：${soul.toneRegister}`);
+  if (soul.avoidTriggers) parts.push(`避雷边界：${soul.avoidTriggers}`);
+  return parts.length ? `【SOUL_AND_INTENT】${parts.join('｜')}` : '';
+}
+
+/** 主角灵魂画像上限（字符）；与 patch / store 的截断保持一致。 */
+const SOUL_PROFILE_LIMIT = 120;
+
+/**
+ * 持久化灵魂画像 → 权威状态块后的一行 `【SOUL_PROFILE】`（v0.7.0 / T8）。
+ *
+ * 与每回合的 `soulAndIntent`（本轮意图）不同：soulProfile 是跨回合延续的
+ * "主角在玩家塑造下是什么样的人"。旧存档/其它档没有值时返回空串，不注入空标签。
+ * 防御性再压一次单行并截断：状态可能来自手改存档或旧版程序，提示词结构不能被它破坏。
+ */
+function soulProfileLine(raw: unknown): string {
+  const profile = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, SOUL_PROFILE_LIMIT) : '';
+  return profile ? `【SOUL_PROFILE】主角灵魂画像：${profile}` : '';
 }
 
 /**
@@ -905,15 +1008,16 @@ function resolveTurnRuntime(p: TurnRequestV2, state: GameStateV2): TurnRuntimeV2
     && !!String(roleInjects.planner.text ?? '').trim()
     && !state.plannerInjectApplied;
   const plannerPrePrompt = withRoleInject(
-    `${buildPlannerPreSystem(directorPerspective)}${plannerToolsEnabled ? plannerToolDiscipline : ''}${webSearchAllowed ? plannerWebSearchDiscipline : ''}`,
+    `${buildPlannerPreSystem(directorPerspective, state.storyAutonomy ?? 'standard')}${plannerToolsEnabled ? plannerToolDiscipline : ''}${webSearchAllowed ? plannerWebSearchDiscipline : ''}`,
     shouldInjectPlanner ? roleInjects.planner : undefined,
   );
   // 文风 profile：由 story 模型自动选择；强模型省掉微示范、锚点更短（复审结论 P1-4）。
   const storyProfile = resolveStoryProfile(storyModel);
   const storyPrompt = withRoleInject(buildStorySystem(directorPerspective, storyProfile), roleInjects?.story);
   // 写后结算只做状态提交，不检索历史，因此不注入工具纪律、不提供工具。
+  // v0.7.0：soulProfile 只在灵魂共创档要求填写，其它档明确留空（旧存档行为不变）。
   const plannerPostPrompt = withRoleInject(
-    buildPlannerPostSystem(directorPerspective),
+    buildPlannerPostSystem(directorPerspective, state.storyAutonomy ?? 'standard'),
     roleInjects?.post,
   );
   return {
@@ -996,13 +1100,15 @@ async function runPostAndCommitV2(
   // 而不是调用方此刻的 p.state（二者仅由 runTurnSettlementV2 的 CAS 校验保证 revision/turn 相同）。
   const postRequest: TurnRequestV2 = { ...p, state: commitBase, input: turn.input };
   const plannerAuthorityBeforeTurn = snapshot(postRequest);
+  // 结算模型需要看到"当前已持久化的灵魂画像"才能判断本轮有没有变化（无变化留空）。
+  const soulProfileBlock = soulProfileLine(commitBase.soulProfile);
   // 模板里不再内嵌 commitId / baseRevision / turn（它们每回合变化，会让整段模板失效）。
   // 具体值统一在下面这条消息的可变区里给出：TURN_ID 带 turn 与 commitId，
   // 另外单独给出 baseRevision 与 turn，避免模型只能从模板的占位值里猜。
   // asPatch() 会用程序自己的值覆盖这三个字段，因此模型照抄占位值也不会出错。
   const postMessages: ChatMessage[] = [
     { role: 'system', content: runtime.plannerPostPrompt },
-    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${commitBase.turn}:${turn.commitId}\n【baseRevision】${commitBase.revision}\n【turn】${commitBase.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n【CURRENT_TURN_INPUT】${turn.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(turn.brief)}\n【CURRENT_STOP_BOUNDARY】${String(turn.brief.stopBoundary ?? '')}\n${commitBase.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${turn.story}` },
+    { role: 'user', content: `严格按下列结构输出；所有数组元素必须是对象，不得用字符串代替Patch：\n${postShape}\n【TURN_ID】${commitBase.turn}:${turn.commitId}\n【baseRevision】${commitBase.revision}\n【turn】${commitBase.turn}\n【AUTHORITATIVE_STATE_BEFORE_TURN】${plannerAuthorityBeforeTurn}\n${soulProfileBlock ? `${soulProfileBlock}\n` : ''}【CURRENT_TURN_INPUT】${turn.input}\n【CURRENT_WRITE_PLAN】${JSON.stringify(turn.brief)}\n【CURRENT_STOP_BOUNDARY】${String(turn.brief.stopBoundary ?? '')}\n${commitBase.mode === 'author' ? 'author模式：actions必须为空数组。' : 'adventure模式：生成2到4个actions。'}\n【CURRENT_STORY】${turn.story}` },
   ];
   const postThinkingParts: string[] = [];
   emitPhase(p, 'planner_post', runtime.plannerModel, 'started', undefined, false);
@@ -1137,6 +1243,9 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
   // 上一回合越界（升华式收尾 / 时间跳太多 / 篇幅超预算）时，本轮只做软纠偏：
   // 在 planner_pre 与 story 的可变区（窗口之后、【AUTHORITATIVE_STATE】之前）注入纠偏块。
   const paceCorrectionAlert = paceCorrectionAlertOf(p.state);
+  // 持久化的主角灵魂画像（v0.7.0）：有值时紧跟在【AUTHORITATIVE_STATE】之后单独成行，
+  // 让规划/故事模型都能看到"玩家把主角塑造了什么样的人"；空值不注入任何标签。
+  const soulProfileBlock = soulProfileLine(p.state.soulProfile);
   // 提示词结构对缓存命中至关重要：供应商（DeepSeek / Anthropic / OpenAI）的前缀缓存
   // 只认"从第一个字节开始、逐字节相同的部分"。因此每条消息都按
   //   固定指令与输出模板（每回合逐字节相同） → 本回合可变的状态与输入
@@ -1146,7 +1255,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     { role: 'system', content: plannerPrePrompt },
     { role: 'user', content: `【STABLE_STORY_CONTEXT】${stableContext}` },
     // 固定输出模板行仍排在最前（可复用前缀）；三幕窗口、动态世界书与节奏纠偏只出现在模板之后。
-    { role: 'user', content: `只输出 {"intent":"","currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n${paceCorrectionAlert ? `${paceCorrectionAlert}\n` : ''}【AUTHORITATIVE_STATE】${plannerAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
+    { role: 'user', content: `只输出 {"intent":"","soulAndIntent":{"protagonistSoul":"","playerIntent":"","toneRegister":"","avoidTriggers":""},"currentAct":"","activeBeatIds":[],"beatsThisTurn":[],"destinyProgress":"","pathChange":"","reframingNeeded":[],"reconvergencePlan":"","nextStoryFunction":"","writingBrief":"","hardConstraints":[],"creativeSpace":[],"forbiddenChanges":[],"stopBoundary":"","randomEvent":{"planned":false,"targetKind":"beat|thread|relationship|reconvergence","targetId":"","summary":""}}\n${stageActWindow ? `${stageActWindow}\n` : ''}${dynamicWorldFacts}\n${paceCorrectionAlert ? `${paceCorrectionAlert}\n` : ''}【AUTHORITATIVE_STATE】${plannerAuthority}\n${soulProfileBlock ? `${soulProfileBlock}\n` : ''}【CURRENT_TURN_INPUT】${p.input}\n【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}${randomEventPrompt ? `\n${randomEventPrompt}` : ''}` },
   ];
   emitPhase(p, 'planner_pre', plannerModel, 'started', undefined, plannerToolsEnabled);
   const preParams: Parameters<typeof chatJSONDetailed>[1] = {
@@ -1206,6 +1315,8 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
     emitActivity(p, { type: 'warning', phase: 'planner_pre', model: plannerModel, ...randomEventBindingCheck.warning });
   }
   const randomEventPlanForStory = randomEventPlanToText(brief?.randomEvent) ?? '本回合无随机事件安排';
+  // 灵魂共创档：planner_pre 提炼的主角灵魂画像 → story 可变区（缺失/坏值退化为空串，不报错）。
+  const soulAndIntent = soulAndIntentLine(readSoulAndIntent(brief?.soulAndIntent));
   // 规划模型可能漏写或写多节拍：按「推进权限」统一裁剪后再交给故事模型。
   const beatsThisTurn = normalizeBeatsThisTurn(brief?.beatsThisTurn, p.state.storyAutonomy);
   const storyVariablePrelude = [
@@ -1236,7 +1347,7 @@ export async function runTurnV2(p: TurnRequestV2): Promise<TurnResultV2> {
       // 三幕窗口与 beatsThisTurn 必须排在【NARRATIVE_PACE】之后：它们每回合都可能变，
       // 插到固定写作要求之前会让这条消息的固定前缀归零（现有缓存回归断言也要求
       // story 的 user 消息以【NARRATIVE_PACE】开头）。
-      { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n【CURRENT_TURN_INPUT】${p.input}\n${buildWritingExecutionAnchor(storyProfile)}` },
+      { role: 'user', content: `【NARRATIVE_PACE】${paceInstruction(p)}\n【STORY_AUTONOMY】${storyAutonomyInstruction(p)}\n${randomEventPrompt ? `${randomEventPrompt}\n` : ''}${storyVariablePrelude}\n【RANDOM_EVENT_PLAN】${randomEventPlanForStory}\n【writingBrief】${brief.writingBrief || brief.intent}\n${soulAndIntent ? `${soulAndIntent}\n` : ''}【hardConstraints】${JSON.stringify(brief.hardConstraints ?? [])}\n【creativeSpace】${JSON.stringify(brief.creativeSpace ?? [])}\n【forbiddenChanges】${JSON.stringify(brief.forbiddenChanges ?? [])}\n【STOP_BOUNDARY】${brief.stopBoundary || '停在需要玩家继续决定的位置'}\n【AUTHORITATIVE_STATE】${storyAuthority}\n${soulProfileBlock ? `${soulProfileBlock}\n` : ''}【CURRENT_TURN_INPUT】${p.input}\n${buildWritingExecutionAnchor(storyProfile)}` },
     ],
   };
   emitPhase(p, 'story', storyModel, 'started');

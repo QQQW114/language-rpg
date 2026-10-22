@@ -70,6 +70,9 @@ export function makeState(overrides: Record<string, unknown> = {}): GameStateV2 
     history: [],
     summary: '旧摘要',
     latestProgress: '旧进展',
+    // v0.7.0：sanitize 会把缺失的 soulProfile 归一化为空串；夹具显式给出空串，
+    // 让"导出→导入"这类整体 deepEqual 的往返测试与真实 hydrate 结果一致。
+    soulProfile: '',
     currentScene: { id: 'scene-1', name: '旧场景', description: '旧场景描述', time: '傍晚', weather: '雨' },
     characters: [
       {

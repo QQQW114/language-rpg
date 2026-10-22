@@ -1713,3 +1713,42 @@ describe('patch — 程序权威幕状态机', () => {
     ]);
   });
 });
+
+describe('patch — 主角灵魂画像 soulProfile（v0.7.0 / T8）', () => {
+  it('写入时 trim、压成单行并截断 120 字', () => {
+    const single = commit({}, { soulProfile: '  腹黑乐子人\n享受信息差  与 恶作剧  ' });
+    assert.equal(single.soulProfile, '腹黑乐子人 享受信息差 与 恶作剧');
+
+    const long = commit({}, { soulProfile: '腹'.repeat(200) });
+    assert.equal(long.soulProfile?.length, 120);
+    assert.equal(long.soulProfile, '腹'.repeat(120));
+  });
+
+  it('空串/空白串/非字符串表示本轮无变化，不覆盖旧画像', () => {
+    for (const empty of ['', '   ', '\n\t', null, 42]) {
+      const next = commit({ soulProfile: '旧画像：谨慎的观察者' }, { soulProfile: empty });
+      assert.equal(next.soulProfile, '旧画像：谨慎的观察者', `空值 ${JSON.stringify(empty)} 不应覆盖`);
+    }
+  });
+
+  it('没有提交 soulProfile 字段时保留原值', () => {
+    const next = commit({ soulProfile: '旧画像' });
+    assert.equal(next.soulProfile, '旧画像');
+  });
+
+  it('旧 state 没有 soulProfile 时不会凭空写出空字段（旧存档行为不变）', () => {
+    const { soulProfile: _ignored, ...legacyState } = makeState();
+    const state = legacyState as GameStateV2;
+    assert.equal('soulProfile' in state, false);
+    const next = commitTurnPatchV2(state, makePatch({ baseRevision: state.revision, turn: state.turn }));
+    assert.equal('soulProfile' in next, false);
+    assert.equal(next.soulProfile, undefined);
+  });
+
+  it('已有 soulProfile 且本轮未提交时，提交其他 Patch 不影响画像', () => {
+    const next = commit({ soulProfile: '旧画像' }, {
+      characters: [{ op: 'create', id: 'char-new', name: '新人物', reason: 'x' }],
+    });
+    assert.equal(next.soulProfile, '旧画像');
+  });
+});

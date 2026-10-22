@@ -8,7 +8,9 @@
  * - `buildStageAndActWindow`：生成 `【STAGE_AND_ACT_WINDOW】`（上一幕只读基线 / 当前幕施工
  *   契约 / 下一幕仅埋伏笔 / 最终命运锚 / 阶段红线）。该块只进可变区。分段有字符预算，
  *   整体超预算时按等级降级（先压远景与锚点，最后才压当前幕契约），总长始终 ≤ 900。
- * - `normalizeBeatsThisTurn`：把规划模型的 `beatsThisTurn` 裁剪成 1~3 条；慢叙事只留第 1 条。
+ * - `normalizeBeatsThisTurn`：按「故事推进权限」把规划模型的 `beatsThisTurn` 裁剪到
+ *   0~3 条（strict/co_author 最多 1 条且允许 0 条；standard 最多 2；free 最多 3）。
+ *   叙事速度不再参与节拍数量（v2.2 起它只负责镜头焦距与节奏）。
  *
  * 这里不读写全局状态、不 import engine，避免提示词逻辑与回合执行互相牵连。
  */
@@ -21,7 +23,7 @@ export const STABLE_WORLD_FACT_LIMIT = 20;
 export const DYNAMIC_WORLD_FACT_LIMIT = 10;
 /** 关键词命中判定使用的近期历史条数（与规划模型近期窗口同源）。 */
 export const WORLD_FACT_MATCH_HISTORY = 6;
-/** 一轮最多推进的原子节拍数；慢叙事只取第 1 条。 */
+/** 自由发散档一轮最多推进的原子节拍数。 */
 export const MAX_BEATS_THIS_TURN = 3;
 /** 三幕窗口总长上限（含 `【STAGE_AND_ACT_WINDOW】` 标题行）。 */
 export const STAGE_ACT_WINDOW_LIMIT = 900;
@@ -114,15 +116,20 @@ export function splitWorldFacts(p: WorldFactSplitInput): WorldFactSplit {
  * 把规划模型给出的 `beatsThisTurn` 裁剪成本轮可执行的节拍清单。
  *
  * 模型经常把整段剧情写成字符串数组（或混入非字符串脏值），因此只接受非空字符串、
- * 去首尾空白；数量上限由「故事推进权限」决定（v2.2 / gemini-4-argon 复审结论）：
+ * 去首尾空白；数量上限由「故事推进权限」决定（v2.2 / v0.7.0 复审结论）：
  * - strict 严格遵循：最多 1 条（允许 0 条）；
- * - standard 标准推进：最多 2 条；
+ * - co_author 灵魂共创：最多 1 条（**允许并鼓励 0 条**：玩家离场/独处/收尾时不硬推）；
+ * - standard 主线推进：最多 2 条；
  * - free 自由发散：最多 3 条。
  * 叙事速度不再参与节拍数量裁剪（它只负责镜头焦距与节奏）。
  */
 export function normalizeBeatsThisTurn(raw: unknown, autonomy: StoryAutonomyV2 = 'standard'): string[] {
   if (!Array.isArray(raw)) return [];
-  const cap = autonomy === 'strict' ? 1 : autonomy === 'free' ? MAX_BEATS_THIS_TURN : 2;
+  const cap = autonomy === 'free'
+    ? MAX_BEATS_THIS_TURN
+    : autonomy === 'standard'
+      ? 2
+      : 1; // strict / co_author：最多 1 条，空数组原样保留（0 节拍合法）
   const beats: string[] = [];
   for (const item of raw) {
     if (typeof item !== 'string') continue;
