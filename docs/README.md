@@ -22,6 +22,7 @@
 - [`release-notes-v0.6.0.md`](release-notes-v0.6.0.md)：v0.6.0 发行说明（Prompt Pack v2.2/v2.2.1、失败恢复、混合端点、阶段级重试）。
 - [`release-notes-v0.6.1.md`](release-notes-v0.6.1.md)：v0.6.1 发行说明（复审 P0/P1 微调：profile 绑定复核、节拍收口、标准档篇幅下移）。
 - [`release-notes-v0.7.0.md`](release-notes-v0.7.0.md)：v0.7.0 发行说明（灵魂共创 co_author、零节拍、随机事件解耦、导出 meta）。
+- [`release-notes-v0.7.1.md`](release-notes-v0.7.1.md)：v0.7.1 发行说明（生成中/完成后不自动滚动、司辰仪文案清理）。
 - [`release-notes-v0.3.0.md`](release-notes-v0.3.0.md)：v0.3.0 发布说明。
 
 仓库根目录另有：

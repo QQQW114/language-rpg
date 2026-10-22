@@ -1067,8 +1067,6 @@ export default function GamePageV2() {
   const autoFollowRef = useRef(true);
   /** 程序自身滚动的时间窗；窗口内的 scroll 事件不算"用户上翻"。 */
   const programmaticScrollUntilRef = useRef(0);
-  /** 首次到达用 auto（瞬时），之后的增量用 smooth，避免开局就平滑滚动一大段。 */
-  const scrollBehaviorRef = useRef<ScrollBehavior>('auto');
   /** 已从 localStorage 恢复过草稿的存档 id（每个存档只恢复一次）。 */
   const draftRestoredRef = useRef<string>();
   /** 供 pagehide 落盘使用的输入快照（避免把 effect 依赖到每次按键）。 */
@@ -1085,17 +1083,8 @@ export default function GamePageV2() {
   }, [save]);
 
   // ---------------------------------------------------------------------------
-  // 自动滚动到底部 + 阅读位置实时追踪
+  // 阅读位置实时追踪（不自动滚动：生成中/生成完成都不把界面拖到底部）
   // ---------------------------------------------------------------------------
-  useEffect(() => {
-    const anchor = storyEndRef.current;
-    if (!anchor || !autoFollowRef.current) return;
-    const behavior: ScrollBehavior = scrollBehaviorRef.current;
-    scrollBehaviorRef.current = 'smooth';
-    programmaticScrollUntilRef.current = Date.now() + 800;
-    anchor.scrollIntoView({ block: 'end', behavior });
-  }, [save?.state.history.length, stream, activeTurn, busy, queue.length]);
-
   useEffect(() => {
     const onScroll = () => {
       const anchor = storyEndRef.current;
@@ -1407,11 +1396,6 @@ export default function GamePageV2() {
     lastEnqueueRef.current = { text: trimmed, at: now };
     setQueue((current) => [...current, { id: createQueueId(), input: trimmed, pace: selectedPace, createdAt: Date.now() }]);
     setInput('');
-    autoFollowRef.current = true;
-    setIsScrolledUp(false);
-    scrollBehaviorRef.current = 'smooth';
-    programmaticScrollUntilRef.current = Date.now() + 800;
-    storyEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
   };
 
   const enqueue = (value: string) => enqueueWithPace(value, pace);

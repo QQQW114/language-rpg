@@ -378,13 +378,13 @@ export function ModelActivityPanel({
                 {active ? PHASE_LABEL[active] : '司辰仪 · 本轮模型活动'}
               </span>
               <span className="hidden rounded border border-gold/25 bg-ink/55 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-gold/75 sm:inline">
-                {busy ? 'LIVE TELEMETRY' : 'SETTLED'}
+                {busy ? '生成中' : '已完成'}
               </span>
             </div>
             <span className="mt-0.5 block truncate text-xs text-parchment-200/50">
               {busy
-                ? '双模型链路正在运转，点击阶段节点可检视实时思考链与工具轨迹'
-                : '三阶段推演与状态对账已完成'}
+                ? '正在写这一回合的故事…'
+                : '这一回合的故事已经写好了'}
             </span>
           </div>
         </div>
