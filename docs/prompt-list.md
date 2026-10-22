@@ -1,4 +1,4 @@
-# 当前提示词清单（Prompt Pack v2.2.1）
+# 当前提示词清单（Prompt Pack v2.2.1 + 灵魂共创 v0.7.0）
 
 当前 V2 提示词全部内嵌在 `src/v2/engine.ts`，没有独立的 `src/prompts/` 目录。三阶段分工：
 
@@ -7,6 +7,8 @@ planner_pre（写前规划）→ story（写正文）→ planner_post（写后�
 ```
 
 Prompt Pack v2.2.1 的设计原则：**规划只定「结果底线 + 戏剧切面」，故事模型独占场景、台词与详略调度**；单回合篇幅与展开幅度的唯一事实来源是 `【STORY_AUTONOMY】`，文风 profile 只控制笔法密度与近因锚点长短；三阶段 JSON 契约、程序权威状态与前缀缓存结构不变。
+
+v0.7.0 在此基础上新增**灵魂共创（co_author）**推进权限：先读懂玩家给主角注入的灵魂与本轮意图，80% 笔墨顺延玩家的戏，大纲节拍只在能自然嫁接时激活（允许 0 节拍）；`soulProfile` 跨回合持久化主角画像，随机事件降级为「情境催化剂」（冷却 3~5、可主动跳过）。新旅程默认 co_author，旧存档仍 standard。
 
 ### v2.2（gemini-4-argon 复审后，2026-10-21）
 
@@ -26,25 +28,46 @@ Prompt Pack v2.2.1 的设计原则：**规划只定「结果底线 + 戏剧切�
 - 叙事速度四档自此只负责镜头焦距与时间流速，不提供第二套篇幅目标；三阶段 JSON 契约、程序权威状态与前缀缓存结构不变。
 - 验证：`tests/engine.test.ts` 新增单一来源回归断言——story system 中不得出现 `\d+~\d+字` 形式的数值篇幅带、数值带只允许出现在 `【STORY_AUTONOMY】`（story user）里、planner_pre system 同样不得写死篇幅。T4 真实链路（2026-10-21）：strict / standard / free 均值 **638 / 1126 / 1477** 字、单调分离；deepseek 20 回合 p50 **1275** / max 2002；gemini 20 回合 20/20、p50 **1421** / max 1786、19/19 随机事件 resolved（固定输入/单次采样/反代无缓存；详见 `docs/prompt-design-log.md` §7.5 与复审包 07）。
 
+### v0.7.0 灵魂共创（co_author，2026-10-22）
+
+**推进权限四档**（`GameStateV2.storyAutonomy`，与叙事速度正交）：
+
+| 档位 | 定位 | `beatsThisTurn` 上限 | 默认 |
+|---|---|---|---|
+| `strict` | 严格跟随：玩家说到哪写到哪 | 0~1 | — |
+| **`co_author`** | **灵魂共创：读灵魂 → 顺延 80% → 自然嫁接节拍** | **0~1（允许空数组）** | **新旅程默认** |
+| `standard` | 主线推进（导演/主线主导） | 1 条；本轮无随机事件时最多 2 | 旧存档/缺字段 |
+| `free` | 自由发散：模型主动编排场景转折 | 1~3 | — |
+
+- **planner_pre**：输出模板新增 `soulAndIntent`（`protagonistSoul` ≤120 / `playerIntent` ≤120 / `toneRegister` ≤40 / `avoidTriggers` ≤100 字；仅 co_author 必填，其它档必须留空，坏值退化为空串不报错）。co_author 档追加「顺势嫁接规则」：先读懂玩家的戏；大纲节拍只在能顺着玩家动作/情绪余波自然长出来时激活 1 个，否则 `beatsThisTurn: []` 且 `randomEvent.planned=false`；`writingBrief` 70% 顺承 + 30% 环境反馈、禁写防御性括号备注；`stopBoundary` 停在余波/幕后反响；尊重 POV 与分割线分镜；语调承接且世界书优先。
+- **planner_post**：新增 `soulProfile`（≤120 字；仅 co_author 要求填写，只在正文体现新的稳定变化时更新，无变化留空字符串；程序只在非空时覆盖旧画像；其它档明确要求留空）。
+- **story**：新增 5 条硬规则（主角意志归玩家 / 禁防御性免责旁白 / 语调同频且世界书优先、禁止自行发明 debuff / 尊重玩家镜头权 / 外部世界与 NPC 必须鲜活）；user#2 在 `【writingBrief】` 后注入单行 `【SOUL_AND_INTENT】主角灵魂画像：…｜本轮延伸意图：…｜语调基准：…｜避雷边界：…`；在 `【AUTHORITATIVE_STATE】` 后注入跨回合 `【SOUL_PROFILE】主角灵魂画像：…`（planner_pre / planner_post 同位置也有；空值不输出标签）。这些块只进可变区 user#2，`system` 与 `【STABLE_STORY_CONTEXT】` 逐字节不变。
+- **零节拍**：`normalizeBeatsThisTurn` 对 co_author 截到最多 1 条且允许 `[]`；0 节拍回合是「角色塑造/日常延展回合」，patch 与 paceGuard 不卡幕、不强制补事件、不触发纠偏。
+- **随机事件（co_author 情境催化剂）**：冷却由存档区间夹到 **3~5 回合**；到期回合 planner 可 `randomEvent.planned=false` 主动跳过（不写 history、不 pending 每回合重试，只顺延一个冷却窗口）；禁止跨场景空投 pending 故事节，允许绑定关系/当前线程/旧钩子；切幕平滑只拉近到冷却下界、不下穿窗口。
+- **导出 meta**：备份信封 `meta` 含设置快照（不含 Key）/ `outlineId` / `backgroundId` / `finalStateSummary`（act、完成度、`soulProfile`、beats）；导入端不依赖 meta。
+
 ## 三个阶段的提示词函数
 
 | 模型 | 阶段 | 提示词构造 | 说明 |
 |---|---|---|---|
-| 规划模型 | 写前规划 | `buildPlannerPreSystem(director)` | 输出本回合写作约束 JSON；`beatsThisTurn` 只写必须在本轮落地的客观结果，`writingBrief` 只写处境/隐秘顾虑/戏剧张力，`stopBoundary` 是节拍兑现后的交互悬置切面 |
-| 故事模型 | 正文写作 | `buildStorySystem(director, profile)` | 只输出中文小说正文；含场景纵深准则、泛化声线矩阵；`compact` 额外带正反微示范，`expressive` 不带；profile **不携带数值篇幅带**，篇幅以 `【STORY_AUTONOMY】` 为准 |
-| 规划模型 | 写后结算 | `buildPlannerPostSystem(director)` | 输出增量状态 Patch JSON；`satisfied` 按叙事功能实质兑现判定，已走完功能的 active 节拍需结案 |
+| 规划模型 | 写前规划 | `buildPlannerPreSystem(director, autonomy)` | 输出本回合写作约束 JSON；`beatsThisTurn` 只写必须在本轮落地的客观结果，`writingBrief` 只写处境/隐秘顾虑/戏剧张力，`stopBoundary` 是节拍兑现后的交互悬置切面；co_author 档追加「顺势嫁接规则」+ `soulAndIntent` 必填 |
+| 故事模型 | 正文写作 | `buildStorySystem(director, profile)` | 只输出中文小说正文；含场景纵深准则、泛化声线矩阵与「主角意志/世界反应」5 条硬规则；`compact` 额外带正反微示范，`expressive` 不带；profile **不携带数值篇幅带**，篇幅以 `【STORY_AUTONOMY】` 为准 |
+| 规划模型 | 写后结算 | `buildPlannerPostSystem(director, autonomy)` | 输出增量状态 Patch JSON；`satisfied` 按叙事功能实质兑现判定；co_author 档额外要求按变化输出 `soulProfile`（其它档必须留空） |
 
 ## 消息拼装与缓存分区
 
 ```text
 planner_pre：system（固定） + user#1【STABLE_STORY_CONTEXT】（固定）
-             + user#2（固定输出模板 + 三幕窗口 + 动态世界书 + 节奏纠偏 + 权威状态 + 当前输入
+             + user#2（固定输出模板〔含 soulAndIntent〕 + 三幕窗口 + 动态世界书 + 节奏纠偏
+               + 【AUTHORITATIVE_STATE】 + 【SOUL_PROFILE】(co_author) + 当前输入
                + 叙事节奏 + 推进权限【STORY_AUTONOMY】 + 随机事件）
 story：      system（固定，篇幅指引指向【STORY_AUTONOMY】） + user#1【STABLE_STORY_CONTEXT】（固定）
-             + user#2【NARRATIVE_PACE】【STORY_AUTONOMY】…【writingBrief/hardConstraints/creativeSpace/
-               forbiddenChanges/STOP_BOUNDARY】【AUTHORITATIVE_STATE】【CURRENT_TURN_INPUT】
-               + 【WRITING_EXECUTION_ANCHOR】（尾部近因锚点；不写死轮数）
-planner_post：system（固定） + user（固定输出模板 + 权威状态 + 输入 + 规划 + 停笔边界 + 正文）
+             + user#2【NARRATIVE_PACE】【STORY_AUTONOMY】…【writingBrief】
+               + 【SOUL_AND_INTENT】(co_author) + 【hardConstraints/creativeSpace/forbiddenChanges/
+               STOP_BOUNDARY】【AUTHORITATIVE_STATE】+【SOUL_PROFILE】(co_author)
+               + 【CURRENT_TURN_INPUT】+【WRITING_EXECUTION_ANCHOR】（尾部近因锚点；不写死轮数）
+planner_post：system（固定） + user（固定输出模板〔含 soulProfile〕 + 权威状态 + 【SOUL_PROFILE】(co_author)
+               + 输入 + 规划 + 停笔边界 + 正文）
 ```
 
 - 前缀缓存硬约束：`system` 与 `user#1` 逐字节稳定；story 的 `user#2` 必须以 `【NARRATIVE_PACE】` 开头（有测试断言）；所有可变内容只出现在 user#2 内。
@@ -60,11 +83,15 @@ planner_post：system（固定） + user（固定输出模板 + 权威状态 + �
 | `plannerToolDiscipline` / `plannerContextTool` | `search_story_context` 上下文检索工具与纪律 |
 | `plannerWebSearchDiscipline` / `plannerWebSearchTool` | `web_search` 官方联网搜索（默认关、仅官方端点） |
 | `writingExecutionAnchor` | story 用户消息末尾的近因锚点（compact 完整版 / expressive 38 字短版；不写死展开轮数，展开幅度回指 `【STORY_AUTONOMY】`） |
-| `storyAutonomyInstruction(p)` | 生成 `【STORY_AUTONOMY】` 三档推进权限文案；**篇幅与展开幅度的唯一来源**，planner_pre 与 story 共用同一份文本 |
-| `postShape` | 写后结算输出 JSON 模板 |
+| `storyAutonomyInstruction(p)` | 生成 `【STORY_AUTONOMY】` **四档**推进权限文案（strict / co_author / standard / free）；**篇幅与展开幅度的唯一来源**，planner_pre 与 story 共用同一份文本 |
+| `plannerCoAuthorRules` | co_author 档追加的 planner「顺势嫁接规则」（仅 co_author；其它档提示词不变） |
+| `readSoulAndIntent()` / `soulAndIntentLine()` | 解析 planner_pre 的 `soulAndIntent`（字段级截断/坏值兜底）→ story 可变区单行 `【SOUL_AND_INTENT】`；四段全空不输出空标签 |
+| `soulProfileLine()` | 把持久化 `state.soulProfile` 格式化为 `【SOUL_PROFILE】`（≤120 字、压单行、空值不注入），planner_pre / story / planner_post 三处共用 |
+| `plannerPostSoulProfileRule(autonomy)` | planner_post 的 soulProfile 规则：co_author 要求按变化填写，其它档明确要求留空 |
+| `postShape` | 写后结算输出 JSON 模板（含 `soulProfile` 字段） |
 | `paceInstruction(p)` / `randomEventInstruction(p)` | 叙事速度说明 / 随机事件三档指令 |
 
-每回合按需注入：`【STAGE_AND_ACT_WINDOW】`（≤900 字三幕窗口）、`【DYNAMIC_WORLD_FACTS】`（关键词命中的世界书条目）、`【beatsThisTurn】`（程序按推进权限裁剪：strict ≤1 / standard ≤2 / free ≤3 条；叙事速度不参与节拍数量）、`【PACE_CORRECTION_ALERT】`（上一回合越界时的软纠偏）、`【RANDOM_EVENT_CONTEXT】` / `【RANDOM_EVENT_PLAN】`（到期随机事件）。
+每回合按需注入：`【STAGE_AND_ACT_WINDOW】`（≤900 字三幕窗口）、`【DYNAMIC_WORLD_FACTS】`（关键词命中的世界书条目）、`【beatsThisTurn】`（程序按推进权限裁剪：strict 0~1 / **co_author 0~1 且允许空数组** / standard 1（无随机事件最多 2）/ free 1~3；叙事速度不参与节拍数量）、`【PACE_CORRECTION_ALERT】`（上一回合越界时的软纠偏）、`【RANDOM_EVENT_CONTEXT】` / `【RANDOM_EVENT_PLAN】`（到期随机事件）；co_author 档另有 `【SOUL_AND_INTENT】`（本轮）与 `【SOUL_PROFILE】`（跨回合，仅非空时注入）。
 
 ## 高优先级注入
 
@@ -97,14 +124,15 @@ planner_post：system（固定） + user（固定输出模板 + 权威状态 + �
 
 ## 修改提示词时的同步清单
 
-1. `src/v2/engine.ts` 的 `build*System` / `postShape` / user#2 拼装；
-2. `src/v2/actWindow.ts`（三幕窗口 / 世界书拆分 / 节拍裁剪）；
-3. `src/v2/randomEvents.ts`（事件绑定 / 历史 / 指令）；
+1. `src/v2/engine.ts` 的 `build*System` / `postShape` / user#2 拼装（含 co_author 规则、`soulAndIntent`、`【SOUL_AND_INTENT】`/`【SOUL_PROFILE】` 注入）；
+2. `src/v2/actWindow.ts`（三幕窗口 / 世界书拆分 / 节拍裁剪，含 co_author 0~1 与零节拍许可）；
+3. `src/v2/randomEvents.ts`（事件绑定 / 历史 / 指令 / co_author 冷却 3~5 与情境催化剂文案）；
 4. `src/v2/paceGuard.ts`（节奏审计 / 纠偏文本）；
 5. `src/v2/contextSearch.ts` / `src/v2/webSearch.ts`（工具返回结构）；
-6. 测试：`tests/engine.test.ts`（请求形状与注入断言，含 v2.2.1 篇幅单一来源回归）、`scripts/e2e-mock-flow.mjs`（44 条断言）、`tests/paceGuard.test.ts` 等。
+6. 状态层：`src/v2/types.ts`（`storyAutonomy` 四档、`soulProfile`、`soulAndIntent`）、`src/v2/patch.ts`（soulProfile 写入、随机事件跳过/冷却）、`src/v2/store.ts`（新旅程默认 co_author、旧档 hydrate 回退 standard）；
+7. 测试：`tests/engine.test.ts`（请求形状、co_author/soulProfile/零节拍/随机事件注入断言，含 v2.2.1 篇幅单一来源回归）、`tests/actWindow.test.ts`（节拍裁剪）、`scripts/e2e-mock-flow.mjs`（44 条断言），当前全量 **661 条 / 24 个测试文件**。
 
 ## 模型分级建议
 
-- 日常 / 轻量档：三阶段都用 `deepseek-flash` + Prompt Pack v2.2.1（当前生产基线；v2.1 实测单回合约 1,100~1,200 字，v2.2.1 篇幅随 `【STORY_AUTONOMY】` 三档浮动）；
-- 高优品质档：只把 story 阶段切到 `deepseek-v4-pro`，planner_pre / planner_post 继续用 flash（v2.1/v2.2 下规划与结算准确率已足够，且显著节省成本与首字延迟）。
+- 日常 / 轻量档：三阶段都用 `deepseek-flash` + Prompt Pack v2.2.1（当前生产基线；v2.1 实测单回合约 1,100~1,200 字，v2.2.1 篇幅随 `【STORY_AUTONOMY】` 三档浮动；v0.7.0 新旅程默认 co_author）；
+- 高优品质档：只把 story 阶段切到 `deepseek-v4-pro`，planner_pre / planner_post 继续用 flash（v2.1/v2.2 下规划与结算准确率已足够，且显著节省成本与首字延迟）；co_author 与混合端点正交，可组合使用。

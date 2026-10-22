@@ -2,6 +2,41 @@
 
 本项目从 v0.3.0 起使用语义化版本号。早期测试标签保留原名，不再作为后续标签命名规范。
 
+## [0.7.0] - 2026-10-22
+
+> 发行说明：[`docs/release-notes-v0.7.0.md`](docs/release-notes-v0.7.0.md)
+
+### 新增
+
+- **灵魂共创模式（co_author，新旅程默认）**：`storyAutonomy` 从三档扩为四档（`strict` 严格跟随 / `co_author` 灵魂共创 / `standard` 主线推进 / `free` 自由发散）；**新旅程默认 `co_author`**（store 的 `DEFAULT_STORY_AUTONOMY`），旧存档与缺字段/非法值在 hydrate 时仍回退 `standard`，历史存档行为不变。
+  - `planner_pre` 新增 `soulAndIntent`（`protagonistSoul` ≤120 / `playerIntent` ≤120 / `toneRegister` ≤40 / `avoidTriggers` ≤100 字，仅 co_author 档必填；坏值/缺失退化为空串，不报错），并追加 co_author 专属「顺势嫁接规则」：先读懂玩家给主角注入的灵魂与本轮意图，80% 笔墨顺延玩家当前戏份；大纲节拍只有能顺着玩家动作余波自然长出来时才激活 1 个，否则输出 `beatsThisTurn: []`；`writingBrief` 按 70% 顺承 / 30% 环境反应配比，禁止替主角写祈祷/妥协/决定与防御性设计备注；`stopBoundary` 停在余韵/幕后反响；尊重玩家指定 POV、多视角与分割线分镜。
+  - `planner_post` 新增 `soulProfile`（≤120 字，仅 co_author 档要求填写；只在正文体现新的稳定变化时更新，无变化留空字符串，程序只在非空时覆盖旧画像）。
+  - `story` 新增 5 条硬规则（主角意志归玩家、禁「没有 A 也没有 B」防御性免责旁白、语调同频且世界书优先（禁止自行发明 debuff/反噬）、尊重玩家镜头权、外部世界必须鲜活不得把配角写成木头人）；user#2 在 `【writingBrief】` 后注入 `【SOUL_AND_INTENT】`，在 `【AUTHORITATIVE_STATE】` 后注入持久化 `【SOUL_PROFILE】`；`planner_pre` / `planner_post` 同样能看到 `【SOUL_PROFILE】`。两处都只在可变区（user#2），system 与 `【STABLE_STORY_CONTEXT】` 保持逐字节不变。
+  - **零节拍**：`normalizeBeatsThisTurn` 对 co_author 上限为 1 且允许空数组；0 节拍回合是合法的「角色塑造/日常延展回合」，patch 与 paceGuard 不因此卡幕、不强制补事件、不触发纠偏。
+  - **随机事件（co_author 情境催化剂）**：冷却从存档区间夹到 **3~5 回合**（`CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN/MAX`）；到期回合 planner_pre 可显式 `randomEvent.planned=false` **主动跳过**（不写 history、不进入 pending 每回合重试，只顺延一个冷却窗口）；禁止为激活不在当前场景的 pending 故事节而空投跨场景事件，允许绑定关系/当前线程/旧钩子；切幕平滑在 co_author 下不下穿冷却下界。
+  - **UI**：游戏页推进权限四档（严格跟随 / 灵魂共创 / 主线推进 / 自由发散），co_author 附「先读你的意图与主角灵魂，顺着你的戏往下写；允许本轮不推主线」说明。
+  - **导出 meta（T11）**：存档备份信封新增可选 `meta`（`version` / `settings` 快照 / `outlineId` / `backgroundId` / `finalStateSummary{act, actIndex, completion, soulProfile, beats}`）；只服务离线复盘，**不含 API Key / Base URL**，导入端不依赖该字段，旧信封无 meta 仍可导入。
+
+### 修复
+
+- **防御性免责旁白泄漏**：planner 把「非查户口/无侵犯感」这类负向约束写进 `writingBrief` 括号后，story 会把设计意图泄漏成正文（「没有 A 的恶意，也没有 B 的盘问」）。co_author 档禁写防御性备注，story 层同步禁止该句式，直接写人物动作与神态。
+- **把玩家冷幽默写成世界书禁止的 debuff**：玩家「跑饿了去吃什么」被模型扩写成异能反噬/低血糖；co_author 档要求语调同频，世界书「无副作用」等硬设定优先，禁止自行发明 debuff/反噬。
+
+### 测试
+
+- 单元测试 604 → **661 条 / 24 个测试文件**（T7–T12 新增 57 条）；e2e **44/44**、build、`test:patch` 全绿（T12 / Lead 验证）。新增覆盖：co_author 四档注入与回退、`soulAndIntent` 边界与坏值、`【SOUL_AND_INTENT】`/`【SOUL_PROFILE】` 注入位置与缓存前缀不变、`soulProfile` 落盘/截断/旧档兼容、零节拍裁剪、随机事件 co_author 冷却与主动跳过、导出 meta（含不含密钥）。
+- **T12 真实链路 A/B（2026-10-22，baseline `776bb52`）**：gemini-3.8-flash-high × 错位青春 × co_author 10 回合 **10/10 完成、31/31 请求 HTTP 200、总 20.2 min**；字数 1494 / 1658 / 1628 / 1249 / 1384 / 1478 / 1516 / 1520 / 1861 / 1683（min 1249 / p50 **1520** / p90 1861 / max **1861** / mean 1547，较原始 standard mean 1187 约 +30%，pacing 全干净）；**5/10 回合 `beatsThisTurn=[]`**；随机事件 2 计划 / 2 触发 / 1 次 T8 主动跳过；自动切幕 1 次、终态 2/5、完成度 27%；延迟 mean 121s；T7 一次 story 截断由 T3 阶段级重试救回（31 请求 = 30 正常 + 1 重试，未整回合重跑）；`soulProfile` 10/10 非空、6 次更新；P0 验收 14 项 13 ✅ + 回合 T4 ⚠️ 基本达标；旧档 standard 3 回合回归行为未变。数据源 `test-runs/v07-coauthor-validation.md`。
+
+### 文档
+
+- `docs/prompt-design-log.md` 新增 §9「灵魂共创模式（co_author）」：背景、协议与提示词、零节拍/随机事件解耦、T12 A/B 验收数据与剩余项；`docs/prompt-list.md` 补四档推进权限、co_author planner/story 规则与注入块、随机事件规则；`docs/PROJECT_STATUS.md` / `README.md` 同步状态、UI、导出与已知边界。
+- 复审包新增 `docs/temp/gemini-4-argon-review/08-coauthor-design-and-validation.md`（第三轮复审落地 + T12 A/B），并重打包 `gemini-4-argon-review.zip`，保留 00–07。
+
+### 已知（0.7.1 候选，不阻塞 0.7.0）
+
+- **超现实转场只做到轻快压缩**：验收回合 T4 中玩家明示的「传送室」蒙太奇被压缩成一句带弹簧感的通勤，未按字面做超现实演出；可考虑在 story 可变区加「玩家明示的幻想/超现实转场按其字面呈现」规则（`docs/temp/gemini-4-argon-review/08` §剩余项）。
+- **T8 路人台词 nuance**：NPC 误诊台词含「低血糖」字样，属路人视角猜测、正文明确否认能力消耗；如统一口径可在文案层换词，非必须保留。
+
 ## [0.6.1] - 2026-10-21
 
 > 发行说明：[`docs/release-notes-v0.6.1.md`](docs/release-notes-v0.6.1.md)
