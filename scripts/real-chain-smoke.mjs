@@ -19,7 +19,7 @@
  *
  * 可选：LRPG_TURNS=2（默认 2）、LRPG_MAX_TOKENS=2500、LRPG_RETRIES=5、
  *       LRPG_TOOLS=1（启用规划模型 search_story_context 工具，默认关闭）、
- *       LRPG_AUTONOMY=standard（推进权限 strict/standard/free，默认 standard）、
+ *       LRPG_AUTONOMY=standard（推进权限 strict/co_author/standard/free，默认 standard）、
  *       LRPG_STORY_API_BASE / LRPG_STORY_API_KEY / LRPG_STORY_MODEL
  *       （混合端点：story 阶段独立连接与模型；留空分别继承全局，默认与旧行为一致）。
  * 产物：test-runs/real-chain-report.json（被 gitignore）。
@@ -68,8 +68,8 @@ const TURN_TIMEOUT_MS = Math.max(60000, Number(process.env.LRPG_TURN_TIMEOUT_MS 
 const TOOLS_ENABLED = process.env.LRPG_TOOLS === '1';
 // 官方联网搜索开关（仅官方 DeepSeek Base 生效）；LRPG_WEB_SEARCH=1 时同时启用工具。
 const WEB_SEARCH_ENABLED = process.env.LRPG_WEB_SEARCH === '1';
-// 推进权限（storyAutonomy）：strict / standard / free，默认 standard；非法值回退 standard。
-const VALID_AUTONOMY = ['strict', 'standard', 'free'];
+// 推进权限（storyAutonomy）：strict / co_author / standard / free，默认 standard；非法值回退 standard。
+const VALID_AUTONOMY = ['strict', 'co_author', 'standard', 'free'];
 const AUTONOMY = (() => {
   const raw = String(process.env.LRPG_AUTONOMY || 'standard').trim().toLowerCase();
   if (!VALID_AUTONOMY.includes(raw)) {
@@ -261,6 +261,9 @@ const describeState = (state) => {
       enabled: event.enabled,
       intensity: event.intensity,
       pending: event.pending,
+      // 冷却/到期判定需要：co_author 的触发区间变化与“到期但主动跳过”都靠这两个字段解释。
+      nextTriggerTurn: event.nextTriggerTurn,
+      triggerRange: [event.triggerIntervalMin, event.triggerIntervalMax],
       activeBinding: event.activeBinding
         ? `${event.activeBinding.targetKind}:${event.activeBinding.targetId}（${event.activeBinding.summary}）`
         : undefined,
@@ -367,6 +370,18 @@ async function runOneTurn(input, turnIndex) {
     pacing: turnRecord?.pacing,
     calls: turnRecord?.calls?.map((call) => `${call.phase}:${call.model}`) ?? [],
     activities,
+    // 写前规划产物：co_author A/B 需要看 beatsThisTurn 是否允许 []、随机事件是否主动跳过、
+    // soulAndIntent 是否提炼、writingBrief/stopBoundary 是否越权（用于把问题归因到提示词/程序/模型）。
+    brief: {
+      intent: result.brief?.intent,
+      beatsThisTurn: result.brief?.beatsThisTurn ?? null,
+      activeBeatIds: result.brief?.activeBeatIds ?? null,
+      soulAndIntent: result.brief?.soulAndIntent ?? null,
+      randomEvent: result.brief?.randomEvent ?? null,
+      writingBrief: result.brief?.writingBrief,
+      stopBoundary: result.brief?.stopBoundary,
+    },
+    soulProfile: next.soulProfile ?? null,
     state: describeState(next),
     // 保留原始事件历史与幕历史，供长局评测聚合（describeState 里是展示用字符串）。
     randomEventHistory: next.randomEvent.history ?? [],
