@@ -3074,4 +3074,135 @@ describe('GamePage — story 重试信号的流式清理（纯函数）', () => 
   });
 });
 
+// ---------------------------------------------------------------------------
+// I. 随机事件 co_author：冷却 3~5 + 可跳过顺延 + 禁跨场景（T9）
+// ---------------------------------------------------------------------------
+
+describe('engine.runTurnV2 — 随机事件 co_author 调度（T9）', () => {
+  /** 到期状态（turn=2，nextTriggerTurn=1，存档区间 3~6 → co_author 收成 3~5）。 */
+  const DUE_RANDOM_EVENT = {
+    enabled: true,
+    nextTriggerTurn: 1,
+    pending: false,
+    intensity: 'related' as const,
+    triggerIntervalMin: 3,
+    triggerIntervalMax: 6,
+  };
+
+  function coAuthorDueRequest(hooks: Parameters<typeof makeRequest>[0] = {}) {
+    return makeRequest({
+      ...hooks,
+      state: { storyAutonomy: 'co_author', randomEvent: DUE_RANDOM_EVENT, ...(hooks.state ?? {}) },
+    });
+  }
+
+  it('co_author 到期提示：planner_pre 有情境催化剂/禁跨场景/可跳过，story 只看到禁跨场景', async () => {
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(coAuthorDueRequest());
+      const pre = lastUserPromptOf(mock.requests[0]);
+      const story = lastUserPromptOf(mock.requests[1]);
+      for (const [phase, prompt] of [['planner_pre', pre], ['story', story]] as const) {
+        assert.ok(prompt.includes('【RANDOM_EVENT_CONTEXT】'), `${phase} 应注入随机事件上下文`);
+        assert.ok(prompt.includes('灵魂共创·情境催化剂'), `${phase} 应标出情境催化剂定位`);
+        assert.ok(prompt.includes('空投跨场景事件'), `${phase} 应禁止跨场景补 beat`);
+        assert.ok(prompt.includes('不强制绑定 beat'), `${phase} 应允许绑定关系/线程/旧钩子`);
+        assert.ok(prompt.includes('冷却 3~5 回合'), `${phase} 应给出冷却区间`);
+      }
+      assert.ok(pre.includes('可主动跳过'), 'planner_pre 需要看到跳过许可');
+      assert.ok(pre.includes('randomEvent.planned=false'), '跳过协议要写给 planner');
+      assert.ok(pre.includes('跳过不扣任何进度'));
+      assert.ok(!story.includes('可主动跳过'), 'story 不参与跳过决策，只按 planned 计划写正文');
+    });
+
+    // standard 档仍只注入旧上下文/指令，不带 co_author 文案。
+    await withFetchMock(phaseHandler(), async (mock) => {
+      await runTurnV2(makeRequest({ state: { randomEvent: DUE_RANDOM_EVENT } }));
+      const pre = lastUserPromptOf(mock.requests[0]);
+      assert.ok(pre.includes('【RANDOM_EVENT_CONTEXT】'));
+      assert.ok(!pre.includes('情境催化剂'), 'standard 不应出现 co_author 文案');
+      assert.ok(!pre.includes('可主动跳过'));
+    });
+  });
+
+  it('co_author 明确 planned=false：主动跳过，不 pending 循环，顺延 3~5 回合', async () => {
+    const brief = { ...BRIEF, randomEvent: { planned: false, summary: '' } };
+    const result = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(brief) }),
+      () => runTurnV2(coAuthorDueRequest()),
+    );
+    const random = result.state.randomEvent;
+    assert.equal(random.pending, false, '跳过不得进入 pending 每回合重试');
+    const delay = random.nextTriggerTurn - 2; // 提交前 turn=2
+    assert.ok(delay >= 3 && delay <= 5, `顺延应在 3~5 回合，实际 ${delay}`);
+    assert.equal(random.lastTriggeredTurn, undefined, '跳过不算事件发生');
+    assert.equal(random.history, undefined, '跳过不是 interrupted，不写历史');
+  });
+
+  it('standard 档 planned=false 仍是旧的 pending 顺延（行为不变）', async () => {
+    const brief = { ...BRIEF, randomEvent: { planned: false, summary: '' } };
+    const result = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(brief) }),
+      () => runTurnV2(makeRequest({ state: { randomEvent: DUE_RANDOM_EVENT } })),
+    );
+    assert.equal(result.state.randomEvent.pending, true);
+    assert.equal(result.state.randomEvent.nextTriggerTurn, 2 + 1);
+    assert.equal(result.state.randomEvent.history, undefined);
+  });
+
+  it('co_author 未明确跳过（brief 缺 randomEvent 字段）时仍按旧语义 pending 下回合重试', async () => {
+    const { randomEvent: _omitted, ...briefWithoutRandom } = BRIEF;
+    const result = await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(briefWithoutRandom) }),
+      () => runTurnV2(coAuthorDueRequest()),
+    );
+    assert.equal(result.state.randomEvent.pending, true, '只有"明确 planned=false"才算跳过');
+    assert.equal(result.state.randomEvent.nextTriggerTurn, 3);
+  });
+
+  it('co_author interrupted 保持旧语义：pending 下回合、保留绑定、写 interrupted 历史', async () => {
+    const brief = {
+      ...BRIEF,
+      randomEvent: { planned: true, targetKind: 'beat', targetId: 'beat-1-1', summary: '让阿黎交出旧信' },
+    };
+    const result = await withFetchMock(
+      phaseHandler({
+        brief: () => jsonStream(brief),
+        post: () => jsonStream({ ...POST_PATCH, randomEvent: { handled: false, resolution: 'interrupted', note: '玩家转身离开' } }),
+      }),
+      () => runTurnV2(coAuthorDueRequest()),
+    );
+    assert.equal(result.state.randomEvent.history?.[0].status, 'interrupted');
+    assert.equal(result.state.randomEvent.pending, true);
+    assert.equal(result.state.randomEvent.nextTriggerTurn, 3);
+    assert.deepEqual(result.state.randomEvent.activeBinding, {
+      targetKind: 'beat', targetId: 'beat-1-1', summary: '让阿黎交出旧信', plannedAtTurn: 2,
+    });
+  });
+
+  it('仅重试结算也会重算"主动跳过"信号：续跑后同样顺延 3~5 回合', async () => {
+    const brief = { ...BRIEF, randomEvent: { planned: false, summary: '' } };
+    const request = coAuthorDueRequest();
+    let failure: TurnPostFailureV2 | undefined;
+    await withFetchMock(
+      phaseHandler({ brief: () => jsonStream(brief), post: () => chatSSE([contentFrame('null'), DONE_FRAME]) }),
+      async () => {
+        try {
+          await runTurnV2(request);
+        } catch (error) {
+          failure = error as TurnPostFailureV2;
+        }
+      },
+    );
+    assert.ok(failure instanceof TurnPostFailureV2, `应抛出 TurnPostFailureV2，实际：${String(failure)}`);
+
+    const resumed = await withFetchMock(
+      phaseHandler(),
+      () => runTurnSettlementV2(coAuthorDueRequest(), failure!.partial),
+    );
+    assert.equal(resumed.state.randomEvent.pending, false);
+    const delay = resumed.state.randomEvent.nextTriggerTurn - 2;
+    assert.ok(delay >= 3 && delay <= 5, `续跑后的顺延也应是 3~5 回合，实际 ${delay}`);
+  });
+});
+
 

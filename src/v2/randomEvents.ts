@@ -26,6 +26,7 @@ import type {
   RandomEventStateV2,
   RandomEventTargetKindV2,
   RelationshipV2,
+  StoryAutonomyV2,
   StoryBeatRuntimeV2,
   StoryThreadV2,
 } from './types';
@@ -45,6 +46,67 @@ export const RANDOM_EVENT_TARGET_KINDS: readonly RandomEventTargetKindV2[] = ['b
 /** 收束/命运锚的固定 targetId：即使故事节与线程都为空，事件也永远可以绑定到最终命运。 */
 export const RANDOM_EVENT_RECONVERGENCE_ID = 'destiny_main';
 export const RANDOM_EVENT_CONTEXT_HEADER = '【RANDOM_EVENT_CONTEXT】';
+
+/** 灵魂共创（co_author）档的随机事件冷却区间：情境催化剂不应像任务 KPI 一样密集触发。 */
+export const CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN = 3;
+export const CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX = 5;
+
+/** 是否灵魂共创档（其它档保持既有随机事件行为）。 */
+export function isCoAuthorAutonomy(autonomy: StoryAutonomyV2 | undefined): boolean {
+  return autonomy === 'co_author';
+}
+
+export interface RandomEventCooldownInputV2 {
+  autonomy?: StoryAutonomyV2;
+  triggerIntervalMin?: number;
+  triggerIntervalMax?: number;
+}
+
+export interface RandomEventCooldownRangeV2 {
+  min: number;
+  max: number;
+}
+
+/**
+ * 随机事件冷却区间。
+ *
+ * - `co_author`（灵魂共创）：复用存档里的 `triggerIntervalMin/Max`，但夹到 3~5 回合——
+ *   随机事件是"情境催化剂"，不能用来催线程进度；存档默认的 3~6 会被收成 3~5。
+ * - 其它档（standard/free/strict）：与旧行为完全一致（缺省 3~6，min≤max），不做任何收紧。
+ */
+export function randomEventCooldownRange(input: RandomEventCooldownInputV2): RandomEventCooldownRangeV2 {
+  const rawMin = Number(input.triggerIntervalMin);
+  const rawMax = Number(input.triggerIntervalMax);
+  if (isCoAuthorAutonomy(input.autonomy)) {
+    const min = Math.max(
+      CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN,
+      Math.min(Number.isFinite(rawMin) ? Math.round(rawMin) : CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN, CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX),
+    );
+    const max = Math.max(
+      min,
+      Math.min(Number.isFinite(rawMax) ? Math.round(rawMax) : CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX, CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX),
+    );
+    return { min, max };
+  }
+  const min = Math.max(1, Math.round(Number.isFinite(rawMin) ? rawMin : 3));
+  const max = Math.max(min, Math.round(Number.isFinite(rawMax) ? rawMax : 6));
+  return { min, max };
+}
+
+/** 在冷却区间内取一个回合偏移（min=max 时确定；`rng` 可注入以便测试）。 */
+export function randomEventCooldownTurns(range: RandomEventCooldownRangeV2, rng: () => number = Math.random): number {
+  const min = Math.max(1, Math.round(Number.isFinite(range?.min) ? range.min : 3));
+  const max = Math.max(min, Math.round(Number.isFinite(range?.max) ? range.max : min));
+  const roll = Number(rng());
+  const normalized = Number.isFinite(roll) ? Math.max(0, Math.min(0.999999, roll)) : 0;
+  return min + Math.floor(normalized * (max - min + 1));
+}
+
+/** 本回合随机事件是否到期（与 patch.ts 的调度判定保持同一口径）。 */
+export function isRandomEventDue(randomEvent: RandomEventStateV2 | undefined, turn: number): boolean {
+  if (!randomEvent || randomEvent.enabled === false) return false;
+  return randomEvent.pending || Number(turn) >= randomEvent.nextTriggerTurn;
+}
 
 const clip = (value: unknown, max: number): string => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
@@ -312,13 +374,16 @@ export interface RandomEventContextInputV2 {
   targets: RandomEventBindingCandidateV2[];
   /** 不传时退回 `randomEvent.history`。 */
   history?: RandomEventHistoryItemV2[];
+  /** 推进权限：co_author 时额外标注"情境催化剂/可跳过"与冷却区间。 */
+  autonomy?: StoryAutonomyV2;
 }
 
 /**
  * 生成注入 planner_pre / story 的 `【RANDOM_EVENT_CONTEXT】` 紧凑文本（≤400 字）。
  *
  * 内容：当前档位与到期状态、待兑现绑定、最近 3 条历史（id/回合/强度/目标/状态/摘要）、
- * 按类型分组的候选 targetId、可回收的旧钩子。超长时硬截断并补省略号。
+ * 按类型分组的候选 targetId、可回收的旧钩子；co_author 档额外说明"情境催化剂"定位与冷却。
+ * 超长时硬截断并补省略号。
  */
 export function buildRandomEventContextBlock(input: RandomEventContextInputV2): string {
   const randomEvent = input.randomEvent;
@@ -328,6 +393,9 @@ export function buildRandomEventContextBlock(input: RandomEventContextInputV2): 
   const intensity = randomEvent?.intensity ?? 'related';
   const nextText = randomEvent?.pending ? '上回合顺延，本回合待发生' : `第 ${randomEvent?.nextTriggerTurn ?? '?'} 回合到期`;
   lines.push(`- 档位：${intensity}｜${nextText}`);
+  if (isCoAuthorAutonomy(input.autonomy)) {
+    lines.push(`- 模式：灵魂共创·情境催化剂（冷却 ${CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN}~${CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX} 回合；没有自然契机时可 planned=false 跳过并自动顺延）`);
+  }
 
   const binding = readRandomEventBinding(randomEvent?.activeBinding);
   if (binding) {
@@ -368,6 +436,13 @@ export interface RandomEventInstructionInputV2 {
   intensity: RandomEventIntensityV2;
   targets: RandomEventBindingCandidateV2[];
   history?: RandomEventHistoryItemV2[];
+  /** 推进权限：co_author 时追加"情境催化剂/禁跨场景/可跳过"约束。 */
+  autonomy?: StoryAutonomyV2;
+  /**
+   * 注入阶段：planner_pre 才需要看到"可 planned=false 跳过"的许可；
+   * story 只按写前计划写正文，不参与跳过决策（保持"story 只看到 planned 计划"）。
+   */
+  phase?: 'planner_pre' | 'story';
 }
 
 /**
@@ -375,6 +450,10 @@ export interface RandomEventInstructionInputV2 {
  *
  * 与旧版最大的区别：三档都显式要求 `targetKind/targetId/summary` 绑定，严禁无绑定路人事件；
  * 并给出三态结算语义（慢/标准叙事可以只露苗头，记 ongoing_hook 留给后续回收）。
+ *
+ * `co_author` 档额外追加"情境催化剂"约束（T9）：禁止为补 pending beat 空投跨场景事件、
+ * 允许绑定 relationship/thread/旧钩子而不强制绑 beat；planner_pre 还允许在玩家离场/独处/
+ * 静场时 planned=false 主动跳过（调度顺延冷却窗口，不 pending 每回合重试）。
  */
 export function buildRandomEventInstruction(input: RandomEventInstructionInputV2): string {
   const intensity: RandomEventIntensityV2 = input.intensity === 'progress' || input.intensity === 'destiny'
@@ -393,5 +472,8 @@ export function buildRandomEventInstruction(input: RandomEventInstructionInputV2
     .join('、');
   const bindingRule = '【绑定要求】randomEvent.planned 为 true 时必须同时输出 targetKind（beat|thread|relationship|reconvergence）、targetId（只能取自【RANDOM_EVENT_CONTEXT】的候选目标）与 summary（≤80字，写清要改变什么）；严禁无绑定的路人事件、纯氛围插曲和为凑事件而新增的无关角色。';
   const triStateRule = '【三态结算】慢叙事或标准叙事允许事件只露苗头、留待后续回收（结算记 ongoing_hook）；本回合完整兑现记 resolved；被玩家打断或正文没有真实发生则记 interrupted，调度顺延到下一回合。';
-  return `---额外---（随机事件 · ${intensity}档）：${INTENSITY_GOALS[intensity]}${candidateHint ? `本次候选目标示例：${candidateHint}。` : ''}${recyclable}${bindingRule}${triStateRule}`;
+  const coAuthorRules = isCoAuthorAutonomy(input.autonomy)
+    ? `【灵魂共创·情境催化剂】1. 事件只能从当前场景与在场人物、玩家刚制造的动静里自然长出来；严禁为了让不在当前场景的 pending 故事节推进而空投跨场景事件（换地图、宿舍舍友催饭、陌生路人搭讪等一律禁止）。2. 优先绑定 relationship/thread/旧钩子，不强制绑定 beat；只有当前场景可自然触及的 active/available 故事节才允许绑定。${input.phase === 'story' ? '' : `3. 可主动跳过：玩家离场/独处/静场/情绪余味收尾、或当前场景没有自然催化剂时，必须 randomEvent.planned=false 主动跳过；跳过不扣任何进度，调度会自动顺延 ${CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN}~${CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX} 回合，严禁硬塞事件。`}`
+    : '';
+  return `---额外---（随机事件 · ${intensity}档）：${INTENSITY_GOALS[intensity]}${candidateHint ? `本次候选目标示例：${candidateHint}。` : ''}${recyclable}${bindingRule}${triStateRule}${coAuthorRules}`;
 }

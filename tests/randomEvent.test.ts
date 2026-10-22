@@ -1,14 +1,20 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX,
+  CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN,
   RANDOM_EVENT_CONTEXT_LIMIT,
   RANDOM_EVENT_HISTORY_LIMIT,
   RANDOM_EVENT_RECONVERGENCE_ID,
   buildRandomEventContextBlock,
   buildRandomEventInstruction,
+  isCoAuthorAutonomy,
+  isRandomEventDue,
   listRandomEventTargets,
   pickRandomEventIntensity,
   pushRandomEventHistory,
+  randomEventCooldownRange,
+  randomEventCooldownTurns,
   readRandomEventBinding,
   validateRandomEventBinding,
 } from '@/v2/randomEvents';
@@ -486,5 +492,125 @@ describe('randomEvents.readRandomEventBinding — 规范化读取', () => {
     for (const raw of [undefined, null, 'x', [], {}, { targetKind: 'beat' }, { targetKind: 'nope', targetId: 'x' }]) {
       assert.equal(readRandomEventBinding(raw), undefined, `输入 ${JSON.stringify(raw)} 应返回 undefined`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G. 灵魂共创（co_author）调度：冷却 3~5 与跳过许可（T9）
+// ---------------------------------------------------------------------------
+
+describe('randomEvents — co_author 冷却区间与到期判定', () => {
+  it('co_author 默认冷却收敛到 3~5（存档默认 3~6 也不会超 5）', () => {
+    assert.deepEqual(
+      randomEventCooldownRange({ autonomy: 'co_author', triggerIntervalMin: 3, triggerIntervalMax: 6 }),
+      { min: CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN, max: CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX },
+    );
+    // 缺省字段时用 co_author 自己的默认区间。
+    assert.deepEqual(randomEventCooldownRange({ autonomy: 'co_author' }), { min: 3, max: 5 });
+  });
+
+  it('co_author 把过小/过大的存档区间夹进 3~5', () => {
+    assert.deepEqual(randomEventCooldownRange({ autonomy: 'co_author', triggerIntervalMin: 1, triggerIntervalMax: 2 }), { min: 3, max: 3 });
+    assert.deepEqual(randomEventCooldownRange({ autonomy: 'co_author', triggerIntervalMin: 2, triggerIntervalMax: 4 }), { min: 3, max: 4 });
+    assert.deepEqual(randomEventCooldownRange({ autonomy: 'co_author', triggerIntervalMin: 6, triggerIntervalMax: 10 }), { min: 5, max: 5 });
+  });
+
+  it('standard/free/strict/旧档（undefined）保持原区间，行为不变', () => {
+    for (const autonomy of ['standard', 'free', 'strict', undefined] as const) {
+      assert.deepEqual(
+        randomEventCooldownRange({ autonomy, triggerIntervalMin: 1, triggerIntervalMax: 2 }),
+        { min: 1, max: 2 },
+        `${String(autonomy)} 不应被收紧`,
+      );
+      assert.deepEqual(randomEventCooldownRange({ autonomy, triggerIntervalMin: 3, triggerIntervalMax: 6 }), { min: 3, max: 6 });
+    }
+    assert.deepEqual(randomEventCooldownRange({ triggerIntervalMin: 4, triggerIntervalMax: 4 }), { min: 4, max: 4 });
+    assert.deepEqual(randomEventCooldownRange({}), { min: 3, max: 6 }, '缺省区间仍是旧的 3~6');
+  });
+
+  it('冷却回合在区间内取值，min=max 时确定，rng 可注入', () => {
+    assert.equal(randomEventCooldownTurns({ min: 3, max: 3 }), 3);
+    assert.equal(randomEventCooldownTurns({ min: 3, max: 5 }, () => 0), 3);
+    assert.equal(randomEventCooldownTurns({ min: 3, max: 5 }, () => 0.999999), 5);
+    for (let i = 0; i < 20; i += 1) {
+      const turns = randomEventCooldownTurns({ min: 3, max: 5 });
+      assert.ok(turns >= 3 && turns <= 5, `冷却回合应落在 3~5，实际 ${turns}`);
+    }
+  });
+
+  it('isCoAuthorAutonomy 只认 co_author', () => {
+    assert.equal(isCoAuthorAutonomy('co_author'), true);
+    for (const autonomy of ['standard', 'free', 'strict', undefined] as const) {
+      assert.equal(isCoAuthorAutonomy(autonomy), false);
+    }
+  });
+
+  it('isRandomEventDue 与 patch 调度同口径：pending 或到达 nextTriggerTurn', () => {
+    const base = makeRandomEvent({ enabled: true, nextTriggerTurn: 10, pending: false });
+    assert.equal(isRandomEventDue(base, 9), false);
+    assert.equal(isRandomEventDue(base, 10), true);
+    assert.equal(isRandomEventDue({ ...base, pending: true }, 3), true, 'pending 优先，不受 nextTriggerTurn 限制');
+    assert.equal(isRandomEventDue({ ...base, enabled: false }, 99), false);
+    assert.equal(isRandomEventDue(undefined, 99), false);
+  });
+});
+
+describe('randomEvents — co_author 指令与上下文（情境催化剂）', () => {
+  const state = makeState();
+  const targets = listRandomEventTargets({ destiny: state.destiny, state });
+
+  it('co_author planner 指令：禁跨场景补 beat、可主动跳过、不强制绑定 beat', () => {
+    const instruction = buildRandomEventInstruction({
+      intensity: 'related',
+      targets,
+      history: [],
+      autonomy: 'co_author',
+      phase: 'planner_pre',
+    });
+    assert.ok(instruction.includes('灵魂共创·情境催化剂'));
+    assert.ok(instruction.includes('空投跨场景事件'), '必须明确禁止空投跨场景事件');
+    assert.ok(instruction.includes('pending 故事节'), '点名"为 pending 故事节补事件"这一失败模式');
+    assert.ok(instruction.includes('优先绑定 relationship/thread/旧钩子'), '允许绑定关系/线程/旧钩子');
+    assert.ok(instruction.includes('不强制绑定 beat'));
+    assert.ok(instruction.includes('可主动跳过'));
+    assert.ok(instruction.includes('randomEvent.planned=false'));
+    assert.ok(instruction.includes('跳过不扣任何进度'));
+    assert.ok(instruction.includes(`${CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MIN}~${CO_AUTHOR_RANDOM_EVENT_COOLDOWN_MAX} 回合`), '跳过后的顺延区间要写在指令里');
+  });
+
+  it('co_author story 指令只看到禁跨场景约束，不看到"可跳过"', () => {
+    const instruction = buildRandomEventInstruction({
+      intensity: 'related',
+      targets,
+      history: [],
+      autonomy: 'co_author',
+      phase: 'story',
+    });
+    assert.ok(instruction.includes('灵魂共创·情境催化剂'));
+    assert.ok(instruction.includes('空投跨场景事件'), '故事模型仍需知道不能跨场景硬写事件');
+    assert.ok(!instruction.includes('可主动跳过'), 'story 不参与跳过决策（只按 planned 计划写正文）');
+    assert.ok(!instruction.includes('planned=false'));
+  });
+
+  it('standard/free 指令不带 co_author 约束（旧行为不变）', () => {
+    for (const autonomy of ['standard', 'free', 'strict', undefined] as const) {
+      const instruction = buildRandomEventInstruction({ intensity: 'related', targets, history: [], autonomy });
+      assert.ok(!instruction.includes('情境催化剂'), `${String(autonomy)} 不应带 co_author 文案`);
+      assert.ok(!instruction.includes('可主动跳过'));
+      assert.ok(instruction.includes('【绑定要求】'), '原有绑定要求仍保留');
+    }
+  });
+
+  it('co_author 上下文标注冷却与可跳过；standard 不加这行', () => {
+    const randomEvent = makeRandomEvent({ intensity: 'progress', nextTriggerTurn: 3 });
+    const coAuthorContext = buildRandomEventContextBlock({ randomEvent, targets, history: [], autonomy: 'co_author' });
+    assert.ok(coAuthorContext.includes('灵魂共创·情境催化剂'));
+    assert.ok(coAuthorContext.includes('冷却 3~5 回合'));
+    assert.ok(coAuthorContext.includes('planned=false 跳过'));
+    assert.ok(coAuthorContext.length <= RANDOM_EVENT_CONTEXT_LIMIT);
+
+    const standardContext = buildRandomEventContextBlock({ randomEvent, targets, history: [], autonomy: 'standard' });
+    assert.ok(!standardContext.includes('情境催化剂'));
+    assert.ok(standardContext.length <= RANDOM_EVENT_CONTEXT_LIMIT);
   });
 });

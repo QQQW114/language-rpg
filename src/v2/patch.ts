@@ -1,6 +1,6 @@
 import { normalizeChoices } from '@/lib/actions';
 import { clamp, genId, textOrPrevious } from '@/lib/utils';
-import { pickRandomEventIntensity, pushRandomEventHistory, readRandomEventBinding } from './randomEvents';
+import { isCoAuthorAutonomy, pickRandomEventIntensity, pushRandomEventHistory, randomEventCooldownRange, randomEventCooldownTurns, readRandomEventBinding } from './randomEvents';
 import type { CanonicalFactV2, CharacterV2, GameStateV2, InventoryEntryV2, PatchCategoryStatsV2, PatchStatsV2, PatchWarningV2, RandomEventHistoryItemV2, RandomEventResolutionV2, RandomEventStateV2, RelationshipV2, StoryBeatRuntimeV2, StoryBeatStatusV2, StoryThreadV2, TurnPatchV2 } from './types';
 
 const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
@@ -88,11 +88,24 @@ export function emptyPatchStatsV2(): PatchStatsV2 {
   return { characters: empty(), relationships: empty(), inventory: empty(), threads: empty(), facts: empty(), coercedEnums: 0 };
 }
 
+/**
+ * 提交阶段从引擎传入的随机事件局部信号（T9 / co_author）。
+ *
+ * 不进入 Patch 协议：`planned=false` 是 planner_pre 的写前意图，而 patch.ts 只拿得到
+ * planner_post 的 Patch，因此由 engine 在调用提交时把它作为独立信号传入。
+ * 只有 co_author 档会消费 `randomEventSkipped`；其它档忽略（行为完全不变）。
+ */
+export interface RandomEventCommitSignalV2 {
+  /** planner_pre 明确输出 `randomEvent.planned=false`，主动跳过本轮到期的随机事件。 */
+  randomEventSkipped?: boolean;
+}
+
 export function commitTurnPatchV2(
   state: GameStateV2,
   patch: TurnPatchV2,
   warnings: PatchWarningV2[] = [],
   stats?: PatchStatsV2,
+  randomEventSignal?: RandomEventCommitSignalV2,
 ): GameStateV2 {
   if (patch.schemaVersion !== 2) throw new Error('不支持的状态 Patch 版本');
   if (patch.baseRevision !== state.revision) throw new Error('状态已变化，请重新结算');
@@ -507,6 +520,17 @@ export function commitTurnPatchV2(
   const randomEventEnabled = state.randomEvent.enabled !== false;
   const dueRandomEvent = randomEventEnabled && (state.randomEvent.pending || state.turn >= state.randomEvent.nextTriggerTurn);
   const randomEventNote = text(patch.randomEvent?.note, 500) || undefined;
+  // 冷却区间（T9）：co_author 收在 3~5 回合；standard/free/strict 保持存档原区间（缺省 3~6），
+  // 从而保证非灵魂共创档的调度行为逐字节不变。
+  const randomEventCooldown = randomEventCooldownRange({
+    autonomy: state.storyAutonomy,
+    triggerIntervalMin: state.randomEvent.triggerIntervalMin,
+    triggerIntervalMax: state.randomEvent.triggerIntervalMax,
+  });
+  const coAuthorRandomEvent = isCoAuthorAutonomy(state.storyAutonomy);
+  // co_author 明确跳过：只有"到期 + planner_pre 明确 planned=false"才算主动跳过；
+  // 非灵魂共创档忽略该信号（旧行为不变）。
+  const randomEventSkipped = dueRandomEvent && coAuthorRandomEvent && randomEventSignal?.randomEventSkipped === true;
   let randomEvent: RandomEventStateV2 = { ...state.randomEvent };
   // lastNote 是纯审计文本（前端"故事脉动"卡片显示为「随机事件结果」），它不参与
   // 事件调度。此前只在"事件到期"分支里记录，于是模型在未到期回合给出的说明会被
@@ -525,8 +549,6 @@ export function commitTurnPatchV2(
     const interrupted = resolution === 'interrupted';
     const occurred = !interrupted && (patch.randomEvent?.handled === true || resolution === 'resolved' || resolution === 'ongoing_hook');
     const binding = readRandomEventBinding(randomEvent.activeBinding);
-    const intervalMin = Math.max(1, Math.round(randomEvent.triggerIntervalMin ?? 3));
-    const intervalMax = Math.max(intervalMin, Math.round(randomEvent.triggerIntervalMax ?? 6));
     const historyItem = (status: RandomEventHistoryItemV2['status']): RandomEventHistoryItemV2 => ({
       id: genId('rev'),
       turn: state.turn,
@@ -537,18 +559,28 @@ export function commitTurnPatchV2(
       ...(randomEventNote ? { outcomeNote: text(randomEventNote, 100) } : {}),
       status,
     });
-    if (interrupted) {
+    if (randomEventSkipped) {
+      // 灵魂共创·主动跳过（T9）：玩家离场/独处/静场且没有自然催化剂时，planner 可 planned=false。
+      // 跳过不是 interrupted——不写 history、不伪造 lastTriggeredTurn、不进入 pending 每回合重试，
+      // 只把调度顺延一个完整冷却窗口；activeBinding 保留（事件仍可在之后的回合重新兑现）。
+      randomEvent = {
+        ...randomEvent,
+        pending: false,
+        nextTriggerTurn: state.turn + randomEventCooldownTurns(randomEventCooldown),
+      };
+    } else if (interrupted) {
       // 未发生：写 interrupted 历史（有绑定才写，没有绑定就没有可记录的事件），pending 顺延，
-      // activeBinding 原样保留供下一回合重试绑定。
+      // activeBinding 原样保留供下一回合重试绑定（co_author 下保持旧语义：下回合再试一次）。
       if (binding) randomEvent.history = pushRandomEventHistory(randomEvent.history, historyItem('interrupted'));
       randomEvent = { ...randomEvent, pending: true, nextTriggerTurn: state.turn + 1 };
     } else if (occurred) {
       // 已发生：写 resolved / ongoing_hook 历史并清空绑定，再按智能强度重排下一次触发。
+      // co_author 下重排走 3~5 回合冷却（情境催化剂不应密集触发）。
       if (binding) randomEvent.history = pushRandomEventHistory(randomEvent.history, historyItem(resolution === 'ongoing_hook' ? 'ongoing_hook' : 'resolved'));
       const nextIntensity = pickRandomEventIntensity({ destiny, randomEvent, turn: state.turn });
       randomEvent = {
         ...randomEvent,
-        nextTriggerTurn: state.turn + intervalMin + Math.floor(Math.random() * (intervalMax - intervalMin + 1)),
+        nextTriggerTurn: state.turn + randomEventCooldownTurns(randomEventCooldown),
         pending: false,
         intensity: nextIntensity,
         lastTriggeredTurn: state.turn,
@@ -561,16 +593,23 @@ export function commitTurnPatchV2(
     randomEvent = { ...randomEvent, pending: false };
   }
 
-  // 幕切换平滑（D7）：本回合发生切幕、而随机事件还排在 turn+2 之后时，把它拉近到 turn+1~2，
+  // 幕切换平滑（D7）：本回合发生切幕、而随机事件还排在 turn+2 之后时，把它拉近，
   // 并换成推进/命运档——新幕开局需要外部事件助推，而不是再等好几个回合。
+  // T9：co_author 下冷却不能被切幕平滑打穿，拉近目标改为冷却窗口起点（3 回合）；
+  // 且"玩家主动跳过"的回合不再做平滑（跳过就是不要事件，不能立刻又排一个）。
   // 该分支只动调度字段，不会伪造已发生的事件（不写 history / lastTriggeredTurn）。
-  if (randomEventEnabled && destiny.lastActTransitionTurn === state.turn && randomEvent.nextTriggerTurn > state.turn + 2) {
+  if (!randomEventSkipped && randomEventEnabled && destiny.lastActTransitionTurn === state.turn && randomEvent.nextTriggerTurn > state.turn + 2) {
     const intensity = pickRandomEventIntensity({ destiny, randomEvent, turn: state.turn });
-    randomEvent = {
-      ...randomEvent,
-      intensity: intensity === 'destiny' ? 'destiny' : 'progress',
-      nextTriggerTurn: state.turn + (intensity === 'destiny' ? 1 : 2),
-    };
+    const pullTurns = coAuthorRandomEvent ? randomEventCooldown.min : (intensity === 'destiny' ? 1 : 2);
+    // 只拉近不推远：co_author 的冷却下界可能大于 2，若事件本就在冷却窗口内则保持原值。
+    const pulledTurn = Math.min(randomEvent.nextTriggerTurn, state.turn + pullTurns);
+    if (pulledTurn < randomEvent.nextTriggerTurn) {
+      randomEvent = {
+        ...randomEvent,
+        intensity: intensity === 'destiny' ? 'destiny' : 'progress',
+        nextTriggerTurn: pulledTurn,
+      };
+    }
   }
 
   // 灵魂画像（v0.7.0）：planner_post 可选更新。空串/缺省表示"本轮没有变化"，保留旧值；

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { commitTurnPatchV2, emptyPatchStatsV2 } from '@/v2/patch';
+import { commitTurnPatchV2, emptyPatchStatsV2, type RandomEventCommitSignalV2 } from '@/v2/patch';
 import { makePatch, makeState } from './helpers/fixtures';
 import type { GameStateV2, PatchStatsV2, PatchWarningV2, TurnPatchV2 } from '@/v2/types';
 
@@ -1750,5 +1750,231 @@ describe('patch — 主角灵魂画像 soulProfile（v0.7.0 / T8）', () => {
       characters: [{ op: 'create', id: 'char-new', name: '新人物', reason: 'x' }],
     });
     assert.equal(next.soulProfile, '旧画像');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I. 灵魂共创（co_author）随机事件调度：冷却 3~5 + 可跳过顺延（T9）
+// ---------------------------------------------------------------------------
+
+describe('patch — 随机事件 co_author 调度（T9）', () => {
+  const binding = { targetKind: 'beat' as const, targetId: 'beat-1-1', summary: '雨夜交出旧信', plannedAtTurn: 6 };
+
+  /** co_author 到期状态：turn=7、nextTriggerTurn=1、存档区间默认 3~6（co_author 应收成 3~5）。 */
+  function coAuthorState(
+    randomEventOverrides: Record<string, unknown> = {},
+    stateOverrides: Record<string, unknown> = {},
+  ): GameStateV2 {
+    return makeState({
+      storyAutonomy: 'co_author',
+      randomEvent: {
+        enabled: true,
+        nextTriggerTurn: 1,
+        pending: false,
+        intensity: 'related',
+        triggerIntervalMin: 3,
+        triggerIntervalMax: 6,
+        ...randomEventOverrides,
+      },
+      ...stateOverrides,
+    });
+  }
+
+  function commitCo(
+    state: GameStateV2,
+    patchOverrides: Record<string, unknown> = {},
+    randomEventSignal?: RandomEventCommitSignalV2,
+  ) {
+    const warnings: PatchWarningV2[] = [];
+    const next = commitTurnPatchV2(
+      state,
+      makePatch({ baseRevision: state.revision, turn: state.turn, ...patchOverrides }),
+      warnings,
+      undefined,
+      randomEventSignal,
+    );
+    return { state: next, warnings };
+  }
+
+  it('co_author 到期 resolved：下一次触发落在 3~5 回合冷却内', () => {
+    const { state: next, warnings } = commitCo(
+      coAuthorState({ activeBinding: binding }),
+      { randomEvent: { handled: true, resolution: 'resolved', note: '旧信被找到' } },
+    );
+    assert.equal(next.randomEvent.pending, false);
+    assert.equal(next.randomEvent.lastTriggeredTurn, S);
+    assert.ok(next.randomEvent.nextTriggerTurn >= S + 3, `冷却下界 3，实际 ${next.randomEvent.nextTriggerTurn - S}`);
+    assert.ok(next.randomEvent.nextTriggerTurn <= S + 5, `冷却上界 5，实际 ${next.randomEvent.nextTriggerTurn - S}`);
+    assert.equal(next.randomEvent.history?.[0].status, 'resolved');
+    assert.deepEqual(warnings, []);
+  });
+
+  it('co_author 复用存档区间但夹进 3~5：配置 1~2 时冷却确定落在第 3 回合', () => {
+    const { state: next } = commitCo(
+      coAuthorState({ triggerIntervalMin: 1, triggerIntervalMax: 2 }),
+      { randomEvent: { handled: true, resolution: 'resolved' } },
+    );
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 3);
+
+    const high = commitCo(
+      coAuthorState({ triggerIntervalMin: 8, triggerIntervalMax: 10 }),
+      { randomEvent: { handled: true, resolution: 'resolved' } },
+    ).state;
+    assert.equal(high.randomEvent.nextTriggerTurn, S + 5, '超过 5 的配置被收到 5');
+  });
+
+  it('co_author 明确跳过：不 pending 循环、顺延冷却窗口、不写历史、保留绑定', () => {
+    const state = coAuthorState({ activeBinding: binding });
+    const { state: next } = commitCo(
+      state,
+      { randomEvent: { handled: false, note: '玩家溜了，跳过' } },
+      { randomEventSkipped: true },
+    );
+    assert.equal(next.randomEvent.pending, false, '跳过不得进入 pending 每回合重试');
+    assert.ok(next.randomEvent.nextTriggerTurn >= S + 3 && next.randomEvent.nextTriggerTurn <= S + 5);
+    assert.equal(next.randomEvent.lastTriggeredTurn, undefined, '跳过不算触发');
+    assert.equal(next.randomEvent.history, undefined, '跳过不是 interrupted，不写历史');
+    assert.deepEqual(next.randomEvent.activeBinding, binding, '绑定保留，事件可之后再兑现');
+    assert.equal(next.randomEvent.lastNote, '玩家溜了，跳过');
+  });
+
+  it('co_author 跳过与 interrupted 语义区分：interrupted 仍 pending 下回合并记 interrupted 历史', () => {
+    const state = coAuthorState({ activeBinding: binding });
+    const { state: next } = commitCo(state, { randomEvent: { handled: false, resolution: 'interrupted', note: '玩家转身离开' } });
+    assert.equal(next.randomEvent.history?.[0].status, 'interrupted');
+    assert.equal(next.randomEvent.pending, true, '旧语义：下回合再试一次');
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 1);
+    assert.deepEqual(next.randomEvent.activeBinding, binding);
+  });
+
+  it('standard/free 不收跳过信号（旧行为逐字段不变）', () => {
+    for (const autonomy of ['standard', 'free', 'strict'] as const) {
+      const state = makeState({
+        storyAutonomy: autonomy,
+        randomEvent: {
+          enabled: true, nextTriggerTurn: 1, pending: false, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 6,
+        },
+      });
+      const { state: next } = commitCo(state, { randomEvent: { handled: false } }, { randomEventSkipped: true });
+      assert.equal(next.randomEvent.pending, true, `${autonomy} 仍按旧语义 pending 顺延`);
+      assert.equal(next.randomEvent.nextTriggerTurn, S + 1);
+      assert.equal(next.randomEvent.history, undefined);
+    }
+  });
+
+  it('跳过后紧接着的未到期回合不重复生效，调度保持不变', () => {
+    const skipped = commitCo(coAuthorState(), { randomEvent: { handled: false } }, { randomEventSkipped: true }).state;
+    // 紧接着的一回合（未到期），skip 信号不应再次生效，调度保持。
+    const idle = commitCo(skipped, { randomEvent: { handled: false } }, { randomEventSkipped: true }).state;
+    assert.equal(idle.randomEvent.pending, false);
+    assert.equal(idle.randomEvent.nextTriggerTurn, skipped.randomEvent.nextTriggerTurn);
+  });
+
+  it('未到期时不因 skip 信号改动调度（skip 只对到期回合生效）', () => {
+    const state = coAuthorState({ nextTriggerTurn: 99 });
+    const { state: next } = commitCo(state, {}, { randomEventSkipped: true });
+    assert.deepEqual(next.randomEvent, state.randomEvent);
+  });
+
+  it('旧档无 storyAutonomy 字段：按 standard 的旧冷却区间（3~6）重排，不收紧', () => {
+    const base = makeState();
+    const { storyAutonomy: _dropped, ...legacyState } = base;
+    const state = {
+      ...legacyState,
+      randomEvent: {
+        enabled: true, nextTriggerTurn: 1, pending: false, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 6,
+      },
+    } as GameStateV2;
+    assert.equal('storyAutonomy' in state, false);
+    const { state: next } = commitCo(state, { randomEvent: { handled: true, resolution: 'resolved' } });
+    assert.equal(next.randomEvent.pending, false);
+    assert.ok(next.randomEvent.nextTriggerTurn >= S + 3 && next.randomEvent.nextTriggerTurn <= S + 6);
+  });
+
+  it('co_author 幕切换平滑：拉近到冷却窗口起点（3 回合）而不是 turn+2', () => {
+    const base = makeState();
+    const state = makeState({
+      storyAutonomy: 'co_author',
+      randomEvent: { enabled: true, nextTriggerTurn: 99, pending: false, intensity: 'related', triggerIntervalMin: 3, triggerIntervalMax: 6 },
+      destiny: {
+        ...base.destiny,
+        currentActId: 'act-1',
+        currentActIndex: 0,
+        actHistory: [],
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-1-2', actId: 'act-1', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+      },
+    });
+    const { state: next } = commitCo(state, {
+      destiny: {
+        reason: '本幕收束',
+        beatChanges: [
+          { beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据一' },
+          { beatId: 'beat-1-2', status: 'satisfied', evidenceQuote: '证据二' },
+        ],
+      },
+    });
+    assert.equal(next.destiny.lastActTransitionTurn, S);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 3, 'co_author 平滑不得打穿 3 回合冷却');
+    assert.equal(next.randomEvent.intensity, 'progress');
+    assert.equal(next.randomEvent.lastTriggeredTurn, undefined);
+  });
+
+  it('co_author 冷却下界大于 2 时，幕切换平滑只拉近不推远，也不改已在窗口内的强度', () => {
+    const base = makeState();
+    // 冷却下界 5（存档区间 6~8 被夹到 5~5）；事件已排在 turn+4（在 5 回合冷却窗口内）。
+    const state = makeState({
+      storyAutonomy: 'co_author',
+      randomEvent: { enabled: true, nextTriggerTurn: S + 4, pending: false, intensity: 'related', triggerIntervalMin: 6, triggerIntervalMax: 8 },
+      destiny: {
+        ...base.destiny,
+        currentActId: 'act-1',
+        currentActIndex: 0,
+        actHistory: [],
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+      },
+    });
+    const { state: next } = commitCo(state, {
+      destiny: { reason: '收束', beatChanges: [{ beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据' }] },
+    });
+    assert.equal(next.destiny.lastActTransitionTurn, S);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 4, '不能被冷却下界推到更远');
+    assert.equal(next.randomEvent.intensity, 'related', '没有真正拉近时不应改写强度');
+  });
+
+  it('co_author 主动跳过的回合不再做幕切换平滑（跳过就是不要事件）', () => {
+    const base = makeState();
+    const state = makeState({
+      storyAutonomy: 'co_author',
+      randomEvent: { enabled: true, nextTriggerTurn: 1, pending: false, intensity: 'related', triggerIntervalMin: 5, triggerIntervalMax: 5 },
+      destiny: {
+        ...base.destiny,
+        currentActId: 'act-1',
+        currentActIndex: 0,
+        actHistory: [],
+        beats: [
+          { beatId: 'beat-1-1', actId: 'act-1', status: 'available', evidenceTurns: [], updatedAtTurn: 0 },
+          { beatId: 'beat-2-1', actId: 'act-2', status: 'pending', evidenceTurns: [], updatedAtTurn: 0 },
+        ],
+      },
+    });
+    const { state: next } = commitCo(
+      state,
+      {
+        randomEvent: { handled: false },
+        destiny: { reason: '收束', beatChanges: [{ beatId: 'beat-1-1', status: 'satisfied', evidenceQuote: '证据' }] },
+      },
+      { randomEventSkipped: true },
+    );
+    assert.equal(next.destiny.lastActTransitionTurn, S);
+    assert.equal(next.randomEvent.nextTriggerTurn, S + 5, '跳过后的冷却保持不变，不被平滑拉近');
+    assert.equal(next.randomEvent.intensity, 'related', '跳过回合也不被平滑改写强度');
+    assert.equal(next.randomEvent.pending, false);
   });
 });

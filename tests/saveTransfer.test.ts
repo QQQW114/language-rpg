@@ -4,9 +4,11 @@ import './helpers/localStorageStub';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import packageJson from '../package.json';
 import {
   IMPORT_SAVE_NAME_SUFFIX,
   SAVE_EXPORT_KIND,
+  SAVE_EXPORT_META_BEATS_LIMIT,
   SAVE_EXPORT_VERSION,
   SUPPORTED_STATE_SCHEMA_VERSION,
   buildSaveExport,
@@ -17,7 +19,7 @@ import {
   serializeSaveExport,
 } from '@/v2/saveTransfer';
 import { useGameStoreV2, type SaveV2 } from '@/v2/store';
-import { makeBackground, makeOutline, makeState } from './helpers/fixtures';
+import { makeBackground, makeOutline, makeSettings, makeState } from './helpers/fixtures';
 
 const FIXED_DATE = new Date('2026-10-20T08:00:00.000Z');
 
@@ -44,16 +46,67 @@ function indexSaves(...saves: SaveV2[]): Record<string, SaveV2> {
   return Object.fromEntries(saves.map((save) => [save.id, save]));
 }
 
+/**
+ * 25 个故事节、停在第二幕、带灵魂画像的存档：用于验证 meta.finalStateSummary 的摘要与截断。
+ * 注意 destinity 的 currentActId 与 outline 一致，导入时 hydrate 不会纠正幕序。
+ */
+function makeRichSave(): SaveV2 {
+  const outline = makeOutline({
+    acts: [
+      {
+        id: 'act-1', title: '第一幕 · 雨夜', purpose: '建立日常',
+        beats: [{ id: 'beat-a', title: '开场', purpose: '建立日常状态' }],
+      },
+      {
+        id: 'act-2', title: '第二幕 · 群聊风暴', purpose: '推进冲突',
+        beats: [{ id: 'beat-b', title: '抉择', purpose: '主角做出选择' }],
+      },
+      {
+        id: 'act-3', title: '第三幕 · 收束', purpose: '收尾',
+        beats: [{ id: 'beat-c', title: '结局', purpose: '走到预设终点' }],
+      },
+    ],
+  });
+  return makeSave({
+    outline,
+    state: makeState({
+      turnRecords: [],
+      soulProfile: '腹黑乐子人：笑着把麻烦推回去，但对旧信物心软',
+      storyAutonomy: 'co_author',
+      destiny: {
+        completionEstimate: 62,
+        completionReason: '第二幕推进中',
+        currentActId: 'act-2',
+        currentActIndex: 1,
+        currentStage: '第二幕',
+        currentPath: '改道',
+        nextMilestone: '群聊误会澄清',
+        convergencePlan: '顺势收束',
+        beats: Array.from({ length: 25 }, (_, index) => ({
+          beatId: `beat-${index + 1}`,
+          actId: index < 3 ? 'act-2' : 'act-3',
+          status: index % 2 === 0 ? 'pending' : 'satisfied',
+          evidenceTurns: [],
+          updatedAtTurn: 3,
+        })),
+        actHistory: [],
+        endingReached: false,
+        updatedAtTurn: 5,
+      },
+    }),
+  });
+}
+
 describe('saveTransfer — 导出信封', () => {
   it('信封字段齐全且顺序固定，exportedAt 为 ISO 字符串', () => {
     const envelope = buildSaveExport(makeSave(), FIXED_DATE);
-    assert.deepEqual(Object.keys(envelope), ['kind', 'version', 'exportedAt', 'save']);
+    assert.deepEqual(Object.keys(envelope), ['kind', 'version', 'exportedAt', 'meta', 'save']);
     assert.equal(envelope.kind, SAVE_EXPORT_KIND);
     assert.equal(envelope.kind, 'lrpg-save');
     assert.equal(envelope.version, SAVE_EXPORT_VERSION);
     assert.equal(envelope.version, 1);
     assert.equal(envelope.exportedAt, '2026-10-20T08:00:00.000Z');
-    // 存档顶层字段也按固定顺序重建，便于 diff / 人工检查。
+    // 存档顶层字段也按固定顺序重建，便于 diff / 人工检查（meta 不改变嵌套 save）。
     assert.deepEqual(Object.keys(envelope.save), [
       'id', 'name', 'createdAt', 'updatedAt', 'outline', 'background', 'worldFacts', 'state',
     ]);
@@ -101,6 +154,136 @@ describe('saveTransfer — 导出信封', () => {
     const reparsed = JSON.parse(json) as { kind?: string; save?: { name?: string } };
     assert.equal(reparsed.kind, SAVE_EXPORT_KIND);
     assert.equal(reparsed.save?.name, '旧日旅程');
+  });
+});
+
+describe('saveTransfer — 导出 meta（复盘用，无密钥）', () => {
+  /** 用于断言"绝不泄露"的设置：两把不同的 Key + 两个不同的 Base URL。 */
+  const settingsWithSecrets = () => makeSettings({
+    apiKey: 'sk-global-secret-key',
+    storyApiKey: 'sk-story-secret-key',
+    apiBaseUrl: 'https://planner-relay.invalid/v1',
+    storyApiBaseUrl: 'https://story-relay.invalid/v1',
+    inputPerspective: 'director',
+    plannerToolsEnabled: true,
+    plannerWebSearchEnabled: true,
+    storyModel: 'gemini-3.8-flash-high',
+    storyMaxTokens: 4096,
+  });
+
+  it('meta 结构齐全且顺序固定：版本/设置/大纲出身 id/末态摘要', () => {
+    const envelope = buildSaveExport(makeRichSave(), FIXED_DATE, { settings: settingsWithSecrets() });
+    assert.ok(envelope.meta);
+    assert.deepEqual(Object.keys(envelope.meta), [
+      'version', 'settings', 'outlineId', 'backgroundId', 'finalStateSummary',
+    ]);
+    // 版本读 package.json，发版 bump 后自动同步（不硬编码，避免与真实版本漂移）。
+    assert.equal(envelope.meta.version, packageJson.version);
+    assert.equal(envelope.meta.outlineId, 'outline-test-1');
+    assert.equal(envelope.meta.backgroundId, 'bg-test-1');
+
+    const summary = envelope.meta.finalStateSummary;
+    assert.deepEqual(Object.keys(summary), ['act', 'actIndex', 'completion', 'soulProfile', 'beats']);
+    assert.equal(summary.act, '第二幕 · 群聊风暴');
+    assert.equal(summary.actIndex, 1);
+    assert.equal(summary.completion, 62);
+    assert.equal(summary.soulProfile, '腹黑乐子人：笑着把麻烦推回去，但对旧信物心软');
+    assert.equal(summary.beats.length, SAVE_EXPORT_META_BEATS_LIMIT, 'beats 截断到上限');
+    assert.deepEqual(summary.beats[0], { id: 'beat-1', status: 'pending' });
+    assert.deepEqual(summary.beats[1], { id: 'beat-2', status: 'satisfied' });
+  });
+
+  it('settings 快照含行为参数但不含 API Key / Base URL，只记录是否使用独立 story 连接', () => {
+    const json = serializeSaveExport(makeRichSave(), FIXED_DATE, { settings: settingsWithSecrets() });
+    // 两把 Key、全局/独立 Base URL 都不得出现在导出文件中。
+    for (const secret of [
+      'sk-global-secret-key',
+      'sk-story-secret-key',
+      'planner-relay.invalid',
+      'story-relay.invalid',
+      'api.test.invalid', // makeSettings 的默认全局 base
+    ]) {
+      assert.equal(json.includes(secret), false, `导出文件不应包含 ${secret}`);
+    }
+    const meta = (JSON.parse(json) as { meta: { settings: Record<string, unknown> } }).meta;
+    assert.equal('apiKey' in meta.settings, false);
+    assert.equal('storyApiKey' in meta.settings, false);
+    assert.equal('apiBaseUrl' in meta.settings, false);
+    assert.equal('storyApiBaseUrl' in meta.settings, false);
+    assert.equal(meta.settings.inputPerspective, 'director');
+    assert.equal(meta.settings.storyModel, 'gemini-3.8-flash-high');
+    assert.equal(meta.settings.storyProfile, 'expressive');
+    assert.equal(meta.settings.storyAutonomy, 'co_author');
+    assert.equal(meta.settings.narrativePace, 'standard');
+    assert.equal(meta.settings.storyMaxTokens, 4096);
+    assert.equal(meta.settings.plannerToolsEnabled, true);
+    assert.equal(meta.settings.plannerWebSearchEnabled, true);
+    assert.equal(meta.settings.storyApiBaseOverridden, true);
+    assert.equal(meta.settings.storyApiKeyOverridden, true);
+  });
+
+  it('默认设置：独立连接标记为 false，未知模型推导 compact 文风', () => {
+    const meta = buildSaveExport(makeSave(), FIXED_DATE, { settings: makeSettings() }).meta;
+    assert.ok(meta?.settings);
+    assert.equal(meta.settings.storyApiBaseOverridden, false);
+    assert.equal(meta.settings.storyApiKeyOverridden, false);
+    assert.equal(meta.settings.storyProfile, 'compact', 'test-story-model 不匹配 expressive 白名单');
+    assert.equal(meta.settings.mode, 'author');
+    assert.equal(meta.settings.storyAutonomy, 'standard');
+  });
+
+  it('meta 不存在时不报错（未提供设置时省略 settings），其余摘要仍在', () => {
+    const envelope = buildSaveExport(makeSave(), FIXED_DATE);
+    assert.ok(envelope.meta);
+    assert.equal('settings' in envelope.meta, false);
+    assert.equal(envelope.meta.version, packageJson.version);
+    assert.equal(envelope.meta.finalStateSummary.act, '第一幕');
+    assert.equal(envelope.meta.finalStateSummary.actIndex, 0);
+    assert.equal(envelope.meta.finalStateSummary.beats.length, 2);
+  });
+
+  it('导出 → JSON 往返保留 meta；导入仍只读取嵌套 save（meta 不影响存档本体）', () => {
+    const settings = settingsWithSecrets();
+    const save = makeRichSave();
+    const built = buildSaveExport(save, FIXED_DATE, { settings });
+    const reparsed = JSON.parse(serializeSaveExport(save, FIXED_DATE, { settings })) as {
+      meta: unknown;
+      save: unknown;
+    };
+    assert.deepEqual(reparsed.meta, built.meta);
+    assert.deepEqual(reparsed.save, JSON.parse(JSON.stringify(built.save)));
+
+    const imported = parseSaveImport(serializeSaveExport(save, FIXED_DATE, { settings }));
+    assert.equal(imported.ok, true);
+    assert.deepEqual(imported.save?.state, save.state, '导入后状态与导出时一致');
+    // meta 只在信封顶层：导入结果（SaveV2）里不可能带出设置或 Key。
+    assert.equal(JSON.stringify(imported.save).includes('sk-story-secret-key'), false);
+  });
+
+  it('旧信封没有 meta 仍可导入；meta 体积 < 2KB', () => {
+    // 兼容性：meta 是导出侧新增的可选字段，旧备份文件（无 meta）必须照常导入。
+    const legacyEnvelope = {
+      kind: SAVE_EXPORT_KIND,
+      version: SAVE_EXPORT_VERSION,
+      exportedAt: FIXED_DATE.toISOString(),
+      save: makeSave(),
+    };
+    const imported = parseSaveImport(legacyEnvelope);
+    assert.equal(imported.ok, true);
+    assert.deepEqual(imported.save?.state, makeSave().state);
+
+    // 体积目标：完整设置快照 + 20 条故事节摘要也要 <2KB（不含嵌套 save）。
+    const meta = buildSaveExport(makeRichSave(), FIXED_DATE, { settings: settingsWithSecrets() }).meta;
+    assert.ok(JSON.stringify(meta).length < 2048, `meta 体积 ${JSON.stringify(meta).length} 字节`);
+  });
+
+  it('meta 不改变嵌套 save 与文件名逻辑', () => {
+    const settings = settingsWithSecrets();
+    const save = makeSave();
+    const withMeta = buildSaveExport(save, FIXED_DATE, { settings });
+    const withoutMetaSettings = buildSaveExport(save, FIXED_DATE);
+    assert.deepEqual(withMeta.save, withoutMetaSettings.save, 'meta 只加在信封顶层');
+    assert.equal(saveExportFilename(save, FIXED_DATE), '旧日旅程-存档-2026-10-20.json');
   });
 });
 
